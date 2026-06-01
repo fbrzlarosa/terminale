@@ -57,7 +57,7 @@ jobs:
 
       - name: Download release artifacts
         if: steps.detect.outputs.method != 'skip'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-build-local-*windows*
           path: artifacts
@@ -134,7 +134,7 @@ jobs:
 
       - name: Download release artifacts
         if: steps.detect.outputs.method == 'full'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: artifacts-build-local-*apple-darwin*
           path: artifacts
@@ -207,7 +207,7 @@ jobs:
       contents: read
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
