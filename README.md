@@ -174,6 +174,9 @@ irm https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-i
 | macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.pkg` |
 | Linux x86_64 | `terminale-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 
+The macOS `.pkg` installs **terminale.app** into `/Applications`, so it shows up
+in Launchpad and Spotlight with the app icon and launches as a normal GUI app.
+
 > **Opening unsigned builds.** terminale ships **unsigned** (open-source — no paid
 > Apple/Windows code-signing certificate). The first launch triggers a one-time
 > security prompt. This is expected; here's how to get past it:

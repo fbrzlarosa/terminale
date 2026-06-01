@@ -20,6 +20,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - Production release pipeline via `cargo-dist`: `.msi` (Windows), `.pkg` (macOS), tarballs (Linux),
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
+- `xtask pkg-macos` wraps the `terminale.app` bundle in an installer `.pkg`
+  (via the system `pkgbuild`) — the single source of truth used by both local
+  builds and the release pipeline
+
+### Changed
+- macOS `.pkg` now installs a real **terminale.app** into `/Applications` (shown
+  in Launchpad/Spotlight, launches as a GUI app) instead of a bare Unix binary
+  that opened the user's terminal. Built by a dedicated `macos-app-pkg` release
+  job; cargo-dist's bare-binary `pkg` installer is no longer used on macOS
+- macOS app icon (`.icns`) now embeds the full set of sizes with `@2x` retina
+  variants (16–1024 px) so it renders crisply in the Dock, Finder and Launchpad
 
 ## [0.1.3]
 

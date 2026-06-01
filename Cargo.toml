@@ -219,8 +219,13 @@ hosting = "github"
 ci = "github"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# The installers to generate for each app
-installers = ["shell", "powershell", "homebrew", "msi", "pkg"]
+# The installers to generate for each app. Note: macOS does NOT use dist's
+# "pkg" installer — dist 0.28 can only wrap a bare Unix binary, which lands in
+# /Applications as a non-GUI executable (double-clicking it opens the user's
+# terminal). The macOS `.pkg` is instead built by the `macos-app-pkg` job in
+# .github/workflows/release.yml, which wraps a real `terminale.app` bundle via
+# `xtask pkg-macos`. Keep this list free of "pkg" so the two don't collide.
+installers = ["shell", "powershell", "homebrew", "msi"]
 # A GitHub repo to push Homebrew formulas to
 tap = "fbrzlarosa/homebrew-terminale"
 # Customize the Homebrew formula name
@@ -276,9 +281,10 @@ x86_64-pc-windows-msvc = "windows-latest"
 aarch64-apple-darwin = "macos-latest"
 x86_64-apple-darwin = "macos-latest"
 
-# macOS PKG configuration — required to actually build a .pkg.
-[workspace.metadata.dist.mac-pkg-config]
-identifier = "dev.stackbyte.terminale"
-install-location = "/Applications"
+# NB: there is intentionally no `[workspace.metadata.dist.mac-pkg-config]` here.
+# The macOS `.pkg` is produced by the `macos-app-pkg` job in
+# .github/workflows/release.yml (via `xtask pkg-macos`), which bundles a real
+# `terminale.app` instead of the bare binary dist's pkg would install. The
+# bundle identifier `dev.stackbyte.terminale` lives in `xtask` (`MAC_BUNDLE_ID`).
 
 

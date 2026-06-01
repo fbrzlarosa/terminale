@@ -42,6 +42,23 @@ enum Cmd {
         #[arg(long)]
         bin: Option<PathBuf>,
     },
+    /// Assemble the `.app` (via `bundle-macos`) and wrap it in an installer
+    /// `.pkg` that drops `terminale.app` into `/Applications` — the GUI-correct
+    /// replacement for cargo-dist's bare-binary pkg. Produces
+    /// `target/terminale-v<version>-<target>.pkg`. Run on macOS (needs the
+    /// system `pkgbuild`).
+    PkgMacos {
+        /// Path to the built `terminale` binary. Defaults to
+        /// `target/release/terminale` (or the `--target`-specific path when
+        /// `--target` is given and the default is absent).
+        #[arg(long)]
+        bin: Option<PathBuf>,
+        /// Target triple used only for the output filename (e.g.
+        /// `aarch64-apple-darwin`). Defaults to the host triple so the file
+        /// matches the README/dist naming on each release runner.
+        #[arg(long)]
+        target: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -57,7 +74,10 @@ fn main() -> Result<()> {
         Cmd::Test => test()?,
         Cmd::Deny => deny()?,
         Cmd::GenIcons => gen_icons()?,
-        Cmd::BundleMacos { bin } => bundle_macos(bin)?,
+        Cmd::BundleMacos { bin } => {
+            bundle_macos(bin)?;
+        }
+        Cmd::PkgMacos { bin, target } => pkg_macos(bin, target)?,
     }
     Ok(())
 }
@@ -113,7 +133,7 @@ fn gen_icons() -> Result<()> {
 
     // Render each size once; both containers draw from this set.
     let mut png = std::collections::BTreeMap::<u32, Vec<u8>>::new();
-    for size in [16u32, 32, 48, 64, 128, 256, 512] {
+    for size in [16u32, 32, 48, 64, 128, 256, 512, 1024] {
         png.insert(size, render_png(&tree, size)?);
     }
     let get = |s: u32| png.get(&s).cloned().expect("rendered above");
@@ -122,8 +142,22 @@ fn gen_icons() -> Result<()> {
     std::fs::write(ICON_ICO, &ico)?;
     println!("wrote {ICON_ICO} ({} bytes)", ico.len());
 
-    // PNG-based icns OSTypes: ic07=128, ic08=256, ic09=512.
-    let icns = build_icns(&[("ic07", get(128)), ("ic08", get(256)), ("ic09", get(512))]);
+    // PNG-based icns OSTypes, covering both the 1x sizes and their @2x retina
+    // variants so Finder/Launchpad/the Dock render crisply at every slot:
+    //   icp4=16  icp5=32  ic07=128  ic08=256  ic09=512
+    //   ic11=16@2x(32)  ic12=32@2x(64)  ic13=128@2x(256)  ic14=256@2x(512)  ic10=512@2x(1024)
+    let icns = build_icns(&[
+        ("icp4", get(16)),
+        ("icp5", get(32)),
+        ("ic11", get(32)),
+        ("ic12", get(64)),
+        ("ic07", get(128)),
+        ("ic13", get(256)),
+        ("ic08", get(256)),
+        ("ic14", get(512)),
+        ("ic09", get(512)),
+        ("ic10", get(1024)),
+    ]);
     std::fs::write(ICON_ICNS, &icns)?;
     println!("wrote {ICON_ICNS} ({} bytes)", icns.len());
     Ok(())
@@ -193,7 +227,7 @@ const MAC_BUNDLE_ID: &str = "dev.stackbyte.terminale";
 /// real GUI application: it shows up in Launchpad/Spotlight with the brand icon
 /// and launches directly (a bare Unix binary in /Applications instead opens the
 /// user's terminal and runs inside it).
-fn bundle_macos(bin: Option<PathBuf>) -> Result<()> {
+fn bundle_macos(bin: Option<PathBuf>) -> Result<PathBuf> {
     let version = env!("CARGO_PKG_VERSION");
     let bin = bin.unwrap_or_else(|| PathBuf::from("target/release/terminale"));
     if !bin.exists() {
@@ -234,12 +268,76 @@ fn bundle_macos(bin: Option<PathBuf>) -> Result<()> {
         std::fs::set_permissions(&p, perm)?;
     }
 
+    // Strip extended attributes (com.apple.provenance / quarantine that macOS
+    // stamps on copied binaries). Left in place, `pkgbuild` encodes them as
+    // AppleDouble entries inside the payload — harmless (they rehydrate as
+    // xattrs on install) but noisy in the artifact. `xattr` on recent macOS
+    // dropped its `-r` flag, so recurse via `find`. Best-effort: a clean tree
+    // is nice-to-have, not load-bearing.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = Command::new("find")
+            .args([&app.to_string_lossy(), "-exec", "xattr", "-c", "{}", ";"])
+            .status();
+    }
+
     println!("built {} (v{version})", app.display());
     println!(
         "test it: open {}  — or drag it into /Applications",
         app.display()
     );
+    Ok(app)
+}
+
+/// Wrap the assembled `terminale.app` in a flat installer `.pkg` that installs
+/// it to `/Applications`. This is the GUI-correct replacement for cargo-dist's
+/// bare-binary pkg (a Unix executable in `/Applications` opens the user's
+/// terminal instead of launching as an app). Shells out to the macOS-native
+/// `pkgbuild`; the bundle ID / install location mirror the dist `mac-pkg-config`
+/// so the release artifact is a drop-in.
+fn pkg_macos(bin: Option<PathBuf>, target: Option<String>) -> Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let app = bundle_macos(bin)?;
+
+    // Filename target triple: explicit flag wins, else the host triple so a
+    // local run on Apple Silicon / Intel labels itself correctly.
+    let target = target.unwrap_or_else(host_target_triple);
+    let pkg = PathBuf::from(format!("target/terminale-v{version}-{target}.pkg"));
+    if pkg.exists() {
+        std::fs::remove_file(&pkg).ok();
+    }
+
+    // `pkgbuild --component <app> --install-location /Applications` produces a
+    // flat package whose sole payload is the .app, installed into /Applications.
+    run(
+        "pkgbuild",
+        &[
+            "--install-location",
+            "/Applications",
+            "--identifier",
+            MAC_BUNDLE_ID,
+            "--version",
+            version,
+            "--component",
+            &app.to_string_lossy(),
+            &pkg.to_string_lossy(),
+        ],
+    )
+    .context("pkgbuild failed (run on macOS; pkgbuild ships with the Xcode CLT)")?;
+
+    println!("built {} (v{version}, {target})", pkg.display());
     Ok(())
+}
+
+/// Best-effort host target triple for the pkg filename. We only care about the
+/// arch on macOS; the OS/abi suffix is fixed for an Apple build.
+fn host_target_triple() -> String {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x86_64"
+    };
+    format!("{arch}-apple-darwin")
 }
 
 fn info_plist(version: &str) -> String {
