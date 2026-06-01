@@ -131,6 +131,30 @@
                     </Directory>
                 </Directory>
             </Directory>
+
+            <!-- Start Menu shortcut: makes terminale show up in Windows search. -->
+            <Directory Id='ProgramMenuFolder'>
+                <Component Id='StartMenuShortcut' Guid='3F2A1B6C-7D8E-4F90-A1B2-C3D4E5F60718'>
+                    <Shortcut Id='StartMenuTerminale'
+                              Name='terminale'
+                              Description='A native, cross-platform, GPU-accelerated terminal'
+                              Target='[#exe0]'
+                              WorkingDirectory='Bin'/>
+                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='startmenu' Type='integer' Value='1' KeyPath='yes'/>
+                </Component>
+            </Directory>
+
+            <!-- Desktop shortcut: offered as an optional feature in the installer. -->
+            <Directory Id='DesktopFolder' Name='Desktop'>
+                <Component Id='DesktopShortcut' Guid='8E7D6C5B-4A39-4281-9F0E-1D2C3B4A5968'>
+                    <Shortcut Id='DesktopTerminale'
+                              Name='terminale'
+                              Description='A native, cross-platform, GPU-accelerated terminal'
+                              Target='[#exe0]'
+                              WorkingDirectory='Bin'/>
+                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='desktop' Type='integer' Value='1' KeyPath='yes'/>
+                </Component>
+            </Directory>
         </Directory>
 
         <Feature
@@ -150,6 +174,7 @@
             <!--<ComponentRef Id='License'/>-->
 
             <ComponentRef Id='binary0'/>
+            <ComponentRef Id='StartMenuShortcut'/>
 
             <Feature
                 Id='Environment'
@@ -158,6 +183,15 @@
                 Level='1'
                 Absent='allow'>
                 <ComponentRef Id='Path'/>
+            </Feature>
+
+            <Feature
+                Id='DesktopShortcutFeature'
+                Title='Desktop shortcut'
+                Description='Add a shortcut to terminale on the Desktop.'
+                Level='1'
+                Absent='allow'>
+                <ComponentRef Id='DesktopShortcut'/>
             </Feature>
         </Feature>
 
