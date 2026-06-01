@@ -1,0 +1,29 @@
+[package]
+name = "terminale-ssh"
+description = "russh-based SSH client wrapper for terminale: connect, auth, PTY, I/O streams"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+russh.workspace = true
+russh-keys.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+bytes.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde.workspace = true
+terminale-config = { path = "../terminale-config" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+
+[lints]
+workspace = true

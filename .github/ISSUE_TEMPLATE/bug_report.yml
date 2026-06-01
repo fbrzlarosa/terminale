@@ -1,0 +1,105 @@
+name: Bug report
+description: Report a defect in terminale
+title: "[bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill in the details below so we can reproduce and fix it.
+
+        For security issues, please follow [SECURITY.md](../../SECURITY.md) instead.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear and concise description of the bug.
+      placeholder: When I press Ctrl+Shift+T, the new tab opens but immediately closes…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps a maintainer can follow to reproduce the issue.
+      placeholder: |
+        1. Launch `terminale`
+        2. Press Ctrl+Shift+T
+        3. Observe…
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: terminale version
+      description: Output of `terminale --version`
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (specify below)
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "Ubuntu 24.04 / macOS 14.4 / Windows 11 26200"
+    validations:
+      required: true
+
+  - type: input
+    id: shell
+    attributes:
+      label: Shell
+      placeholder: "bash 5.2 / zsh 5.9 / PowerShell 7.4 / fish 3.7"
+
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU / driver (if rendering-related)
+      placeholder: "NVIDIA RTX 4070, driver 555.xx"
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: Paste the relevant parts of your `config.toml` if applicable.
+      render: toml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `terminale --log-level=debug` (paste only the relevant portion).
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and didn't find a duplicate
+          required: true
+        - label: I'm using the latest released version (or built from `main`)
+          required: true

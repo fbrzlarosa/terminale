@@ -1,0 +1,222 @@
+name: Sign and Notarize
+
+# Reusable workflow called by the dist-generated `release.yml` pipeline.
+#
+# Per piattaforma:
+#   - Windows .msi -> Authenticode signature via signtool (or jsign as fallback)
+#   - macOS .pkg   -> codesign + xcrun notarytool submit + xcrun stapler
+#
+# If the required secrets are absent, each platform skips silently and the
+# artifacts go out unsigned. Set these secrets in repo Settings -> Secrets
+# and variables -> Actions to flip signing on:
+#
+#   Windows (any of):
+#     WINDOWS_PFX_BASE64        + WINDOWS_PFX_PASSWORD      (self-managed PFX)
+#     SIGNPATH_API_TOKEN        + SIGNPATH_ORGANIZATION_ID  (SignPath OSS, free)
+#
+#   macOS (all of):
+#     APPLE_DEVELOPER_ID_INSTALLER_CERT_BASE64
+#     APPLE_DEVELOPER_ID_INSTALLER_CERT_PASSWORD
+#     APPLE_TEAM_ID
+#     APPLE_NOTARY_APPLE_ID
+#     APPLE_NOTARY_APP_PASSWORD
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan JSON (passed by dist)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  sign-windows:
+    name: Sign Windows artifacts
+    runs-on: windows-latest
+    steps:
+      - name: Detect secrets
+        id: detect
+        shell: pwsh
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if ("$env:WINDOWS_PFX_BASE64") {
+            "method=pfx"      | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } elseif ("$env:SIGNPATH_API_TOKEN") {
+            "method=signpath" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "method=skip"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+            Write-Warning "No Windows signing secrets configured; skipping."
+          }
+
+      - name: Download release artifacts
+        if: steps.detect.outputs.method != 'skip'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-*windows*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Sign with self-managed PFX
+        if: steps.detect.outputs.method == 'pfx'
+        shell: pwsh
+        env:
+          PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "code-sign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_BASE64))
+
+          $signtool = Get-ChildItem -Path "$env:ProgramFiles(x86)\Windows Kits\10\bin" `
+                       -Filter signtool.exe -Recurse | Sort-Object FullName -Descending |
+                       Select-Object -First 1
+          if (-not $signtool) { throw "signtool.exe not found" }
+
+          Get-ChildItem artifacts -Recurse -Include *.msi, *.exe | ForEach-Object {
+            & $signtool.FullName sign `
+              /fd SHA256 `
+              /tr http://timestamp.digicert.com `
+              /td SHA256 `
+              /f $pfxPath `
+              /p $env:PFX_PASSWORD `
+              $_.FullName
+            & $signtool.FullName verify /pa /v $_.FullName
+          }
+
+      - name: Sign with SignPath (OSS free tier)
+        if: steps.detect.outputs.method == 'signpath'
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: terminale
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: msi
+          github-artifact-name: artifacts-build-local-x86_64-pc-windows-msvc
+          wait-for-completion: true
+          output-artifact-directory: artifacts-signed
+
+      - name: Re-upload signed artifacts
+        if: steps.detect.outputs.method != 'skip'
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-signed-windows
+          path: |
+            artifacts/**/*.msi
+            artifacts/**/*.exe
+            artifacts-signed/**
+
+  notarize-macos:
+    name: Sign and notarize macOS artifacts
+    runs-on: macos-latest
+    steps:
+      - name: Detect secrets
+        id: detect
+        env:
+          APPLE_DEVELOPER_ID_INSTALLER_CERT_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT_BASE64 }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+        run: |
+          if [ -n "$APPLE_DEVELOPER_ID_INSTALLER_CERT_BASE64" ] && \
+             [ -n "$APPLE_TEAM_ID" ] && \
+             [ -n "$APPLE_NOTARY_APPLE_ID" ]; then
+            echo "method=full" >> "$GITHUB_OUTPUT"
+          else
+            echo "method=skip" >> "$GITHUB_OUTPUT"
+            echo "::warning::macOS signing/notarization secrets not configured; skipping."
+          fi
+
+      - name: Download release artifacts
+        if: steps.detect.outputs.method == 'full'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-build-local-*apple-darwin*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Import installer signing certificate
+        if: steps.detect.outputs.method == 'full'
+        env:
+          CERT_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT_BASE64 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER_CERT_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.APPLE_KEYCHAIN_PASSWORD || 'ci-temp' }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/signing.keychain-db"
+
+          echo "$CERT_BASE64" | base64 -D > "$RUNNER_TEMP/cert.p12"
+
+          security create-keychain  -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" \
+            -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d \")
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$RUNNER_TEMP/cert.p12"
+
+      - name: Re-sign and notarize each .pkg
+        if: steps.detect.outputs.method == 'full'
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_APP_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          IDENTITY="Developer ID Installer: ${APPLE_TEAM_ID}"
+
+          find artifacts -name "*.pkg" | while read -r pkg; do
+            echo "==> Signing $pkg"
+            productsign --sign "$IDENTITY" "$pkg" "${pkg}.signed"
+            mv "${pkg}.signed" "$pkg"
+
+            echo "==> Submitting $pkg for notarization"
+            xcrun notarytool submit "$pkg" \
+              --apple-id "$APPLE_NOTARY_APPLE_ID" \
+              --password "$APPLE_NOTARY_APP_PASSWORD" \
+              --team-id  "$APPLE_TEAM_ID" \
+              --wait
+
+            echo "==> Stapling notarization ticket onto $pkg"
+            xcrun stapler staple "$pkg"
+            xcrun stapler validate "$pkg"
+          done
+
+      - name: Re-upload signed and notarized artifacts
+        if: steps.detect.outputs.method == 'full'
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-signed-macos
+          path: artifacts/**/*.pkg
+
+  attest-checksums:
+    name: Attest artifact checksums (supply-chain provenance)
+    needs: [sign-windows, notarize-macos]
+    if: ${{ always() && (needs.sign-windows.result != 'failure' && needs.notarize-macos.result != 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      id-token: write
+      contents: read
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate provenance attestations
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            artifacts/**/*.msi
+            artifacts/**/*.pkg
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.exe

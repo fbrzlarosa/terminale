@@ -1,0 +1,22 @@
+# typos-cli configuration
+# https://github.com/crate-ci/typos
+
+[default]
+extend-ignore-identifiers-re = [
+    "[A-F0-9]{8}-[A-F0-9]{4}",  # UUID-like
+]
+
+[files]
+extend-exclude = [
+    "*.snap",
+    "target/**",
+    "fuzz/corpus/**",
+    "fuzz/artifacts/**",
+    "CHANGELOG.md",
+    "**/*.wgsl",
+]
+
+[default.extend-words]
+# Project-specific terms accepted by the spell checker.
+terminale = "terminale"
+crate = "crate"

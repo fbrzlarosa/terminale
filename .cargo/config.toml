@@ -1,0 +1,19 @@
+[alias]
+xtask = "run --package xtask --quiet --"
+ci = "xtask ci"
+fmt-check = "fmt --all -- --check"
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+test-all = "test --workspace --all-features"
+cov = "llvm-cov --workspace --lcov --output-path lcov.info"
+# Debug-mode dev loop: edit a .rs file, save, the binary auto-restarts.
+# Build is incremental + debug so each restart is 5-10s instead of 30s.
+dev = ["watch", "-x", "run -p terminale", "--watch", "crates", "--clear"]
+
+[build]
+incremental = true
+
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.'cfg(all(target_env = "musl", target_pointer_width = "64"))']
+rustflags = ["-C", "target-feature=-crt-static"]

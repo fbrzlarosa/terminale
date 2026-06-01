@@ -1,0 +1,256 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/terminale-core",
+    "crates/terminale-term",
+    "crates/terminale-render",
+    "crates/terminale-ui",
+    "crates/terminale-config",
+    "crates/terminale-ai",
+    "crates/terminale-ssh",
+    "crates/terminale-plugin",
+    "crates/terminale",
+    "xtask",
+]
+# Future crates (uncomment as milestones land):
+#   "crates/terminale-tmux-cc"   # v1.5 — tmux Control Mode integration
+#   "crates/terminale-ipc"       # v1.0 — multiplexer protocol
+#   "crates/terminale-sync"      # v2.0 — settings cloud sync
+default-members = ["crates/terminale"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+authors = ["terminale contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/fbrzlarosa/terminale"
+homepage = "https://stackbyte.dev/terminale"
+documentation = "https://stackbyte.dev/terminale"
+readme = "README.md"
+keywords = ["terminal", "tty", "emulator", "gpu", "cross-platform"]
+categories = ["command-line-utilities", "gui"]
+
+# Centralised lint policy — every crate opts in with `[lints] workspace = true`.
+# CI runs `clippy --all-targets --all-features -- -D warnings`, so anything
+# left at `warn` here must be genuinely actionable. We keep the high-signal
+# lints (missing docs, clippy::pedantic) and `allow` the subjective/noisy
+# pedantic style lints that flag non-issues in this codebase.
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Style/subjective pedantic lints we deliberately accept project-wide:
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+trivially_copy_pass_by_ref = "allow"
+many_single_char_names = "allow"
+match_same_arms = "allow"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_lossless = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_fields_in_debug = "allow"
+unnested_or_patterns = "allow"
+needless_raw_string_hashes = "allow"
+similar_names = "allow"
+items_after_statements = "allow"
+unreadable_literal = "allow"
+struct_field_names = "allow"
+unused_self = "allow"
+enum_glob_use = "allow"
+needless_pass_by_value = "allow"
+borrow_as_ptr = "allow"
+ptr_as_ptr = "allow"
+ptr_cast_constness = "allow"
+match_wildcard_for_single_variants = "allow"
+type_complexity = "allow"
+ref_option = "allow"
+default_trait_access = "allow"
+manual_let_else = "allow"
+assigning_clones = "allow"
+format_push_string = "allow"
+
+[workspace.dependencies]
+# Core
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+color-eyre = "0.6"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+
+# Terminal layer
+portable-pty = "0.8"
+alacritty_terminal = "0.24"
+unicode-width = "0.1"
+bytes = { version = "1", features = ["serde"] }
+
+# Rendering
+wgpu = "22"
+winit = "0.30"
+cosmic-text = "0.12"
+swash = "0.1"
+glyphon = "0.6"
+# Pinned to egui's version so the bundled symbol fonts (NotoEmoji,
+# emoji-icon-font) we feed into glyphon match exactly what the egui
+# sub-windows already render — icons look identical in chrome and panels.
+epaint_default_fonts = "=0.29.1"
+bytemuck = { version = "1", features = ["derive"] }
+raw-window-handle = "0.6"
+pollster = "0.4"
+parking_lot = "0.12"
+
+# egui-based settings panel
+egui = "0.29"
+egui-wgpu = "0.29"
+egui-winit = { version = "0.29", default-features = false, features = ["links"] }
+
+# Config
+toml = "0.8"
+figment = { version = "0.10", features = ["toml", "env"] }
+schemars = "0.8"
+directories = "5"
+# OS-keychain credential storage (Windows Credential Manager / macOS Keychain /
+# Linux Secret Service). Pinned to keyring 3.x — the stable, widely-vetted
+# Entry API (the 4.x line is a brand-new keyring-core rewrite). Per-platform
+# native features are selected with `[target.'cfg(...)'.dependencies]` so each
+# OS only pulls the backend it needs; the Linux Secret Service backend uses the
+# synchronous dbus path (`sync-secret-service` + `crypto-rust`) to avoid an
+# async runtime in this otherwise-sync crate.
+keyring = { version = "3", default-features = false }
+
+# Encrypted settings backup. RustCrypto, dual MIT/Apache: Argon2id KDF over a
+# user passphrase feeds an XChaCha20-Poly1305 AEAD (24-byte nonce, so no
+# nonce-reuse risk) for the import/export file.
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+
+# Native file open/save dialogs for the Settings import/export. Sync API. On
+# Linux the XDG desktop portal backend avoids a GTK link; on Windows it's the
+# OS common-controls dialog (windows-sys, already in our tree).
+rfd = { version = "0.15", default-features = false, features = [
+    "xdg-portal",
+    "common-controls-v6",
+] }
+
+# OS integration
+global-hotkey = "0.5"
+arboard = "3"
+open = "5"
+# Cross-platform desktop notifications (Windows toast / macOS NSUserNotification /
+# Linux libnotify). On Windows it uses the Win32 ShellNotify API; on Linux it uses
+# DBus (the `d` feature); on macOS it calls the NSUserNotificationCenter API.
+notify-rust = "4"
+notify = { version = "6" }
+regex = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+futures-util = "0.3"
+async-trait = "0.1"
+serde_json = "1"
+russh = "0.45"
+russh-keys = "0.45"
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+resvg = { version = "0.43", default-features = false }
+usvg = { version = "0.43", default-features = false }
+tiny-skia = "0.11"
+# Image decoding for background-image feature (PNG, JPEG, WebP, GIF first frame).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
+
+# Test & quality (dev-dependencies)
+insta = { version = "1", features = ["yaml"] }
+proptest = "1"
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3"
+
+# Internal crates
+terminale-core = { path = "crates/terminale-core", version = "0.1.0" }
+terminale-term = { path = "crates/terminale-term", version = "0.1.0" }
+terminale-render = { path = "crates/terminale-render", version = "0.1.0" }
+terminale-ui = { path = "crates/terminale-ui", version = "0.1.0" }
+terminale-config = { path = "crates/terminale-config", version = "0.1.0" }
+terminale-ai = { path = "crates/terminale-ai", version = "0.1.0" }
+terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.0" }
+terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.0" }
+
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
+
+[profile.bench]
+lto = "thin"
+codegen-units = 1
+
+# The profile that 'dist' will build with for releases.
+[profile.dist]
+inherits = "release"
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
+
+# Config for 'dist'
+[workspace.metadata.dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.28.0"
+# Where to host releases
+hosting = "github"
+# CI backends to support
+ci = "github"
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# The installers to generate for each app
+installers = ["shell", "powershell", "homebrew", "msi", "pkg"]
+# A GitHub repo to push Homebrew formulas to
+tap = "fbrzlarosa/homebrew-terminale"
+# Customize the Homebrew formula name
+formula = "terminale"
+# The archive format to use for windows builds (defaults .zip)
+windows-archive = ".zip"
+# The archive format to use for non-windows builds (defaults .tar.xz)
+unix-archive = ".tar.gz"
+# Whether failing tasks should make us give up on all other tasks
+fail-fast = false
+# Whether to enable GitHub Attestations
+github-attestations = true
+# Publish jobs to run in CI. `./sign-and-notarize` references
+# .github/workflows/sign-and-notarize.yml which signs Windows + notarizes
+# macOS artifacts when the proper secrets are configured.
+publish-jobs = ["homebrew", "./sign-and-notarize"]
+# Path that installers should place binaries in
+install-path = "CARGO_HOME"
+# Whether to install an updater program
+install-updater = false
+
+# Pin the Linux build runners. cargo-dist 0.28 defaults the Linux matrix to the
+# `ubuntu-20.04` image, which GitHub retired — without this override the release
+# build would fail to start. Keys are target triples, values are runner labels.
+[workspace.metadata.dist.github-custom-runners]
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
+aarch64-unknown-linux-gnu = "ubuntu-22.04"
+
+# macOS PKG configuration — required to actually build a .pkg.
+[workspace.metadata.dist.mac-pkg-config]
+identifier = "dev.stackbyte.terminale"
+install-location = "/Applications"
+
+

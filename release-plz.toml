@@ -1,0 +1,32 @@
+# release-plz config — automated changelog + version bump on merge to main
+# https://release-plz.dev
+
+[workspace]
+allow_dirty = false
+changelog_update = true
+git_release_enable = true
+git_tag_enable = true
+publish = false # public release via cargo-dist on tag, not crates.io for now
+changelog_path = "CHANGELOG.md"
+
+[changelog]
+header = """# Changelog
+
+All notable changes to `terminale` are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+"""
+
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^perf", group = "Performance" },
+    { message = "^docs", group = "Documentation" },
+    { message = "^refactor", group = "Changed" },
+    { message = "^test", group = "Tests" },
+    { message = "^chore", skip = true },
+    { message = "^ci", skip = true },
+    { message = "^style", skip = true },
+]

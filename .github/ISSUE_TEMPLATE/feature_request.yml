@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a new feature or improvement
+title: "[feat] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the user pain or workflow this would address.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would the feature look like? Mock-up, config keys, CLI flags…
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches you considered and why they fall short.
+
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Target milestone
+      description: Which release would this fit into?
+      options:
+        - v0.5 — UX (tabs, themes, Quake, tmux compat)
+        - v1.0 — Windowing + remote (drag-out, SSH, multiplexer)
+        - v1.5 — tmux Control Mode
+        - v2.0 — AI + plugin + sync
+        - Unknown / no preference
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: This aligns with the project goal of a native, lightweight, cross-platform terminal (no webview-based components)
+          required: true
+        - label: I searched existing issues / discussions and didn't find a duplicate
+          required: true
