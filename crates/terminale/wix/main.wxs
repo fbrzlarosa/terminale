@@ -138,9 +138,9 @@
                     <Shortcut Id='StartMenuTerminale'
                               Name='terminale'
                               Description='A native, cross-platform, GPU-accelerated terminal'
-                              Target='[#exe0]'
+                              Target='[Bin]terminale.exe'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKMU' Key='Software\terminale\shortcuts' Name='startmenu' Type='integer' Value='1' KeyPath='yes'/>
+                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='startmenu' Type='integer' Value='1' KeyPath='yes'/>
                 </Component>
             </Directory>
 
@@ -150,9 +150,9 @@
                     <Shortcut Id='DesktopTerminale'
                               Name='terminale'
                               Description='A native, cross-platform, GPU-accelerated terminal'
-                              Target='[#exe0]'
+                              Target='[Bin]terminale.exe'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKMU' Key='Software\terminale\shortcuts' Name='desktop' Type='integer' Value='1' KeyPath='yes'/>
+                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='desktop' Type='integer' Value='1' KeyPath='yes'/>
                 </Component>
             </Directory>
         </Directory>
