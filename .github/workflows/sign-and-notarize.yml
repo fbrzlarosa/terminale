@@ -104,7 +104,7 @@ jobs:
 
       - name: Re-upload signed artifacts
         if: steps.detect.outputs.method != 'skip'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-signed-windows
           path: |
@@ -191,7 +191,7 @@ jobs:
 
       - name: Re-upload signed and notarized artifacts
         if: steps.detect.outputs.method == 'full'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts-signed-macos
           path: artifacts/**/*.pkg
