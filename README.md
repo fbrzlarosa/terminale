@@ -174,7 +174,19 @@ irm https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-i
 | macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.pkg` |
 | Linux x86_64 | `terminale-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 
-<sub>Binaries are published unsigned. On first launch macOS Gatekeeper and Windows SmartScreen show the usual "unidentified developer" prompt — this is expected for open-source builds; open it from the right-click menu (macOS) or "More info → Run anyway" (Windows).</sub>
+> **Opening unsigned builds.** terminale ships **unsigned** (open-source — no paid
+> Apple/Windows code-signing certificate). The first launch triggers a one-time
+> security prompt. This is expected; here's how to get past it:
+>
+> - **macOS** — Gatekeeper says *"…cannot be opened because Apple cannot check it
+>   for malicious software."* Clear the download quarantine flag, then open:
+>   ```sh
+>   xattr -d com.apple.quarantine ~/Downloads/terminale-*-apple-darwin.pkg
+>   ```
+>   Or: try to open it once, then approve it under **System Settings → Privacy &
+>   Security → "Open Anyway"**. The **Homebrew** install below sidesteps the prompt.
+> - **Windows** — SmartScreen shows *"Windows protected your PC."* Click **"More
+>   info" → "Run anyway."**
 
 **Homebrew (macOS + Linux)**
 
