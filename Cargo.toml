@@ -98,7 +98,7 @@ bytes = { version = "1", features = ["serde"] }
 # Rendering
 wgpu = "22"
 winit = "0.30"
-cosmic-text = "0.12"
+cosmic-text = "0.19"
 swash = "0.1"
 glyphon = "0.6"
 # Pinned to egui's version so the bundled symbol fonts (NotoEmoji,
