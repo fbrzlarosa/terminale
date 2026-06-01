@@ -96,7 +96,7 @@ unicode-width = "0.1"
 bytes = { version = "1", features = ["serde"] }
 
 # Rendering
-wgpu = "22"
+wgpu = "29"
 winit = "0.30"
 cosmic-text = "0.12"
 swash = "0.1"
