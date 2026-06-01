@@ -72,7 +72,7 @@ toml.workspace = true
 #   Win32_Devices_Display      → QueryDisplayConfig, DisplayConfigGetDeviceInfo
 #   Win32_Graphics_Gdi         → EnumDisplayMonitors, GetMonitorInfoW, MONITORINFO
 #   Win32_UI_WindowsAndMessaging → MONITORINFOF_PRIMARY (lives here, NOT in Gdi)
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Devices_Display",
     "Win32_Graphics_Gdi",
