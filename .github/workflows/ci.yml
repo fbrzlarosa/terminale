@@ -13,6 +13,8 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   RUST_BACKTRACE: short
+  # Opt JS-based actions into Node 24 now (Node 20 is deprecated on runners).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 concurrency:
   group: ci-${{ github.ref }}

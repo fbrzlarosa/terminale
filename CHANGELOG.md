@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.1]
+
+### Added
+- Windows installer registers a Start-Menu shortcut (so terminale is searchable from the
+  Start menu) and an optional, on-by-default Desktop shortcut
+- Application icon is embedded in `terminale.exe`, so the taskbar, Alt-Tab, and the
+  MSI/Start-Menu/Desktop shortcuts show the brand glyph
+- Linux: on launch, terminale registers a freedesktop `.desktop` entry and icon under
+  `$XDG_DATA_HOME` so it appears in the application menu and launcher search. New
+  `integration.desktop_entry` setting (Settings → Desktop integration) plus
+  `--install-desktop-entry` / `--uninstall-desktop-entry` CLI flags
+- `xtask gen-icons` regenerates the `.ico`/`.icns` from the source `icon.svg`
+
+### Changed
+- Slimmer release pipeline: dropped artifact code-signing/notarization and build
+  attestations (unsigned open-source binaries); build runners pinned to current images
+- CI/release JS actions opted into Node 24 ahead of the Node 20 runner deprecation
+
 ## [0.1.0]
 
 First public pre-alpha. See README for status.
@@ -37,5 +55,6 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/fbrzlarosa/terminale/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/fbrzlarosa/terminale/releases/tag/v0.1.0
