@@ -27,7 +27,7 @@ image.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
-ttf-parser = "0.20"
+ttf-parser = "0.25"
 
 [lints]
 workspace = true

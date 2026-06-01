@@ -5605,7 +5605,7 @@ dependencies = [
  "terminale-term",
  "thiserror 1.0.69",
  "tracing",
- "ttf-parser 0.20.0",
+ "ttf-parser 0.25.1",
  "wgpu",
 ]
 
