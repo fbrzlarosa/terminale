@@ -21,7 +21,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
-## [0.1.0] — 2026-06-01
+## [0.1.0]
 
 First public pre-alpha. See README for status.
 
