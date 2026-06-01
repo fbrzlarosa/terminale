@@ -151,7 +151,7 @@ open = "5"
 # Linux libnotify). On Windows it uses the Win32 ShellNotify API; on Linux it uses
 # DBus (the `d` feature); on macOS it calls the NSUserNotificationCenter API.
 notify-rust = "4"
-notify = { version = "6" }
+notify = { version = "8" }
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
