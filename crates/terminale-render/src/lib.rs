@@ -642,6 +642,9 @@ pub struct Renderer {
     /// Status-bar content set by the App each refresh. `None` = bar disabled
     /// (the layout reserves no space for it).
     status_bar: Option<StatusBarContent>,
+    /// Bottom resource-indicator strip content. `None` = disabled (no space
+    /// reserved). Always sits at the very bottom, below a bottom status bar.
+    resource_bar: Option<ResourceBarContent>,
     /// Whether the tab bar is shown at all. When `false` the bar is hidden
     /// completely and the space is reclaimed for the terminal grid.
     tab_bar_enabled: bool,
@@ -703,6 +706,21 @@ pub struct StatusBarContent {
     pub right: String,
     /// Position: `true` = bottom, `false` = top.
     pub at_bottom: bool,
+}
+
+/// Height of the resource-indicator strip in logical pixels.
+pub const RESOURCE_BAR_HEIGHT: f32 = 26.0;
+
+/// Runtime content of the bottom resource-indicator strip: live CPU and memory
+/// percentages plus the GPU adapter label. Drawn as pixel-art segmented meters
+/// in a reserved strip at the very bottom of the window (the grid shrinks to make
+/// room, so it never overlaps terminal content).
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceBarContent {
+    /// Global CPU utilisation, percent `[0, 100]`.
+    pub cpu_pct: f32,
+    /// Memory used as a percent of total, `[0, 100]`.
+    pub mem_pct: f32,
 }
 
 /// Description of one pane to render inside the active tab's body. A tab
@@ -1865,6 +1883,7 @@ impl Renderer {
             label_overlay_dim: 0.45,
             snap_chooser: None,
             status_bar: None,
+            resource_bar: None,
             tab_bar_enabled: true,
             tab_bar_placement: TabBarPlacement::Top,
             tab_bar_hide_if_single: false,
@@ -2050,6 +2069,7 @@ impl Renderer {
             label_overlay_dim: 0.45,
             snap_chooser: None,
             status_bar: None,
+            resource_bar: None,
             tab_bar_enabled: true,
             tab_bar_placement: TabBarPlacement::Top,
             tab_bar_hide_if_single: false,
@@ -2246,6 +2266,7 @@ impl Renderer {
             label_overlay_dim: 0.45,
             snap_chooser: None,
             status_bar: None,
+            resource_bar: None,
             tab_bar_enabled: true,
             tab_bar_placement: TabBarPlacement::Top,
             tab_bar_hide_if_single: false,
@@ -2513,13 +2534,20 @@ impl Renderer {
         self.suggestion_bar.is_some()
     }
 
-    /// Bottom inset (logical px) consumed by a bottom-anchored status bar, so
-    /// the suggestion bar sits just above it rather than on top of it.
+    /// Bottom inset (logical px) consumed by a bottom-anchored status bar and
+    /// the resource-indicator strip, so the suggestion bar sits just above them
+    /// rather than on top.
     fn suggestion_bottom_inset(&self) -> f32 {
-        match &self.status_bar {
+        let sb = match &self.status_bar {
             Some(sb) if sb.at_bottom => STATUS_BAR_HEIGHT,
             _ => 0.0,
-        }
+        };
+        let res = if self.resource_bar.is_some() {
+            RESOURCE_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        sb + res
     }
 
     /// Hit-test a physical-pixel click against the suggestion bar's buttons.
@@ -2707,6 +2735,120 @@ impl Renderer {
                 Shaping::Basic,
             );
             texts.push((buf, [cx * scale, ty]));
+        }
+
+        texts
+    }
+
+    /// Build the bottom resource-indicator strip: a flat panel with pixel-art
+    /// segmented meters for CPU and memory, plus the GPU adapter label. Pushes
+    /// the panel + meter quads here and returns the label/percentage text
+    /// buffers for the shared text pass. No-op while the strip is disabled.
+    fn build_resource_bar(&mut self, scale: f32, quads: &mut Vec<Quad>) -> Vec<(Buffer, [f32; 2])> {
+        let mut texts: Vec<(Buffer, [f32; 2])> = Vec::new();
+        let Some(content) = self.resource_bar else {
+            return texts;
+        };
+
+        let h = RESOURCE_BAR_HEIGHT * scale;
+        let w = self.config.width as f32;
+        let top = self.config.height as f32 - h;
+        let hairline = (1.0 * scale).max(1.0);
+        // Flat panel + top accent hairline (matches the suggestion bar look).
+        quads.push(Quad::new([0.0, top], [w, h], [0x12, 0x15, 0x20], 0.97));
+        quads.push(Quad::new(
+            [0.0, top],
+            [w, hairline],
+            [0x2d, 0x3b, 0x63],
+            0.9,
+        ));
+
+        let fs = 11.0 * scale;
+        let metrics = Metrics::new(fs, fs * 1.2);
+        let ty = top + (h - fs * 1.15) * 0.5;
+        let char_w = (fs * 0.6).max(1.0);
+        let dim = GlyphonColor::rgb(0x8a, 0x97, 0xbf);
+        let bright = GlyphonColor::rgb(0xe6, 0xea, 0xf8);
+
+        // Pixel-art segmented meter geometry.
+        const SEGMENTS: usize = 12;
+        let seg_w = 5.0 * scale;
+        let seg_gap = 2.0 * scale;
+        let seg_h = 10.0 * scale;
+        let seg_y = top + (h - seg_h) * 0.5;
+
+        let mut x = 12.0 * scale;
+        for (label, pct) in [("CPU", content.cpu_pct), ("RAM", content.mem_pct)] {
+            let pct = pct.clamp(0.0, 100.0);
+            // Label.
+            let mut buf = Buffer::new(&mut self.font_system, metrics);
+            buf.set_wrap(&mut self.font_system, Wrap::None);
+            buf.set_size(&mut self.font_system, Some(w), Some(h));
+            buf.set_text(
+                &mut self.font_system,
+                label,
+                Attrs::new().family(Family::Monospace).color(dim),
+                Shaping::Basic,
+            );
+            texts.push((buf, [x, ty]));
+            x += 3.0 * char_w + 6.0 * scale;
+
+            // Segmented bar: filled segments coloured by load level.
+            let filled = ((pct / 100.0) * SEGMENTS as f32)
+                .round()
+                .clamp(0.0, SEGMENTS as f32) as usize;
+            let fill_col = if pct >= 85.0 {
+                [0xff, 0x6b, 0x6b]
+            } else if pct >= 60.0 {
+                [0xff, 0xcc, 0x66]
+            } else {
+                [0x7c, 0xe0, 0x9c]
+            };
+            for i in 0..SEGMENTS {
+                let sx = x + i as f32 * (seg_w + seg_gap);
+                let col = if i < filled {
+                    fill_col
+                } else {
+                    [0x30, 0x37, 0x4c]
+                };
+                quads.push(Quad::new([sx, seg_y], [seg_w, seg_h], col, 1.0));
+            }
+            x += SEGMENTS as f32 * (seg_w + seg_gap) + 6.0 * scale;
+
+            // Percentage.
+            let pct_str = format!("{pct:>3.0}%");
+            let mut buf = Buffer::new(&mut self.font_system, metrics);
+            buf.set_wrap(&mut self.font_system, Wrap::None);
+            buf.set_size(&mut self.font_system, Some(w), Some(h));
+            buf.set_text(
+                &mut self.font_system,
+                &pct_str,
+                Attrs::new().family(Family::Monospace).color(bright),
+                Shaping::Basic,
+            );
+            texts.push((buf, [x, ty]));
+            x += 4.0 * char_w + 18.0 * scale;
+        }
+
+        // GPU adapter label (no live meter — utilisation isn't cross-platform).
+        // Read straight from our own wgpu adapter.
+        {
+            let info = self.adapter.get_info();
+            let gpu = format!("GPU {} ({:?})", info.name, info.backend);
+            let mut buf = Buffer::new(&mut self.font_system, metrics);
+            buf.set_wrap(&mut self.font_system, Wrap::None);
+            buf.set_size(
+                &mut self.font_system,
+                Some((w - x - 12.0 * scale).max(char_w)),
+                Some(h),
+            );
+            buf.set_text(
+                &mut self.font_system,
+                &gpu,
+                Attrs::new().family(Family::Monospace).color(dim),
+                Shaping::Basic,
+            );
+            texts.push((buf, [x, ty]));
         }
 
         texts
@@ -3858,7 +4000,12 @@ impl Renderer {
         } else {
             0.0
         };
-        self.padding_px + sb_h + tab_h
+        let res_h = if self.resource_bar.is_some() {
+            RESOURCE_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        self.padding_px + sb_h + tab_h + res_h
     }
 
     /// Convert a window pixel area to terminal cell dimensions.
@@ -4761,6 +4908,20 @@ impl Renderer {
     /// reserves [`STATUS_BAR_HEIGHT`] logical pixels at the configured edge.
     pub fn set_status_bar(&mut self, content: Option<StatusBarContent>) {
         self.status_bar = content;
+    }
+
+    /// Set or clear the bottom resource-indicator strip. Pass `None` to hide it
+    /// and reclaim [`RESOURCE_BAR_HEIGHT`] logical pixels for the grid.
+    pub fn set_resource_bar(&mut self, content: Option<ResourceBarContent>) {
+        self.resource_bar = content;
+    }
+
+    /// Whether the resource-indicator strip is currently shown (and thus
+    /// reserving bottom space). Used to detect enable/disable transitions that
+    /// require a grid reflow.
+    #[must_use]
+    pub fn resource_bar_enabled(&self) -> bool {
+        self.resource_bar.is_some()
     }
 
     /// Bottom of the terminal body area in **physical** pixels.
@@ -5911,6 +6072,9 @@ impl Renderer {
         // text returned for the prepare pass below). No-op while hidden or
         // while the search bar owns the bottom.
         let suggestion_text_buffers = self.build_suggestion_bar(scale, &mut quads);
+
+        // ── Bottom resource-indicator strip (CPU/RAM/GPU, pixel-art) ──
+        let resource_text_buffers = self.build_resource_bar(scale, &mut quads);
 
         // ── Hover tooltip (URL preview etc.) ─────────────────────────
         let mut tooltip_text_buffer: Option<(Buffer, [f32; 2])> = None;
@@ -7301,6 +7465,16 @@ impl Renderer {
             }))
             // Suggestion-bar text — positions already physical px.
             .chain(suggestion_text_buffers.iter().map(|(buf, pos)| TextArea {
+                buffer: buf,
+                left: pos[0],
+                top: pos[1],
+                scale: self.scale_factor,
+                bounds: TextBounds::default(),
+                default_color: GlyphonColor::rgb(0xe6, 0xea, 0xf8),
+                custom_glyphs: &[],
+            }))
+            // Resource-strip text — positions already physical px.
+            .chain(resource_text_buffers.iter().map(|(buf, pos)| TextArea {
                 buffer: buf,
                 left: pos[0],
                 top: pos[1],

@@ -21,6 +21,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.5]
+
+### Added
+- Pixel-art resource-indicator strip at the bottom of the window: segmented CPU%
+  and RAM% meters (coloured by load level) plus the GPU adapter name/backend.
+  Lives in a reserved band so the grid shrinks to fit and it never overlaps
+  terminal content; a bottom suggestion/status bar floats above it. New
+  `[resource_indicators]` config (default on) and a toggle in
+  Settings → Appearance. GPU utilisation% isn't available cross-platform, so the
+  GPU slot is a label rather than a meter.
+
 ## [0.1.4]
 
 ### Added
@@ -89,7 +100,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/fbrzlarosa/terminale/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/fbrzlarosa/terminale/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/fbrzlarosa/terminale/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...v0.1.2

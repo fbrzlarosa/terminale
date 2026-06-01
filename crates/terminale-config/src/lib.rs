@@ -38,6 +38,7 @@ pub mod plugins;
 pub mod profiles_config;
 pub mod quake;
 pub mod quick_select;
+pub mod resource_indicators;
 pub mod snippets;
 pub mod status_bar;
 pub mod terminal;
@@ -80,6 +81,7 @@ pub use plugins::PluginsConfig;
 pub use profiles_config::ProfilesConfig;
 pub use quake::{quake_dock_rect, QuakeAnimation, QuakeConfig, QuakeDisplay, QuakeEdge};
 pub use quick_select::{quick_select_validate_alphabet, QuickSelectConfig};
+pub use resource_indicators::ResourceIndicatorsConfig;
 pub use snippets::Snippet;
 pub use status_bar::{StatusBarConfig, StatusBarPosition, StatusSegment};
 pub use terminal::{
@@ -206,6 +208,8 @@ pub struct Config {
     /// Desktop / OS integration. On Linux, controls whether the binary
     /// registers its own `.desktop` application-menu entry on launch.
     pub integration: IntegrationConfig,
+    /// Bottom resource-indicator strip (CPU/RAM/GPU, pixel-art).
+    pub resource_indicators: ResourceIndicatorsConfig,
 }
 
 impl Config {
@@ -236,6 +240,7 @@ impl Config {
         self.directory_jump.validate()?;
         self.ai.validate()?;
         self.integration.validate()?;
+        self.resource_indicators.validate()?;
         Ok(())
     }
 

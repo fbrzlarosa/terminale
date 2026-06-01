@@ -1294,6 +1294,37 @@ impl SettingsWindow {
             );
         });
 
+        ui.add_space(6.0);
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Resource indicators");
+                let on = self.config.resource_indicators.enabled;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.resource_indicators.enabled = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Resource indicators",
+            );
+            sublabel(
+                ui,
+                "Pixel-art CPU / RAM meters plus the GPU name, in a strip at the bottom of the \
+                 window. The grid shrinks slightly to make room, so it never overlaps content.",
+            );
+        });
+
         if dirty {
             self.dirty = true;
         }

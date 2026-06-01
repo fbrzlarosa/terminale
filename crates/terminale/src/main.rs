@@ -29,6 +29,7 @@ mod panes;
 mod password_prompt;
 mod paste_guard;
 mod quick_select;
+mod resources;
 mod settings_window;
 mod shortcuts;
 mod ssh_tabs;
@@ -583,6 +584,7 @@ fn main() -> Result<()> {
         profile: chosen_profile,
         shell_override: cli.shell,
         windows: Vec::new(),
+        resource_sampler: resources::ResourceSampler::new(),
         settings: None,
         context_menu: None,
         password_prompt: None,
@@ -856,6 +858,9 @@ struct TerminaleApp {
     /// Every open terminal window. The first is created in `resumed`; tab
     /// tear-out appends new ones. The process exits when this drops empty.
     windows: Vec<TermWindow>,
+    /// Samples global CPU + memory for the bottom resource-indicator strip.
+    /// Shared across all windows (system resources are process-global).
+    resource_sampler: resources::ResourceSampler,
     settings: Option<SettingsWindow>,
     context_menu: Option<ContextMenuWindow>,
     /// In-window SSH credential prompt, open when a password host is opened
@@ -7821,6 +7826,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // When `link_hover_delay_ms > 0`, the CursorMoved handler defers the
         // tooltip. Here we check whether the dwell period has elapsed and, if
         // so, show the tooltip and schedule a redraw.
+        // Sample CPU/memory once per wake (cheap, 1s-throttled internally);
+        // applied to each window's resource strip in the loop below.
+        let res_enabled = self.config.resource_indicators.enabled;
+        let res_changed = self.resource_sampler.tick(std::time::Instant::now());
+        let res_sample = self.resource_sampler.sample();
+
         for state in &mut self.windows {
             if let Some((ref url, started_at, anchor)) = state.link_hover_start {
                 let delay_ms = u64::from(state.link_hover_delay_ms);
@@ -8435,6 +8446,34 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     });
                 }
             }
+            // ── Bottom resource-indicator strip (CPU/RAM/GPU) ────────────────
+            // Apply the shared sample to this window. Reflow only on the
+            // enable/disable transition (the strip changes the grid height);
+            // a plain value update just redraws.
+            {
+                let was_on = state.renderer.resource_bar_enabled();
+                if res_enabled {
+                    state
+                        .renderer
+                        .set_resource_bar(Some(terminale_render::ResourceBarContent {
+                            cpu_pct: res_sample.cpu_pct,
+                            mem_pct: res_sample.mem_pct,
+                        }));
+                    if !was_on {
+                        let size = state.window.inner_size();
+                        resize_all_tabs(state, size.width, size.height);
+                        state.window.request_redraw();
+                    } else if res_changed {
+                        state.window.request_redraw();
+                    }
+                } else if was_on {
+                    state.renderer.set_resource_bar(None);
+                    let size = state.window.inner_size();
+                    resize_all_tabs(state, size.width, size.height);
+                    state.window.request_redraw();
+                }
+            }
+
             // ── Proactive suggestion bar — per-window debounce ───────────────
             // Sync the enabled mirror and schedule loading-animation redraws.
             // Index is collected here; the actual spawn happens after the loop
