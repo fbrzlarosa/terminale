@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.3]
+
+### Fixed
+- Selection no longer triggers from plain cursor motion: drag-select now requires
+  the left button to actually be held, fixing a macOS trackpad case where a
+  stale press turned movement into a runaway text selection
+
 ## [0.1.2]
 
 ### Fixed
@@ -67,6 +74,7 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/fbrzlarosa/terminale/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/fbrzlarosa/terminale/releases/tag/v0.1.1
