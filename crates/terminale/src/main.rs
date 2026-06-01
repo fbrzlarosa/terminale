@@ -448,6 +448,19 @@ fn current_os_modifiers() -> ModifiersState {
     )
 }
 
+/// macOS: is the primary (left) mouse/trackpad button physically down *right
+/// now*, per the OS? winit can silently drop a trackpad button-release (e.g.
+/// when focus changes mid-gesture), leaving our tracked `held_button` stuck
+/// `Some(Left)` so plain cursor motion is misread as a drag-selection. Querying
+/// `NSEvent +pressedMouseButtons` (bit 0 = primary button) gives the ground
+/// truth so we can recover. Cheap state read; safe to call from the main thread.
+#[cfg(target_os = "macos")]
+fn macos_left_button_down() -> bool {
+    use objc2::{class, msg_send};
+    let buttons: usize = unsafe { msg_send![class!(NSEvent), pressedMouseButtons] };
+    buttons & 1 != 0
+}
+
 fn main() -> Result<()> {
     #[cfg(windows)]
     attach_parent_console();
@@ -6295,6 +6308,16 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     }
                     refresh_quake_last_monitor(state);
                 }
+                // Losing focus ends any in-progress mouse gesture: a drag-select
+                // can't continue in an unfocused window, and the button-release
+                // is the event most likely to be delivered elsewhere (a classic
+                // way `held_button` gets stuck on macOS). Clear the gesture state
+                // so motion after refocus isn't misread as a selection.
+                if !focused {
+                    state.held_button = None;
+                    state.selecting = false;
+                    state.selection_press_px = None;
+                }
                 // Auto-hide on focus loss when the Quake window loses focus
                 // (only in dock mode, never free-floating). Flag here +
                 // act after the match because `self.config.quake` and
@@ -6510,7 +6533,19 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // leaving a stale `selection_press_px` that previously turned
                 // plain cursor motion into a runaway selection ("it selects as
                 // soon as I move/lift my finger"). Gate on the tracked button.
-                let left_held = state.held_button == Some(winit::event::MouseButton::Left);
+                // `mut` is only taken on macOS (the self-heal below); elsewhere
+                // the binding is never reassigned.
+                #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+                let mut left_held = state.held_button == Some(winit::event::MouseButton::Left);
+                // macOS self-heal: if we *think* the button is held but the OS
+                // says it isn't, winit dropped the release — drop the stale flag
+                // so motion stops being misread as a drag. Only queried when the
+                // tracked state claims "held", so it never runs on plain motion.
+                #[cfg(target_os = "macos")]
+                if left_held && !macos_left_button_down() {
+                    state.held_button = None;
+                    left_held = false;
+                }
                 if !left_held {
                     state.selection_press_px = None;
                     state.selecting = false;

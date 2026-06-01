@@ -2763,10 +2763,18 @@ impl Renderer {
             0.9,
         ));
 
-        let fs = 11.0 * scale;
-        let metrics = Metrics::new(fs, fs * 1.2);
-        let ty = top + (h - fs * 1.15) * 0.5;
-        let char_w = (fs * 0.6).max(1.0);
+        // Font size is LOGICAL: glyphon's `TextArea.scale` (= scale_factor)
+        // multiplies it up to physical pixels at render time. Passing a
+        // pre-scaled size here double-applied the scale, so on HiDPI/Retina
+        // (scale 2) the labels rendered ~2x too big and overflowed the strip
+        // (it looked fine on Windows/Linux at scale 1). Keep the *geometry*
+        // below in physical px, but derive the on-screen text metrics from the
+        // physical rendered height `fs_px`.
+        let fs_logical = 11.0;
+        let metrics = Metrics::new(fs_logical, fs_logical * 1.2);
+        let fs_px = fs_logical * scale;
+        let ty = top + (h - fs_px * 1.15) * 0.5;
+        let char_w = (fs_px * 0.6).max(1.0);
         let dim = GlyphonColor::rgb(0x8a, 0x97, 0xbf);
         let bright = GlyphonColor::rgb(0xe6, 0xea, 0xf8);
 

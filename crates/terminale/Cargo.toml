@@ -88,5 +88,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_Input_KeyboardAndMouse",
 ] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Read the OS's real mouse-button state (NSEvent +pressedMouseButtons) so a
+# dropped trackpad button-release can't leave a stale "left held" flag that
+# turns plain cursor motion into a runaway selection. objc2 0.6 is already in
+# the tree (via arboard); we only call one class method, no typed AppKit
+# bindings needed.
+objc2 = "0.6"
+
 [lints]
 workspace = true

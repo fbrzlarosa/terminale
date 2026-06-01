@@ -21,6 +21,21 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+### Fixed
+- macOS: the Settings window no longer pegs a CPU core while open. The custom
+  title bar called `is_maximized()` every frame (which on macOS rebuilds the
+  AppKit theme frame) and the content scroll area requested a repaint forever;
+  both are fixed (~105% → ~1% CPU at idle)
+- macOS trackpad: plain cursor motion is no longer misread as a text selection.
+  A dropped trackpad button-release could leave a stale "left held" flag; we now
+  confirm against the OS's real button state and clear it on focus loss
+- Trackpad scrolling is no longer ~3× too fast and chunky: the per-notch
+  rows-per-wheel-click multiplier is applied only to mouse-wheel notches, while a
+  trackpad's continuous pixel deltas map smoothly to rows
+- macOS: the bottom CPU/RAM/GPU resource strip rendered ~2× too large on
+  Retina/HiDPI (its label font was pre-scaled and then scaled again by the text
+  renderer); it now uses the same logical-size convention as the other bars
+
 ## [0.1.6]
 
 ### Changed

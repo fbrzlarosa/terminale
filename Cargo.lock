@@ -5532,6 +5532,7 @@ dependencies = [
  "global-hotkey",
  "notify",
  "notify-rust",
+ "objc2 0.6.4",
  "open",
  "parking_lot",
  "pollster",
