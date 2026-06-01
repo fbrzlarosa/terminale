@@ -100,7 +100,7 @@ wgpu = "22"
 winit = "0.30"
 cosmic-text = "0.12"
 swash = "0.1"
-glyphon = "0.6"
+glyphon = "0.11"
 # Pinned to egui's version so the bundled symbol fonts (NotoEmoji,
 # emoji-icon-font) we feed into glyphon match exactly what the egui
 # sub-windows already render — icons look identical in chrome and panels.
