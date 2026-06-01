@@ -19,7 +19,7 @@ members = [
 default-members = ["crates/terminale"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.88"
 authors = ["terminale contributors"]
@@ -175,14 +175,14 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 
 # Internal crates
-terminale-core = { path = "crates/terminale-core", version = "0.1.1" }
-terminale-term = { path = "crates/terminale-term", version = "0.1.1" }
-terminale-render = { path = "crates/terminale-render", version = "0.1.1" }
-terminale-ui = { path = "crates/terminale-ui", version = "0.1.1" }
-terminale-config = { path = "crates/terminale-config", version = "0.1.1" }
-terminale-ai = { path = "crates/terminale-ai", version = "0.1.1" }
-terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.1" }
-terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.1" }
+terminale-core = { path = "crates/terminale-core", version = "0.1.2" }
+terminale-term = { path = "crates/terminale-term", version = "0.1.2" }
+terminale-render = { path = "crates/terminale-render", version = "0.1.2" }
+terminale-ui = { path = "crates/terminale-ui", version = "0.1.2" }
+terminale-config = { path = "crates/terminale-config", version = "0.1.2" }
+terminale-ai = { path = "crates/terminale-ai", version = "0.1.2" }
+terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.2" }
+terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.2" }
 
 [profile.dev]
 opt-level = 0

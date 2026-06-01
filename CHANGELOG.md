@@ -21,6 +21,22 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.2]
+
+### Fixed
+- macOS: the right-click context menu no longer closes a few milliseconds after a
+  trackpad two-finger tap (macOS handed focus back to the parent immediately; the
+  popup now re-grabs focus during a short grace window)
+
+### Added
+- `xtask bundle-macos` assembles a proper macOS `terminale.app` bundle (Info.plist +
+  icon + binary) so the app appears in Launchpad/Spotlight and launches directly
+  instead of opening inside the user's terminal
+
+### Documentation
+- How to open the unsigned macOS/Windows builds (Gatekeeper/SmartScreen)
+- Packaging-helper commands (`xtask gen-icons`, `xtask bundle-macos`) in `docs/build.md`
+
 ## [0.1.1]
 
 ### Added
@@ -51,5 +67,6 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/fbrzlarosa/terminale/releases/tag/v0.1.1
