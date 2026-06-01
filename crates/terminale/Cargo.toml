@@ -23,6 +23,13 @@ eula = false
 name = "terminale"
 path = "src/main.rs"
 
+# Embed the application icon into terminale.exe so the taskbar, Alt-Tab, and the
+# MSI/Start-Menu/Desktop shortcuts show the brand glyph instead of the generic
+# executable icon. Windows-host builds only; absent (and build.rs is a no-op)
+# elsewhere.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 clap.workspace = true
 color-eyre.workspace = true

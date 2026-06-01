@@ -15,3 +15,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+# Icon generation (`xtask gen-icons`): rasterise the source SVG and pack the
+# results into .ico / .icns. Same SVG stack the app uses at runtime.
+resvg.workspace = true
+usvg.workspace = true
+tiny-skia.workspace = true
