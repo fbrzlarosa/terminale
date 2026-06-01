@@ -153,6 +153,12 @@ pub struct SettingsWindow {
     /// Set by the custom title bar's ✕ to ask the main app to drop this
     /// window on the next event.
     requested_close: bool,
+    /// Cached maximized state, refreshed only on `Resized` events. The custom
+    /// title bar must NOT call `winit::Window::is_maximized()` per frame: on
+    /// macOS that getter round-trips through `-[NSWindow setStyleMask:]`, which
+    /// rebuilds the whole AppKit theme frame (~16-20 ms each). Doing it every
+    /// repaint pegged a CPU core while the window was merely open.
+    cached_maximized: bool,
     /// When egui requests a *delayed* repaint (for in-flight animations
     /// — hover fades, combo transitions, the recorder pulse) we store the
     /// deadline here. The host event loop folds it into its wake timer so
@@ -325,6 +331,7 @@ impl SettingsWindow {
             highlight_scrolled: false,
             detected_shells: auto_detect_profiles(),
             requested_close: false,
+            cached_maximized: false,
             next_repaint: None,
             recording_hotkey: None,
             ssh_secret_edit: None,
@@ -477,10 +484,11 @@ impl SettingsWindow {
                 let scale = self.window.scale_factor() as f32;
                 let lx = position.x as f32 / scale;
                 let ly = position.y as f32 / scale;
-                let icon = match detect_window_resize_edge(lx, ly, &self.window) {
-                    Some(dir) => cursor_icon_for_resize_settings(dir),
-                    None => winit::window::CursorIcon::Default,
-                };
+                let icon =
+                    match detect_window_resize_edge(lx, ly, &self.window, self.cached_maximized) {
+                        Some(dir) => cursor_icon_for_resize_settings(dir),
+                        None => winit::window::CursorIcon::Default,
+                    };
                 self.window.set_cursor(icon);
             }
             WindowEvent::MouseInput {
@@ -493,7 +501,9 @@ impl SettingsWindow {
                 // detect on the last position egui reported.
                 let pp = self.egui_ctx.pointer_latest_pos();
                 if let Some(pos) = pp {
-                    if let Some(dir) = detect_window_resize_edge(pos.x, pos.y, &self.window) {
+                    if let Some(dir) =
+                        detect_window_resize_edge(pos.x, pos.y, &self.window, self.cached_maximized)
+                    {
                         let _ = self.window.drag_resize_window(dir);
                         return false;
                     }
@@ -511,6 +521,11 @@ impl SettingsWindow {
             self.surface_config.width = size.width.max(1);
             self.surface_config.height = size.height.max(1);
             self.surface.configure(&self.device, &self.surface_config);
+            // Maximize/restore both arrive as a resize — refresh the cached
+            // flag here (off the per-frame path) so the title bar's
+            // maximize/restore glyph stays correct without the per-repaint
+            // `is_maximized()` cost. See `cached_maximized`.
+            self.cached_maximized = self.window.is_maximized();
             self.window.request_redraw();
         }
 
@@ -893,6 +908,7 @@ impl SettingsWindow {
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show(ui, |ui| {
                         // Stretch the content to the full panel width so rows
                         // and cards span edge-to-edge and the scrollbar pins to
@@ -958,7 +974,7 @@ impl SettingsWindow {
                         if title_button(ui, TitleIcon::Close).clicked() {
                             close = true;
                         }
-                        let max_icon = if self.window.is_maximized() {
+                        let max_icon = if self.cached_maximized {
                             TitleIcon::Restore
                         } else {
                             TitleIcon::Maximize
@@ -997,8 +1013,12 @@ impl SettingsWindow {
             self.window.set_minimized(true);
         }
         if toggle_max || dbl_max {
-            let max = !self.window.is_maximized();
+            // Toggle from the cached state (avoids an extra `is_maximized()`
+            // round-trip); the authoritative refresh still happens on the
+            // resulting `Resized` event.
+            let max = !self.cached_maximized;
             self.window.set_maximized(max);
+            self.cached_maximized = max;
         }
         if start_drag {
             let _ = self.window.drag_window();
@@ -3260,9 +3280,14 @@ fn detect_window_resize_edge(
     logical_x: f32,
     logical_y: f32,
     window: &Window,
+    maximized: bool,
 ) -> Option<winit::window::ResizeDirection> {
     use winit::window::ResizeDirection::*;
-    if window.is_maximized() || window.fullscreen().is_some() {
+    // `maximized` is passed in (the cached flag) rather than read via
+    // `window.is_maximized()`: this runs on every CursorMoved over the window,
+    // and that getter round-trips through `-[NSWindow setStyleMask:]` on macOS
+    // (expensive — see `cached_maximized`).
+    if maximized || window.fullscreen().is_some() {
         return None;
     }
     let size = window.inner_size();

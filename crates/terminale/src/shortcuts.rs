@@ -1965,9 +1965,21 @@ pub(crate) fn handle_scroll(state: &mut RunningState, delta: winit::event::Mouse
     if dy.abs() < 0.001 {
         return;
     }
-    // Rows per wheel notch — user-configurable (main screen).
-    let step = state.scroll_step_lines.max(1) as f32;
-    let remainder = if state.smooth_scroll {
+    // A mouse wheel reports discrete notches (`LineDelta`) → scale each notch by
+    // the configured rows-per-notch. A trackpad reports continuous `PixelDelta`,
+    // already normalised to rows via `pixels_per_row`, so it must NOT be scaled
+    // by the per-notch step (doing so made trackpad scrolling ~step× too fast
+    // and chunky). Pixel deltas always carry a fractional remainder so sub-row
+    // swipes accumulate smoothly instead of rounding away — that's the natural
+    // behaviour for a continuous device, independent of the `smooth_scroll`
+    // toggle (which governs the mouse wheel).
+    let is_pixel = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
+    let step = if is_pixel {
+        1.0
+    } else {
+        state.scroll_step_lines.max(1) as f32
+    };
+    let remainder = if is_pixel || state.smooth_scroll {
         Some(&mut state.smooth_scroll_remainder)
     } else {
         None
@@ -2002,7 +2014,16 @@ pub(crate) fn scroll_to_bytes(
 ) -> Vec<u8> {
     // Positive dy = scroll up (towards history) → CSI A (arrow up) for apps.
     let dy = delta_to_raw(delta, pixels_per_row);
-    let step = step_lines.max(1) as f32;
+    // As on the scrollback path: a mouse-wheel notch (`LineDelta`) scales by
+    // `step_lines`, but a trackpad's `PixelDelta` is already in rows and must
+    // not be multiplied (otherwise alt-screen apps like vim/less receive ~step×
+    // too many arrow keys per swipe).
+    let is_pixel = matches!(delta, winit::event::MouseScrollDelta::PixelDelta(_));
+    let step = if is_pixel {
+        1.0
+    } else {
+        step_lines.max(1) as f32
+    };
     // Alt-screen forwarding uses simple rounding (no smooth accumulator).
     let lines = (dy.abs() * step).round() as i32;
     if lines == 0 {
