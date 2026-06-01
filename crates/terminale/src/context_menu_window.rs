@@ -170,6 +170,11 @@ pub struct ContextMenuWindow {
     /// Top-left of the monitor the window is on (physical px). Needed alongside
     /// the size to compute the screen's bottom edge for the upward flip.
     monitor_origin: Option<PhysicalPosition<i32>>,
+    /// When the popup was shown. Used to ignore the spurious `Focused(false)`
+    /// macOS emits immediately after a trackpad two-finger tap (the press/release
+    /// hands focus straight back to the parent), which would otherwise close the
+    /// menu within milliseconds of opening.
+    opened_at: std::time::Instant,
 }
 
 impl ContextMenuWindow {
@@ -317,6 +322,7 @@ impl ContextMenuWindow {
             origin_screen: screen_px,
             monitor_work_area,
             monitor_origin,
+            opened_at: std::time::Instant::now(),
         };
 
         // Render the first frame while the window is still hidden so the
@@ -361,10 +367,19 @@ impl ContextMenuWindow {
         match event {
             WindowEvent::CloseRequested => return true,
             WindowEvent::Focused(false) => {
-                // Click-outside-to-close. With a single window there is no
-                // child popup that can legitimately steal focus, so any
-                // focus-loss means the user clicked elsewhere.
-                self.requested_close = true;
+                // Click-outside-to-close: a focus-loss normally means the user
+                // clicked elsewhere. But macOS hands focus straight back to the
+                // parent right after a trackpad two-finger tap (the right-click
+                // press/release that opened us), firing a spurious Focused(false)
+                // within a few ms. During a short grace window, re-grab focus
+                // instead of closing so the menu survives the tap *and* stays
+                // focused — keeping Esc and a genuine later click-outside working.
+                const FOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(350);
+                if self.opened_at.elapsed() < FOCUS_GRACE {
+                    self.window.focus_window();
+                } else {
+                    self.requested_close = true;
+                }
             }
             WindowEvent::KeyboardInput {
                 event:
