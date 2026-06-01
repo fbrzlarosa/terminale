@@ -13,6 +13,8 @@ mod app_icon;
 mod config_watch;
 mod context_menu_window;
 mod copy_mode;
+#[cfg(target_os = "linux")]
+mod desktop_entry;
 mod dir_jump;
 mod egui_icons;
 pub mod icons;
@@ -318,6 +320,19 @@ struct Cli {
     /// `taplo` integration, etc.).
     #[arg(long)]
     schema: bool,
+
+    /// Register the Linux desktop entry (application-menu launcher + icon)
+    /// under `$XDG_DATA_HOME` and exit. Done automatically on launch unless
+    /// `integration.desktop_entry = false`; this flag forces it explicitly.
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    install_desktop_entry: bool,
+
+    /// Remove the Linux desktop entry installed by `--install-desktop-entry`
+    /// (and on-launch auto-registration), then exit.
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    uninstall_desktop_entry: bool,
 }
 
 /// When launched from a shell (so a parent console exists), re-attach to
@@ -446,6 +461,22 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(target_os = "linux")]
+    {
+        if cli.install_desktop_entry {
+            match desktop_entry::ensure_installed() {
+                Ok(_) => println!("Registered terminale in the application menu."),
+                Err(e) => eprintln!("Could not register desktop entry: {e}"),
+            }
+            return Ok(());
+        }
+        if cli.uninstall_desktop_entry {
+            desktop_entry::remove();
+            println!("Removed the terminale desktop entry.");
+            return Ok(());
+        }
+    }
+
     let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -463,6 +494,19 @@ fn main() -> Result<()> {
             (Config::with_auto_profiles(), PathBuf::from("config.toml"))
         }
     };
+
+    // On Linux, register the application-menu entry so terminale is launchable
+    // from the desktop and searchable — the tarball/Homebrew installs have no
+    // install-time hook for this. Idempotent and best-effort: never blocks
+    // startup. Disable via `integration.desktop_entry = false`.
+    #[cfg(target_os = "linux")]
+    if config.integration.desktop_entry {
+        match desktop_entry::ensure_installed() {
+            Ok(true) => tracing::info!("registered desktop entry"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(?e, "could not register desktop entry"),
+        }
+    }
 
     let chosen_profile = pick_profile(&config, cli.profile.as_deref(), cli.shell.as_deref());
 

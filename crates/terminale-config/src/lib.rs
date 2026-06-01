@@ -32,6 +32,7 @@ pub mod cursor;
 pub mod directory_jump;
 pub mod font;
 pub mod gpu;
+pub mod integration;
 pub mod keybinds;
 pub mod plugins;
 pub mod profiles_config;
@@ -70,6 +71,7 @@ pub use cursor::{CursorConfig, CursorStyle};
 pub use directory_jump::DirectoryJumpConfig;
 pub use font::FontConfig;
 pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference};
+pub use integration::IntegrationConfig;
 pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
     MouseBinding, ShortcutsConfig,
@@ -201,6 +203,9 @@ pub struct Config {
     /// sending `cd <path>` to the focused pane. Works with any OSC-7-capable
     /// shell — no third-party tool required.
     pub directory_jump: DirectoryJumpConfig,
+    /// Desktop / OS integration. On Linux, controls whether the binary
+    /// registers its own `.desktop` application-menu entry on launch.
+    pub integration: IntegrationConfig,
 }
 
 impl Config {
@@ -230,6 +235,7 @@ impl Config {
         self.clipboard_history.validate()?;
         self.directory_jump.validate()?;
         self.ai.validate()?;
+        self.integration.validate()?;
         Ok(())
     }
 

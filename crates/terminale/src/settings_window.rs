@@ -38,6 +38,7 @@ enum Section {
     Workspaces,
     ClipboardHistory,
     DirectoryJump,
+    Integration,
     About,
 }
 
@@ -92,6 +93,7 @@ mod cursor;
 mod directory_jump;
 mod font;
 mod gpu;
+mod integration;
 mod plugins;
 mod profiles;
 mod quake;
@@ -918,6 +920,7 @@ impl SettingsWindow {
                             Section::Workspaces => self.section_workspaces(ui),
                             Section::ClipboardHistory => self.section_clipboard_history(ui),
                             Section::DirectoryJump => self.section_directory_jump(ui),
+                            Section::Integration => self.section_integration(ui),
                             Section::About => self.section_about(ui),
                         }
                     });
@@ -1221,6 +1224,12 @@ fn sidebar_entries() -> &'static [SidebarEntry] {
             section: Section::DirectoryJump,
             icon: &icons::MAP,
             label: "Directory jump",
+        },
+        SidebarEntry {
+            group: "General",
+            section: Section::Integration,
+            icon: &icons::PLUG,
+            label: "Desktop integration",
         },
     ]
 }
@@ -2360,6 +2369,11 @@ fn search_index() -> &'static [SearchEntry] {
         SearchEntry {
             section: Section::DirectoryJump,
             label: "Persist history to disk",
+        },
+        // section_integration
+        SearchEntry {
+            section: Section::Integration,
+            label: "Register application-menu entry",
         },
     ]
 }
