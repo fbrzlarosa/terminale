@@ -91,7 +91,7 @@ anyhow = "1"
 
 # Terminal layer
 portable-pty = "0.8"
-alacritty_terminal = "0.24"
+alacritty_terminal = "0.26"
 unicode-width = "0.1"
 bytes = { version = "1", features = ["serde"] }
 
