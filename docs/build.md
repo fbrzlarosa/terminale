@@ -78,6 +78,25 @@ cargo fmt --all                   # format
 | `terminale-ssh` | SSH client |
 | `terminale-plugin` | Lua plugin host |
 
+## Packaging helpers
+
+A couple of `xtask` commands help produce platform assets:
+
+```bash
+# Regenerate the Windows .ico and macOS .icns from assets/icons/icon.svg
+cargo run -p xtask -- gen-icons
+
+# macOS: wrap a built binary into a proper terminale.app bundle (run on macOS)
+cargo build --release
+cargo run -p xtask -- bundle-macos          # → target/terminale.app
+open target/terminale.app                   # launch it
+# or drag target/terminale.app into /Applications to get it in Launchpad
+```
+
+A bare Unix binary in `/Applications` doesn't show up in Launchpad/Spotlight and
+opens inside your terminal when double-clicked; the `.app` bundle makes macOS
+treat terminale as a real GUI application with its icon.
+
 ## Troubleshooting
 
 - **Blank window / GPU errors on Linux:** ensure a working Vulkan or GL driver;
