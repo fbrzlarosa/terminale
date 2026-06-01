@@ -1,0 +1,77 @@
+name: Audit
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - ".github/workflows/audit.yml"
+      - "deny.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  security-events: write
+
+jobs:
+  cargo-audit:
+    name: cargo-audit (RustSec advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  cargo-deny:
+    name: cargo-deny (licenses + sources + bans)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  codeql:
+    name: CodeQL analysis
+    runs-on: ubuntu-latest
+    # CodeQL code scanning is unavailable on private repos without GitHub
+    # Advanced Security (the action fails with "repository not found"). Keep it
+    # non-blocking so the Audit workflow stays green while the repo is private;
+    # it runs for real (and free) once the repository is public.
+    continue-on-error: true
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb1-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libfontconfig1-dev libssl-dev libdbus-1-dev
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --workspace --all-features
+      - uses: github/codeql-action/analyze@v3
+
+  unsafe-review:
+    name: cargo-geiger (unsafe code report)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-geiger --locked
+      - run: cargo geiger --workspace --output-format json > geiger-report.json || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cargo-geiger-report
+          path: geiger-report.json

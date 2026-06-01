@@ -1,0 +1,16 @@
+terminale-render
+Copyright 2024 terminale contributors
+
+This crate contains third-party components listed below.
+
+## Bundled fonts
+
+A curated set of open-source monospace typefaces is embedded in the binary
+so they are always available regardless of what is installed on the host OS.
+Each font family is distributed under its own open-source license.
+
+See `assets/fonts/THIRD-PARTY-FONTS.md` for the complete list of families,
+SPDX license identifiers, and upstream URLs.
+
+The full text of each individual license is present in the corresponding
+font subdirectory under `assets/fonts/<family>/`.

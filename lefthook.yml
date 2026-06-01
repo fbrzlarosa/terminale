@@ -1,0 +1,27 @@
+# Lefthook pre-commit / pre-push hooks
+# https://lefthook.dev — install: `cargo install lefthook` then `lefthook install`
+
+pre-commit:
+  parallel: true
+  commands:
+    fmt:
+      glob: "*.rs"
+      run: cargo fmt --all -- --check
+      stage_fixed: true
+    typos:
+      run: typos --config typos.toml {staged_files}
+      tags: spelling
+      skip:
+        - merge
+        - rebase
+
+pre-push:
+  parallel: false
+  commands:
+    clippy:
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    test:
+      run: cargo test --workspace --all-features --no-fail-fast
+    deny:
+      run: cargo deny check
+      tags: audit

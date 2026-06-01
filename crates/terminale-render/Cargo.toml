@@ -1,0 +1,33 @@
+[package]
+name = "terminale-render"
+description = "GPU-accelerated terminal renderer (wgpu pipelines, glyph atlas, WGSL shaders)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+wgpu.workspace = true
+cosmic-text.workspace = true
+swash.workspace = true
+glyphon.workspace = true
+epaint_default_fonts.workspace = true
+bytemuck.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+raw-window-handle.workspace = true
+pollster.workspace = true
+terminale-term.workspace = true
+terminale-config.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+ttf-parser = "0.20"
+
+[lints]
+workspace = true

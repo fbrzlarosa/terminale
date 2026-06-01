@@ -1,0 +1,28 @@
+[package]
+name = "terminale-core"
+description = "PTY spawn, session lifecycle, and event bus for terminale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+tokio.workspace = true
+portable-pty.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+bytes.workspace = true
+serde.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Discussion / open-ended question
+    url: https://github.com/fbrzlarosa/terminale/discussions
+    about: For broad questions, ideas, or help. Use issues only for actionable bug reports or feature requests.
+  - name: Security report
+    url: https://github.com/fbrzlarosa/terminale/security/advisories/new
+    about: Privately report a vulnerability. Do not open a public issue for security problems.

@@ -1,0 +1,43 @@
+[package]
+name = "terminale-config"
+description = "TOML configuration schema, paths, and validation for terminale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+figment.workspace = true
+schemars.workspace = true
+directories.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chacha20poly1305.workspace = true
+argon2.workspace = true
+serde_json.workspace = true
+
+# OS keychain backends, one per platform so each target only links what it
+# needs. Windows Credential Manager / macOS Keychain use the native backends;
+# Linux uses the synchronous D-Bus Secret Service (with the pure-Rust crypto
+# backend so no OpenSSL/system-dbus build deps are required).
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { workspace = true, features = ["windows-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { workspace = true, features = ["apple-native"] }
+
+[target.'cfg(not(any(target_os = "windows", target_os = "macos")))'.dependencies]
+keyring = { workspace = true, features = ["sync-secret-service", "crypto-rust"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+insta.workspace = true
+
+[lints]
+workspace = true

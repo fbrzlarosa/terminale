@@ -1,0 +1,24 @@
+[package]
+name = "terminale-ui"
+description = "Window management, tabs, drag-out, Quake mode for terminale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+winit.workspace = true
+global-hotkey.workspace = true
+arboard.workspace = true
+raw-window-handle.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+terminale-core.workspace = true
+terminale-config.workspace = true
+
+[lints]
+workspace = true
