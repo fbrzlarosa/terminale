@@ -140,7 +140,7 @@
                               Description='A native, cross-platform, GPU-accelerated terminal'
                               Target='[#exe0]'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='startmenu' Type='integer' Value='1' KeyPath='yes'/>
+                    <RegistryValue Root='HKMU' Key='Software\terminale\shortcuts' Name='startmenu' Type='integer' Value='1' KeyPath='yes'/>
                 </Component>
             </Directory>
 
@@ -152,7 +152,7 @@
                               Description='A native, cross-platform, GPU-accelerated terminal'
                               Target='[#exe0]'
                               WorkingDirectory='Bin'/>
-                    <RegistryValue Root='HKCU' Key='Software\terminale\shortcuts' Name='desktop' Type='integer' Value='1' KeyPath='yes'/>
+                    <RegistryValue Root='HKMU' Key='Software\terminale\shortcuts' Name='desktop' Type='integer' Value='1' KeyPath='yes'/>
                 </Component>
             </Directory>
         </Directory>
