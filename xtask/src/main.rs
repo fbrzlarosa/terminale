@@ -42,12 +42,12 @@ enum Cmd {
         #[arg(long)]
         bin: Option<PathBuf>,
     },
-    /// Assemble the `.app` (via `bundle-macos`) and wrap it in an installer
-    /// `.pkg` that drops `terminale.app` into `/Applications` — the GUI-correct
-    /// replacement for cargo-dist's bare-binary pkg. Produces
-    /// `target/terminale-v<version>-<target>.pkg`. Run on macOS (needs the
-    /// system `pkgbuild`).
-    PkgMacos {
+    /// Assemble the `.app` (via `bundle-macos`) and wrap it in a `.dmg` disk
+    /// image — the standard macOS GUI download: open it and drag `terminale.app`
+    /// onto the bundled `/Applications` shortcut. Produces
+    /// `target/terminale-v<version>-<target>.dmg`. Run on macOS (needs the
+    /// system `hdiutil`).
+    DmgMacos {
         /// Path to the built `terminale` binary. Defaults to
         /// `target/release/terminale` (or the `--target`-specific path when
         /// `--target` is given and the default is absent).
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
         Cmd::BundleMacos { bin } => {
             bundle_macos(bin)?;
         }
-        Cmd::PkgMacos { bin, target } => pkg_macos(bin, target)?,
+        Cmd::DmgMacos { bin, target } => dmg_macos(bin, target)?,
     }
     Ok(())
 }
@@ -269,11 +269,10 @@ fn bundle_macos(bin: Option<PathBuf>) -> Result<PathBuf> {
     }
 
     // Strip extended attributes (com.apple.provenance / quarantine that macOS
-    // stamps on copied binaries). Left in place, `pkgbuild` encodes them as
-    // AppleDouble entries inside the payload — harmless (they rehydrate as
-    // xattrs on install) but noisy in the artifact. `xattr` on recent macOS
-    // dropped its `-r` flag, so recurse via `find`. Best-effort: a clean tree
-    // is nice-to-have, not load-bearing.
+    // stamps on copied binaries) so the packaged bundle is clean and doesn't
+    // carry the build machine's provenance into the shipped artifact. `xattr`
+    // on recent macOS dropped its `-r` flag, so recurse via `find`. Best-effort:
+    // a clean tree is nice-to-have, not load-bearing.
     #[cfg(target_os = "macos")]
     {
         let _ = Command::new("find")
@@ -289,47 +288,65 @@ fn bundle_macos(bin: Option<PathBuf>) -> Result<PathBuf> {
     Ok(app)
 }
 
-/// Wrap the assembled `terminale.app` in a flat installer `.pkg` that installs
-/// it to `/Applications`. This is the GUI-correct replacement for cargo-dist's
-/// bare-binary pkg (a Unix executable in `/Applications` opens the user's
-/// terminal instead of launching as an app). Shells out to the macOS-native
-/// `pkgbuild`; the bundle ID / install location mirror the dist `mac-pkg-config`
-/// so the release artifact is a drop-in.
-fn pkg_macos(bin: Option<PathBuf>, target: Option<String>) -> Result<()> {
+/// Wrap the assembled `terminale.app` in a compressed `.dmg` disk image — the
+/// standard macOS GUI download. Opening the image shows `terminale.app` next to
+/// an `/Applications` shortcut, so the user just drags the app across to
+/// install. Shells out to the macOS-native `hdiutil`.
+fn dmg_macos(bin: Option<PathBuf>, target: Option<String>) -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
     let app = bundle_macos(bin)?;
 
     // Filename target triple: explicit flag wins, else the host triple so a
     // local run on Apple Silicon / Intel labels itself correctly.
     let target = target.unwrap_or_else(host_target_triple);
-    let pkg = PathBuf::from(format!("target/terminale-v{version}-{target}.pkg"));
-    if pkg.exists() {
-        std::fs::remove_file(&pkg).ok();
+    let dmg = PathBuf::from(format!("target/terminale-v{version}-{target}.dmg"));
+    if dmg.exists() {
+        std::fs::remove_file(&dmg).ok();
     }
 
-    // `pkgbuild --component <app> --install-location /Applications` produces a
-    // flat package whose sole payload is the .app, installed into /Applications.
+    // Stage the image contents: a fresh copy of the .app plus a symlink to
+    // /Applications so the mounted volume offers the familiar drag-to-install
+    // layout. Build it under target/ and clean any leftovers first.
+    let stage = PathBuf::from("target/dmg-stage");
+    if stage.exists() {
+        std::fs::remove_dir_all(&stage).ok();
+    }
+    std::fs::create_dir_all(&stage)?;
+    // `cp -R` preserves the bundle (incl. the executable bit) faithfully.
     run(
-        "pkgbuild",
+        "cp",
+        &["-R", &app.to_string_lossy(), &stage.to_string_lossy()],
+    )
+    .context("copy terminale.app into the dmg staging dir")?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("/Applications", stage.join("Applications"))
+        .context("create /Applications shortcut in the dmg")?;
+
+    // UDZO = zlib-compressed read-only image (the conventional distribution
+    // format). `-ov` overwrites a stale image; the volume name is what Finder
+    // shows in the title bar when the image is mounted.
+    run(
+        "hdiutil",
         &[
-            "--install-location",
-            "/Applications",
-            "--identifier",
-            MAC_BUNDLE_ID,
-            "--version",
-            version,
-            "--component",
-            &app.to_string_lossy(),
-            &pkg.to_string_lossy(),
+            "create",
+            "-volname",
+            "terminale",
+            "-srcfolder",
+            &stage.to_string_lossy(),
+            "-ov",
+            "-format",
+            "UDZO",
+            &dmg.to_string_lossy(),
         ],
     )
-    .context("pkgbuild failed (run on macOS; pkgbuild ships with the Xcode CLT)")?;
+    .context("hdiutil failed (run on macOS)")?;
+    std::fs::remove_dir_all(&stage).ok();
 
-    println!("built {} (v{version}, {target})", pkg.display());
+    println!("built {} (v{version}, {target})", dmg.display());
     Ok(())
 }
 
-/// Best-effort host target triple for the pkg filename. We only care about the
+/// Best-effort host target triple for the dmg filename. We only care about the
 /// arch on macOS; the OS/abi suffix is fixed for an Apple build.
 fn host_target_triple() -> String {
     let arch = if cfg!(target_arch = "aarch64") {

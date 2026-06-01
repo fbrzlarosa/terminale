@@ -92,17 +92,18 @@ cargo run -p xtask -- bundle-macos          # → target/terminale.app
 open target/terminale.app                   # launch it
 # or drag target/terminale.app into /Applications to get it in Launchpad
 
-# macOS: build the installer .pkg that drops terminale.app into /Applications
-# (this is what the release pipeline ships; needs the system `pkgbuild`)
-cargo run -p xtask -- pkg-macos             # → target/terminale-v<ver>-<triple>.pkg
+# macOS: build the .dmg that ships terminale.app (this is the GUI download the
+# release pipeline publishes; needs the system `hdiutil`)
+cargo run -p xtask -- dmg-macos             # → target/terminale-v<ver>-<triple>.dmg
 ```
 
 A bare Unix binary in `/Applications` doesn't show up in Launchpad/Spotlight and
 opens inside your terminal when double-clicked; the `.app` bundle makes macOS
-treat terminale as a real GUI application with its icon. `pkg-macos` wraps that
-same bundle in an installer package — the macOS release artifact is built this
-way (see the `macos-app-pkg` job in `.github/workflows/release.yml`), not by
-cargo-dist's bare-binary pkg.
+treat terminale as a real GUI application with its icon. `dmg-macos` wraps that
+bundle in a disk image (with an `/Applications` drag target) — the macOS GUI
+release artifact is built this way (see the `macos-app-dmg` job in
+`.github/workflows/release.yml`). cargo-dist's tarball stays a bare CLI binary
+on purpose, for the `install.sh` / Homebrew paths.
 
 ## Troubleshooting
 

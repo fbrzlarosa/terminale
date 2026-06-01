@@ -280,14 +280,15 @@ jobs:
 
           gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
-  # Build the macOS GUI installer ourselves. cargo-dist 0.28 can only wrap a
-  # bare Unix binary in its .pkg (which lands in /Applications as a non-GUI
-  # executable — double-clicking opens the user's terminal). Instead we build a
-  # real `terminale.app` bundle and wrap it via `xtask pkg-macos`, then attach
-  # the per-arch .pkg (+ .sha256) to the Release that `host` just created.
+  # Build the macOS GUI download ourselves. cargo-dist 0.28 only ships a bare
+  # Unix binary (its tarball / the shell installer / Homebrew), which on macOS
+  # is a CLI executable, not an app. Instead we build a real `terminale.app`
+  # bundle and wrap it in a `.dmg` via `xtask dmg-macos`, then attach the
+  # per-arch .dmg (+ .sha256) to the Release that `host` just created — opening
+  # the image lets the user drag the app onto /Applications.
   # Both arches build on macos-latest (Apple Silicon); the x86_64 slice
   # cross-compiles, mirroring the dist runner mapping in Cargo.toml.
-  macos-app-pkg:
+  macos-app-dmg:
     needs:
       - plan
       - host
@@ -311,14 +312,14 @@ jobs:
         # Use the same `dist` profile cargo-dist uses for its tarballs
         # (thin-LTO + symbol strip) so the .app ships an identical binary.
         run: cargo build --profile dist --target ${{ matrix.target }}
-      - name: Assemble terminale.app and wrap it in a .pkg
+      - name: Assemble terminale.app and wrap it in a .dmg
         run: |
-          cargo run -p xtask -- pkg-macos \
+          cargo run -p xtask -- dmg-macos \
             --bin target/${{ matrix.target }}/dist/terminale \
             --target ${{ matrix.target }}
-      - name: Upload .pkg (+ checksum) to the Release
+      - name: Upload .dmg (+ checksum) to the Release
         run: |
-          pkg=$(ls target/terminale-v*-${{ matrix.target }}.pkg)
+          pkg=$(ls target/terminale-v*-${{ matrix.target }}.dmg)
           ( cd "$(dirname "$pkg")" && shasum -a 256 "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
           gh release upload "${{ needs.plan.outputs.tag }}" "$pkg" "$pkg.sha256" --clobber
 

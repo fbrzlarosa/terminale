@@ -19,7 +19,7 @@ members = [
 default-members = ["crates/terminale"]
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 rust-version = "1.88"
 authors = ["terminale contributors"]
@@ -178,14 +178,14 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3"
 
 # Internal crates
-terminale-core = { path = "crates/terminale-core", version = "0.1.5" }
-terminale-term = { path = "crates/terminale-term", version = "0.1.5" }
-terminale-render = { path = "crates/terminale-render", version = "0.1.5" }
-terminale-ui = { path = "crates/terminale-ui", version = "0.1.5" }
-terminale-config = { path = "crates/terminale-config", version = "0.1.5" }
-terminale-ai = { path = "crates/terminale-ai", version = "0.1.5" }
-terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.5" }
-terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.5" }
+terminale-core = { path = "crates/terminale-core", version = "0.1.6" }
+terminale-term = { path = "crates/terminale-term", version = "0.1.6" }
+terminale-render = { path = "crates/terminale-render", version = "0.1.6" }
+terminale-ui = { path = "crates/terminale-ui", version = "0.1.6" }
+terminale-config = { path = "crates/terminale-config", version = "0.1.6" }
+terminale-ai = { path = "crates/terminale-ai", version = "0.1.6" }
+terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.6" }
+terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.6" }
 
 [profile.dev]
 opt-level = 0
@@ -222,12 +222,12 @@ hosting = "github"
 ci = "github"
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
-# The installers to generate for each app. Note: macOS does NOT use dist's
-# "pkg" installer — dist 0.28 can only wrap a bare Unix binary, which lands in
-# /Applications as a non-GUI executable (double-clicking it opens the user's
-# terminal). The macOS `.pkg` is instead built by the `macos-app-pkg` job in
-# .github/workflows/release.yml, which wraps a real `terminale.app` bundle via
-# `xtask pkg-macos`. Keep this list free of "pkg" so the two don't collide.
+# The installers to generate for each app. Note: macOS has no dist installer
+# here — dist 0.28 only ships a bare Unix binary (its tarball / shell installer
+# / Homebrew), which on macOS is a CLI executable, not an app. The GUI download
+# is a `.dmg` built by the `macos-app-dmg` job in .github/workflows/release.yml
+# (it wraps a real `terminale.app` via `xtask dmg-macos`). The tarball stays a
+# bare binary on purpose — the shell installer and Homebrew formula consume it.
 installers = ["shell", "powershell", "homebrew", "msi"]
 # A GitHub repo to push Homebrew formulas to
 tap = "fbrzlarosa/homebrew-terminale"
@@ -285,9 +285,9 @@ aarch64-apple-darwin = "macos-latest"
 x86_64-apple-darwin = "macos-latest"
 
 # NB: there is intentionally no `[workspace.metadata.dist.mac-pkg-config]` here.
-# The macOS `.pkg` is produced by the `macos-app-pkg` job in
-# .github/workflows/release.yml (via `xtask pkg-macos`), which bundles a real
-# `terminale.app` instead of the bare binary dist's pkg would install. The
-# bundle identifier `dev.stackbyte.terminale` lives in `xtask` (`MAC_BUNDLE_ID`).
+# The macOS GUI download is a `.dmg` produced by the `macos-app-dmg` job in
+# .github/workflows/release.yml (via `xtask dmg-macos`), which bundles a real
+# `terminale.app`. The bundle identifier `dev.stackbyte.terminale` lives in
+# `xtask` (`MAC_BUNDLE_ID`).
 
 

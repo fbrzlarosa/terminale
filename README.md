@@ -170,12 +170,14 @@ irm https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-i
 | OS | File |
 |---|---|
 | Windows x86_64 | `terminale-vX.Y.Z-x86_64-pc-windows-msvc.msi` |
-| macOS Apple Silicon | `terminale-vX.Y.Z-aarch64-apple-darwin.pkg` |
-| macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.pkg` |
+| macOS Apple Silicon | `terminale-vX.Y.Z-aarch64-apple-darwin.dmg` |
+| macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.dmg` |
 | Linux x86_64 | `terminale-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 
-The macOS `.pkg` installs **terminale.app** into `/Applications`, so it shows up
-in Launchpad and Spotlight with the app icon and launches as a normal GUI app.
+The macOS download is a `.dmg`: open it, then drag **terminale.app** onto the
+`/Applications` shortcut. It then shows up in Launchpad and Spotlight with the
+app icon and launches as a normal GUI app. (The `…-apple-darwin.tar.gz` is a
+bare command-line binary for the `install.sh` / Homebrew paths, not the GUI app.)
 
 > **Opening unsigned builds.** terminale ships **unsigned** (open-source — no paid
 > Apple/Windows code-signing certificate). The first launch triggers a one-time
@@ -184,7 +186,7 @@ in Launchpad and Spotlight with the app icon and launches as a normal GUI app.
 > - **macOS** — Gatekeeper says *"…cannot be opened because Apple cannot check it
 >   for malicious software."* Clear the download quarantine flag, then open:
 >   ```sh
->   xattr -d com.apple.quarantine ~/Downloads/terminale-*-apple-darwin.pkg
+>   xattr -d com.apple.quarantine ~/Downloads/terminale-*-apple-darwin.dmg
 >   ```
 >   Or: try to open it once, then approve it under **System Settings → Privacy &
 >   Security → "Open Anyway"**. The **Homebrew** install below sidesteps the prompt.

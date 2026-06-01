@@ -17,9 +17,22 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - Initial workspace scaffold (Cargo workspace, 6 starter crates, CI/release/audit GitHub Actions workflows)
 - Community standards (README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, dual MIT/Apache license)
 - `cargo-deny` policy banning webview wrappers (`tao`, `wry`) — project is native-only by design
-- Production release pipeline via `cargo-dist`: `.msi` (Windows), `.pkg` (macOS), tarballs (Linux),
+- Production release pipeline via `cargo-dist`: `.msi` (Windows), `.dmg` (macOS), tarballs (Linux),
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
+
+## [0.1.6]
+
+### Changed
+- macOS GUI download is now a `.dmg` (was a `.pkg`): open the image and drag
+  **terminale.app** onto the bundled `/Applications` shortcut — the standard Mac
+  install flow. Built by the `macos-app-dmg` release job via the new
+  `xtask dmg-macos`. The `…-apple-darwin.tar.gz` stays a bare command-line binary
+  on purpose (it backs the `install.sh` and Homebrew paths), so it is not the GUI
+  app.
+
+### Removed
+- `xtask pkg-macos` / the `.pkg` installer, superseded by the `.dmg` above.
 
 ## [0.1.5]
 
@@ -100,7 +113,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/fbrzlarosa/terminale/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/fbrzlarosa/terminale/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/fbrzlarosa/terminale/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/fbrzlarosa/terminale/compare/v0.1.2...v0.1.3
