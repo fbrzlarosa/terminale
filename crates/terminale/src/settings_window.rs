@@ -3382,6 +3382,7 @@ mod tests {
             include_str!("settings_window/workspaces.rs"),
             include_str!("settings_window/clipboard_history.rs"),
             include_str!("settings_window/directory_jump.rs"),
+            include_str!("settings_window/integration.rs"),
         );
         // Use a single owned string so `matches()` scans one contiguous slice.
         let combined = format!("{root}{sections}");
