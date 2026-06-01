@@ -3,8 +3,9 @@
 //! Modelled after the rust-analyzer pattern: encodes CI commands as a Rust
 //! binary so they stay consistent between local dev and GitHub Actions.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
 #[derive(Parser)]
@@ -30,6 +31,17 @@ enum Cmd {
     /// `assets/icons/icon.svg`. Run this whenever the SVG changes, then commit
     /// the results.
     GenIcons,
+    /// Assemble a macOS `terminale.app` bundle around an already-built binary
+    /// (run `cargo build --release` first). Produces `target/terminale.app`,
+    /// which appears in Launchpad/Spotlight with the brand icon and launches as
+    /// a GUI app (instead of a bare executable that opens a terminal). Run on
+    /// macOS.
+    BundleMacos {
+        /// Path to the built `terminale` binary. Defaults to
+        /// `target/release/terminale`.
+        #[arg(long)]
+        bin: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -45,6 +57,7 @@ fn main() -> Result<()> {
         Cmd::Test => test()?,
         Cmd::Deny => deny()?,
         Cmd::GenIcons => gen_icons()?,
+        Cmd::BundleMacos { bin } => bundle_macos(bin)?,
     }
     Ok(())
 }
@@ -171,6 +184,86 @@ fn build_icns(images: &[(&str, Vec<u8>)]) -> Vec<u8> {
     out.extend_from_slice(&((8 + body.len()) as u32).to_be_bytes());
     out.extend_from_slice(&body);
     out
+}
+
+/// Bundle identifier — keep in sync with `[workspace.metadata.dist.mac-pkg-config]`.
+const MAC_BUNDLE_ID: &str = "dev.stackbyte.terminale";
+
+/// Assemble `target/terminale.app` around a built binary so macOS treats it as a
+/// real GUI application: it shows up in Launchpad/Spotlight with the brand icon
+/// and launches directly (a bare Unix binary in /Applications instead opens the
+/// user's terminal and runs inside it).
+fn bundle_macos(bin: Option<PathBuf>) -> Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+    let bin = bin.unwrap_or_else(|| PathBuf::from("target/release/terminale"));
+    if !bin.exists() {
+        bail!(
+            "binary not found at {} — run `cargo build --release` first (or pass --bin)",
+            bin.display()
+        );
+    }
+
+    let app = PathBuf::from("target/terminale.app");
+    let macos = app.join("Contents/MacOS");
+    let resources = app.join("Contents/Resources");
+    // Start clean so stale files don't linger between runs.
+    if app.exists() {
+        std::fs::remove_dir_all(&app).ok();
+    }
+    std::fs::create_dir_all(&macos)?;
+    std::fs::create_dir_all(&resources)?;
+
+    std::fs::copy(&bin, macos.join("terminale")).context("copy binary into bundle")?;
+    std::fs::copy(
+        "assets/icons/terminale.icns",
+        resources.join("terminale.icns"),
+    )
+    .context("copy terminale.icns into bundle (run `xtask gen-icons` if missing)")?;
+
+    std::fs::write(app.join("Contents/Info.plist"), info_plist(version))?;
+    // PkgInfo is optional but conventional for an APPL bundle.
+    std::fs::write(app.join("Contents/PkgInfo"), "APPL????")?;
+
+    // Mark the inner binary executable (copy can drop the bit on some setups).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = macos.join("terminale");
+        let mut perm = std::fs::metadata(&p)?.permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&p, perm)?;
+    }
+
+    println!("built {} (v{version})", app.display());
+    println!(
+        "test it: open {}  — or drag it into /Applications",
+        app.display()
+    );
+    Ok(())
+}
+
+fn info_plist(version: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key><string>terminale</string>
+    <key>CFBundleDisplayName</key><string>terminale</string>
+    <key>CFBundleIdentifier</key><string>{MAC_BUNDLE_ID}</string>
+    <key>CFBundleVersion</key><string>{version}</string>
+    <key>CFBundleShortVersionString</key><string>{version}</string>
+    <key>CFBundleExecutable</key><string>terminale</string>
+    <key>CFBundleIconFile</key><string>terminale.icns</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
+</dict>
+</plist>
+"#
+    )
 }
 
 fn run(program: &str, args: &[&str]) -> Result<()> {
