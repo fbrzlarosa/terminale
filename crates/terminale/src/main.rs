@@ -6500,7 +6500,16 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 if consumed_by_app {
                     return;
                 }
-                if !state.selecting {
+                // Only treat motion as a selection drag while the left button is
+                // genuinely held. On macOS trackpads a release can go missing,
+                // leaving a stale `selection_press_px` that previously turned
+                // plain cursor motion into a runaway selection ("it selects as
+                // soon as I move/lift my finger"). Gate on the tracked button.
+                let left_held = state.held_button == Some(winit::event::MouseButton::Left);
+                if !left_held {
+                    state.selection_press_px = None;
+                    state.selecting = false;
+                } else if !state.selecting {
                     if let Some(press) = state.selection_press_px {
                         let dx = position.x as f32 - press.0;
                         let dy = position.y as f32 - press.1;
@@ -6510,7 +6519,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     }
                 }
 
-                if state.selecting {
+                if state.selecting && left_held {
                     if let (Some(anchor), Some(end)) = (
                         state.selection_anchor,
                         state
