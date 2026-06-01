@@ -39,10 +39,6 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   attestations (unsigned open-source binaries); build runners pinned to current images
 - CI/release JS actions opted into Node 24 ahead of the Node 20 runner deprecation
 
-## [0.1.0]
-
-First public pre-alpha. See README for status.
-
 <!--
 Sections in each release (only include those with entries):
 - Added       — new features
@@ -56,5 +52,4 @@ Sections in each release (only include those with entries):
 -->
 
 [Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/fbrzlarosa/terminale/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/fbrzlarosa/terminale/releases/tag/v0.1.0
+[0.1.1]: https://github.com/fbrzlarosa/terminale/releases/tag/v0.1.1
