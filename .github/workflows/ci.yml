@@ -117,7 +117,7 @@ jobs:
             libfontconfig1-dev libssl-dev xvfb
       - name: Generate coverage report
         run: xvfb-run -a cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
-      - uses: codecov/codecov-action@v4
+      - uses: codecov/codecov-action@v6
         with:
           files: lcov.info
           fail_ci_if_error: false
