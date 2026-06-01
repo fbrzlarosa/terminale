@@ -111,7 +111,7 @@ pollster = "0.4"
 parking_lot = "0.12"
 
 # egui-based settings panel
-egui = "0.29"
+egui = "0.34"
 egui-wgpu = "0.29"
 egui-winit = { version = "0.29", default-features = false, features = ["links"] }
 
