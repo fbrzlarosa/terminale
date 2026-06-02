@@ -1244,6 +1244,37 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                field_label(ui, "Focus border opacity");
+                let r = ui.add(
+                    egui::Slider::new(&mut self.config.appearance.focus_border_opacity, 0.0..=1.0)
+                        .fixed_decimals(2)
+                        .text(""),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+                if ui.small_button("Reset").clicked() {
+                    self.config.appearance.focus_border_opacity = 0.35;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Focus border opacity",
+            );
+            sublabel(
+                ui,
+                "Stroke opacity of the focus ring. It is drawn behind the text on the \
+                 background layer — lower values keep it a subtle hint.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Dim inactive panes");
                 let r = ui.add(
                     egui::Slider::new(&mut self.config.appearance.inactive_pane_dim, 0.0..=0.9)

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Quick-select overlays short keyboard labels on regex matches in the
 /// visible screen + scrollback so the user can copy them without the mouse.
 /// The same label renderer powers pane-select mode.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct QuickSelectConfig {
     /// Regex patterns scanned for matches when quick-select is activated.

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 /// Catalogue of every remappable in-app shortcut. Each value is a
 /// human-readable binding (`"Ctrl+T"`, `"Ctrl+Shift+ArrowUp"`, …);
 /// empty = action disabled.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ShortcutsConfig {
     /// Open a new tab with the default profile.
@@ -750,7 +750,7 @@ fn default_mouse_count() -> u8 {
 }
 
 /// User-configurable keybinds.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct KeybindsConfig {
     /// Global hotkey that toggles the Quake drop-down window. Accepts

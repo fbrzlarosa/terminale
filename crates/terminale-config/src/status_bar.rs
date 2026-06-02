@@ -72,7 +72,7 @@ pub enum StatusSegment {
 }
 
 /// Status-bar configuration block.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct StatusBarConfig {
     /// Master enable switch. `false` by default.

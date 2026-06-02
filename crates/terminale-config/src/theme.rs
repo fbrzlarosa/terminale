@@ -18,7 +18,7 @@ fn parse_hex(s: &str) -> Option<[u8; 3]> {
 }
 
 /// One colour palette.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Theme {
     /// Display name (matches `appearance.theme`).
     pub name: String,

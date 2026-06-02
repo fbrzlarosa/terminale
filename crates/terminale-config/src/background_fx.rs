@@ -73,7 +73,7 @@ impl BackgroundFxStyle {
 /// Does not `deny_unknown_fields` so obsolete keys from earlier iterations
 /// (e.g. `matrix_drops_per_key`, dropped when Matrix became a continuous
 /// character rain) keep parsing instead of failing the whole config load.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct BackgroundFxConfig {
     /// Master enable switch. `false` by default.

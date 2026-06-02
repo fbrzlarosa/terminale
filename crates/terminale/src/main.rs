@@ -2217,6 +2217,15 @@ struct TermWindow {
     /// Whether the group-name label is drawn in the tab bar. Mirrors
     /// `appearance.show_tab_group_labels` and is live-applied.
     show_tab_group_labels: bool,
+    /// Whether the suggestion bar was open (renderer-side) on the previous
+    /// `about_to_wait` tick. Open/close transitions reflow the PTY grid so
+    /// the bar's reserved band is reclaimed/granted exactly once — mirrors
+    /// the resource-strip enable/disable pattern.
+    suggestion_bar_was_open: bool,
+    /// `(pane, command-block count)` of the last failed command that already
+    /// surfaced an `ai.offer_fix_on_failure` hint — each failure offers at
+    /// most once.
+    fix_hint_seen: Option<(PaneId, usize)>,
     /// Runtime state for the proactive AI command-suggestion bar: idle timer,
     /// generation counter, loading-frame tick, and the current bar content.
     pub(crate) suggestions: suggestions::SuggestionRuntime,
@@ -2689,6 +2698,8 @@ impl TerminaleApp {
             tab_groups: Vec::new(),
             next_group_id: 0,
             show_tab_group_labels: self.config.appearance.show_tab_group_labels,
+            suggestion_bar_was_open: false,
+            fix_hint_seen: None,
             suggestions: suggestions::SuggestionRuntime {
                 enabled: self.config.ai.suggestions.enabled,
                 ..suggestions::SuggestionRuntime::default()
@@ -2738,6 +2749,8 @@ impl TerminaleApp {
         );
         tw.renderer
             .set_focus_border_color(self.config.appearance.focus_border_color);
+        tw.renderer
+            .set_focus_border_alpha(self.config.appearance.focus_border_opacity);
         tw
     }
 
@@ -4462,8 +4475,13 @@ impl TerminaleApp {
                     if state.scrollback_lines != cfg.window.scrollback_lines {
                         state.scrollback_lines = cfg.window.scrollback_lines;
                         let sb = state.scrollback_lines;
+                        // EVERY pane of every tab — `tab.emulator` derefs to
+                        // the focused pane only, which left the other split
+                        // panes on the old scrollback until respawn.
                         for tab in &state.tabs {
-                            tab.emulator.lock().set_scrollback(sb);
+                            for pane in tab.panes.values() {
+                                pane.emulator.lock().set_scrollback(sb);
+                            }
                         }
                     }
                     state.shortcuts = cfg.keybinds.shortcuts.clone();
@@ -4484,6 +4502,13 @@ impl TerminaleApp {
                         .iter()
                         .map(|p| p.icon.clone())
                         .collect();
+                    // Refresh the cached default profile so plain new tabs
+                    // ('+' / Ctrl+T) pick up an edited default without a new
+                    // window — the cache was previously set once at startup.
+                    state.default_profile = cfg.resolve_default_profile().cloned();
+                    // Snippet picker rows were refreshed on the Settings-save
+                    // path but NOT here — a config.toml edit left stale names.
+                    state.snippet_names = crate::ssh_tabs::snippet_names_from(&cfg);
                     state.ssh_host_targets = ssh_host_targets_from(&cfg);
                     state.offer_save_ssh_hosts = cfg.terminal.offer_save_ssh_hosts;
                     let sf = state.window.scale_factor() as f32;
@@ -4499,6 +4524,9 @@ impl TerminaleApp {
                     state
                         .renderer
                         .set_focus_border_color(cfg.appearance.focus_border_color);
+                    state
+                        .renderer
+                        .set_focus_border_alpha(cfg.appearance.focus_border_opacity);
                     // Live-apply the divider colour override — None falls back to the
                     // renderer's auto tone (derived from the background colour).
                     state.divider_color = cfg.appearance.divider_color;
@@ -4514,6 +4542,12 @@ impl TerminaleApp {
                     // (used by apply_zen_chrome to restore on zen exit).
                     state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
                     state.show_pane_headers_config = cfg.appearance.show_pane_headers;
+                    if state.zen {
+                        // Re-apply the chrome overrides immediately while zen
+                        // is active, so editing zen_hide takes effect without
+                        // toggling zen off and on again.
+                        apply_zen_chrome(state);
+                    }
                     if state.show_pane_headers != cfg.appearance.show_pane_headers {
                         state.show_pane_headers = cfg.appearance.show_pane_headers;
                         if !state.zen {
@@ -7058,7 +7092,16 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // resize is parsed at the correct new grid size.
                 if let Some(new_size) = state.pending_resize.take() {
                     state.renderer.resize(new_size.width, new_size.height);
-                    resize_all_tabs(state, new_size.width, new_size.height);
+                    // Mid Quake-animation (or while hidden) the surface tracks
+                    // the animated window but the PTY grid keeps its resting
+                    // size: the shrinking surface clips the full-size frame
+                    // (that's the reveal), instead of reflowing the shell ~7
+                    // times per toggle. The final animation frame snaps to the
+                    // resting rect, whose Resized event lands with quake_anim
+                    // == None and resizes the grid once (a same-size no-op).
+                    if state.quake_anim.is_none() && state.quake_visible {
+                        resize_all_tabs(state, new_size.width, new_size.height);
+                    }
                     refresh_quake_last_monitor(state);
                     // Post-resize drain: parse any PTY bytes that arrived
                     // between the resize event and now at the new grid size.
@@ -8174,8 +8217,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         if state.scrollback_lines != cfg.window.scrollback_lines {
                             state.scrollback_lines = cfg.window.scrollback_lines;
                             let sb = state.scrollback_lines;
+                            // EVERY pane of every tab — `tab.emulator` derefs
+                            // to the focused pane only, which left the other
+                            // split panes on the old scrollback until respawn.
                             for tab in &state.tabs {
-                                tab.emulator.lock().set_scrollback(sb);
+                                for pane in tab.panes.values() {
+                                    pane.emulator.lock().set_scrollback(sb);
+                                }
                             }
                         }
                         state.shortcuts = cfg.keybinds.shortcuts.clone();
@@ -8204,6 +8252,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                             .iter()
                             .map(|p| p.icon.clone())
                             .collect();
+                        // Refresh the cached default profile so plain new tabs
+                        // ('+' / Ctrl+T) pick up an edited default without a
+                        // new window — previously set once at startup.
+                        state.default_profile = cfg.resolve_default_profile().cloned();
                         state.ssh_host_targets = ssh_host_targets_from(&cfg);
                         state.offer_save_ssh_hosts = cfg.terminal.offer_save_ssh_hosts;
                         // Phase E: refresh divider physical-px metrics and the
@@ -8222,6 +8274,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state
                             .renderer
                             .set_focus_border_color(cfg.appearance.focus_border_color);
+                        state
+                            .renderer
+                            .set_focus_border_alpha(cfg.appearance.focus_border_opacity);
                         // Live-apply the divider colour override — None falls back to the
                         // renderer's auto tone (derived from the background colour).
                         state.divider_color = cfg.appearance.divider_color;
@@ -8236,6 +8291,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         // Config mirrors for tab-bar-enabled and show-pane-headers.
                         state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
                         state.show_pane_headers_config = cfg.appearance.show_pane_headers;
+                        if state.zen {
+                            // Re-apply the chrome overrides immediately while
+                            // zen is active, so editing zen_hide takes effect
+                            // without toggling zen off and on again.
+                            apply_zen_chrome(state);
+                        }
                         // Live-apply pane-header toggle: resize all panes so they
                         // gain/lose the 22 px header band, then push to renderer.
                         if state.show_pane_headers != cfg.appearance.show_pane_headers {
@@ -8266,6 +8327,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state
                             .renderer
                             .set_tab_bar_hide_if_single(cfg.appearance.tab_bar_hide_if_single);
+                        // Vertical tab-strip width — was applied only by the
+                        // external-reload path; the in-app save left a stale
+                        // width until restart when on a Left/Right tab bar.
+                        state
+                            .renderer
+                            .set_vertical_tab_bar_width(cfg.appearance.vertical_tab_bar_width);
                         state.renderer.set_dim_amount(cfg.appearance.dim_amount);
                         state
                             .renderer
@@ -8554,12 +8621,22 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 });
             }
             if state.renderer.cursor_blinking() && visible {
-                let half = std::time::Duration::from_millis(u64::from(
-                    state.renderer.cursor().blink_rate_ms.max(60),
-                ));
+                let cursor = state.renderer.cursor();
+                let wake = if cursor.blink_ease {
+                    // Eased blink: the alpha is a continuous smoothstep, so
+                    // repaint at the configured animation fps — waking only at
+                    // each half-period rendered the "smooth" fade as a hard
+                    // step (and left `animation_fps` entirely unread).
+                    std::time::Duration::from_millis(u64::from(
+                        1000 / cursor.animation_fps.clamp(10, 240),
+                    ))
+                } else {
+                    // Hard blink: one repaint per half-period is enough.
+                    std::time::Duration::from_millis(u64::from(cursor.blink_rate_ms.max(60)))
+                };
                 next_wake = Some(match next_wake {
-                    Some(d) => d.min(half),
-                    None => half,
+                    Some(d) => d.min(wake),
+                    None => wake,
                 });
                 // Crucial: actually repaint at each blink boundary. The blink
                 // phase is derived from elapsed time in render(), so without a
@@ -8712,9 +8789,47 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             state.suggestions.enabled = sg_enabled;
             state.suggestions.trigger = sg_trigger;
             // `Off` (or a disabled feature) hides the bar and clears any
-            // lingering suggestion, so re-enabling never resurfaces a stale one.
-            if !sg_enabled || sg_trigger == terminale_config::SuggestionTrigger::Off {
+            // lingering suggestion, so re-enabling never resurfaces a stale
+            // one. The fix-offer Hint is exempt — it is governed by
+            // `ai.offer_fix_on_failure`, not by the suggestion trigger.
+            if (!sg_enabled || sg_trigger == terminale_config::SuggestionTrigger::Off)
+                && !matches!(state.suggestions.state, suggestions::SuggestionState::Hint(_))
+            {
                 state.suggestions.state = suggestions::SuggestionState::Hidden;
+            }
+            // ── `ai.offer_fix_on_failure` — unobtrusive fix hint ─────────────
+            // When the focused pane's most recent command block completed with
+            // a non-zero exit, surface a one-shot amber hint in the suggestion
+            // bar with a [Fix] button (routes to the same flow as the
+            // FixLastCommand shortcut). Keyed per (pane, block-count) so each
+            // failure offers at most once; never replaces live bar content.
+            if self.config.ai.offer_fix_on_failure
+                && matches!(state.suggestions.state, suggestions::SuggestionState::Hidden)
+            {
+                let failed = state.tabs.get(state.active_tab).and_then(|tab| {
+                    let pane_id = tab.focused;
+                    let pane = tab.panes.get(&pane_id)?;
+                    let emu = pane.emulator.lock();
+                    let blocks = emu.command_blocks();
+                    let n = blocks.len();
+                    let b = blocks.last()?;
+                    match b.exit_code {
+                        Some(code) if code != 0 && !b.command_text.trim().is_empty() => {
+                            Some((pane_id, n, code, b.command_text.clone()))
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some((pane_id, n, code, cmd)) = failed {
+                    let key = (pane_id, n);
+                    if state.fix_hint_seen != Some(key) {
+                        state.fix_hint_seen = Some(key);
+                        state.suggestions.state = suggestions::SuggestionState::Hint(format!(
+                            "`{cmd}` failed (exit {code})"
+                        ));
+                        state.window.request_redraw();
+                    }
+                }
             }
             if visible
                 && matches!(
@@ -8729,6 +8844,24 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     Some(d) => d.min(anim),
                     None => anim,
                 });
+            }
+            // Apply the bar to the renderer NOW — before this tick's render —
+            // and reflow the PTY grid on an open/close transition. The bar's
+            // 30px band is part of the grid's bottom chrome budget while
+            // open (`bottom_offset_logical`), so without this reflow the
+            // bottom rows would be laid out under the bar on the appearance
+            // frame (and the grid would stay short after it hides). Mirrors
+            // the resource-strip pattern above.
+            {
+                let bar = suggestion_bar_view(&state.suggestions);
+                let now_open = bar.is_some();
+                state.renderer.set_suggestion_bar(bar);
+                if now_open != state.suggestion_bar_was_open {
+                    state.suggestion_bar_was_open = now_open;
+                    let size = state.window.inner_size();
+                    resize_all_tabs(state, size.width, size.height);
+                    state.window.request_redraw();
+                }
             }
         }
         // ── Proactive suggestion bar — fire deferred spawns ──────────────────
@@ -9064,6 +9197,41 @@ fn resize_all_tabs(state: &mut RunningState, width_px: u32, height_px: u32) {
     }
 }
 
+/// Map the per-window suggestion runtime state to the render-layer bar.
+/// Single source of truth shared by the authoritative `about_to_wait`
+/// application (which also reflows the PTY on open/close) and the
+/// per-frame refresh inside `render_main`.
+fn suggestion_bar_view(
+    rt: &suggestions::SuggestionRuntime,
+) -> Option<terminale_render::SuggestionBar> {
+    use suggestions::SuggestionState;
+    use terminale_render::{SuggestionBar, SuggestionBarState};
+    // The fix-offer hint is governed by `ai.offer_fix_on_failure`, NOT by the
+    // auto-suggestion feature — show it even when suggestions are disabled.
+    if let SuggestionState::Hint(m) = &rt.state {
+        return Some(SuggestionBar {
+            state: SuggestionBarState::Hint { message: m.clone() },
+        });
+    }
+    if !rt.enabled {
+        return None;
+    }
+    match &rt.state {
+        SuggestionState::Hidden | SuggestionState::Hint(_) => None,
+        SuggestionState::Loading => Some(SuggestionBar {
+            state: SuggestionBarState::Loading {
+                frame: rt.loading_frame,
+            },
+        }),
+        SuggestionState::Ready(c) => Some(SuggestionBar {
+            state: SuggestionBarState::Ready { command: c.clone() },
+        }),
+        SuggestionState::Error(m) => Some(SuggestionBar {
+            state: SuggestionBarState::Error { message: m.clone() },
+        }),
+    }
+}
+
 /// Paint one frame of the main terminal window immediately. Used by the
 /// `RedrawRequested` handler and, crucially, by the live-apply path —
 /// because `window.request_redraw()` is a no-op for the main window
@@ -9209,31 +9377,12 @@ fn render_main(state: &mut RunningState) {
 
     // ── Proactive suggestion bar ─────────────────────────────────────────────
     // Map the per-window suggestion runtime state to the render-layer type.
-    // The `enabled` field is a mirror of the config value, kept in sync by
-    // `about_to_wait`, so `render_main` needs no access to `App.config`.
-    {
-        use suggestions::SuggestionState;
-        use terminale_render::{SuggestionBar, SuggestionBarState};
-        let bar = if state.suggestions.enabled {
-            match &state.suggestions.state {
-                SuggestionState::Hidden => None,
-                SuggestionState::Loading => Some(SuggestionBar {
-                    state: SuggestionBarState::Loading {
-                        frame: state.suggestions.loading_frame,
-                    },
-                }),
-                SuggestionState::Ready(c) => Some(SuggestionBar {
-                    state: SuggestionBarState::Ready { command: c.clone() },
-                }),
-                SuggestionState::Error(m) => Some(SuggestionBar {
-                    state: SuggestionBarState::Error { message: m.clone() },
-                }),
-            }
-        } else {
-            None
-        };
-        state.renderer.set_suggestion_bar(bar);
-    }
+    // The authoritative application (with the PTY reflow on open/close)
+    // happens in `about_to_wait` BEFORE specs are computed; this re-apply
+    // only keeps the loading-frame fresh within the same tick.
+    state
+        .renderer
+        .set_suggestion_bar(suggestion_bar_view(&state.suggestions));
 
     let render_specs: Vec<terminale_render::PaneSpec<'_>> = specs
         .iter()
@@ -11603,262 +11752,15 @@ struct QuakeAnim {
 /// window has produced new edits that need to be live-applied to the
 /// running renderer.
 fn configs_identical(a: &Config, b: &Config) -> bool {
-    let cur_eq = a.cursor.style == b.cursor.style
-        && a.cursor.blink == b.cursor.blink
-        && a.cursor.blink_rate_ms == b.cursor.blink_rate_ms
-        && a.cursor.color == b.cursor.color
-        && (a.cursor.thickness_px - b.cursor.thickness_px).abs() < f32::EPSILON
-        && (a.cursor.opacity - b.cursor.opacity).abs() < f32::EPSILON
-        && (a.cursor.cell_tint_opacity - b.cursor.cell_tint_opacity).abs() < f32::EPSILON
-        && a.cursor.blink_ease == b.cursor.blink_ease
-        && a.cursor.animation_fps == b.cursor.animation_fps;
-    let appr_eq = a.appearance.theme == b.appearance.theme
-        && (a.appearance.tab_min_width - b.appearance.tab_min_width).abs() < f32::EPSILON
-        && (a.appearance.tab_max_width - b.appearance.tab_max_width).abs() < f32::EPSILON
-        && a.appearance.tab_bar_enabled == b.appearance.tab_bar_enabled
-        && a.appearance.tab_bar_position == b.appearance.tab_bar_position
-        && a.appearance.tab_bar_hide_if_single == b.appearance.tab_bar_hide_if_single
-        && (a.appearance.vertical_tab_bar_width - b.appearance.vertical_tab_bar_width).abs()
-            < f32::EPSILON
-        // Fields below each have a live handler in the apply block — previously
-        // missing from this gate so changes were silently ignored until restart.
-        && a.appearance.animated_tab_drag == b.appearance.animated_tab_drag
-        && a.appearance.show_pane_headers == b.appearance.show_pane_headers
-        && (a.appearance.divider_thickness_logical - b.appearance.divider_thickness_logical)
-            .abs()
-            < f32::EPSILON
-        && (a.appearance.divider_grab_padding_logical
-            - b.appearance.divider_grab_padding_logical)
-            .abs()
-            < f32::EPSILON
-        && (a.appearance.focus_border_thickness_logical
-            - b.appearance.focus_border_thickness_logical)
-            .abs()
-            < f32::EPSILON
-        && a.appearance.focus_border_color == b.appearance.focus_border_color
-        && a.appearance.divider_color == b.appearance.divider_color
-        && a.appearance.close_button_style == b.appearance.close_button_style
-        && a.appearance.pane_tear_out == b.appearance.pane_tear_out
-        && (a.appearance.dim_amount - b.appearance.dim_amount).abs() < f32::EPSILON
-        && (a.appearance.minimum_contrast - b.appearance.minimum_contrast).abs() < f32::EPSILON
-        && (a.appearance.inactive_pane_dim - b.appearance.inactive_pane_dim).abs() < f32::EPSILON
-        && (a.appearance.unfocused_window_dim - b.appearance.unfocused_window_dim).abs()
-            < f32::EPSILON
-        && a.appearance.builtin_box_drawing == b.appearance.builtin_box_drawing
-        && a.appearance.show_tab_group_labels == b.appearance.show_tab_group_labels
-        && a.appearance.bundled_icons == b.appearance.bundled_icons
-        && a.appearance.tab_activity_spinner == b.appearance.tab_activity_spinner;
-    let font_eq = a.font.family == b.font.family
-        && a.font.bold_family == b.font.bold_family
-        && a.font.italic_family == b.font.italic_family
-        && a.font.bold_italic_family == b.font.bold_italic_family
-        && (a.font.size - b.font.size).abs() < f32::EPSILON
-        && (a.font.line_height - b.font.line_height).abs() < f32::EPSILON
-        && (a.font.underline_thickness_px - b.font.underline_thickness_px).abs() < f32::EPSILON
-        && (a.font.cell_width - b.font.cell_width).abs() < f32::EPSILON
-        && a.font.ligatures == b.font.ligatures;
-    let window_eq = (a.window.opacity - b.window.opacity).abs() < f32::EPSILON
-        && a.window.padding == b.window.padding
-        && a.window.scroll_step_lines == b.window.scroll_step_lines
-        && a.window.alt_screen_scroll_lines == b.window.alt_screen_scroll_lines
-        && (a.window.touchpad_pixels_per_row - b.window.touchpad_pixels_per_row).abs()
-            < f32::EPSILON
-        && a.window.smooth_scroll == b.window.smooth_scroll
-        && a.window.copy_on_select == b.window.copy_on_select
-        && a.window.scrollback_lines == b.window.scrollback_lines
-        && a.window.confirm_close == b.window.confirm_close
-        && a.window.always_on_top == b.window.always_on_top
-        && a.window.auto_reload_config == b.window.auto_reload_config
-        && a.window.zen_hide == b.window.zen_hide
-        && a.window.zen_fullscreen == b.window.zen_fullscreen
-        && a.window.new_window_profile == b.window.new_window_profile;
-    let bell_eq = a.bell.mode == b.bell.mode;
-    let editor_eq = a.editor.command == b.editor.command;
-    let terminal_eq = a.terminal.word_separators == b.terminal.word_separators
-        && a.terminal.link_underline == b.terminal.link_underline
-        && a.terminal.os_notifications == b.terminal.os_notifications
-        && a.terminal.exit_behavior == b.terminal.exit_behavior
-        && a.terminal.hyperlink_rules == b.terminal.hyperlink_rules
-        && a.terminal.image_protocols.osc1337 == b.terminal.image_protocols.osc1337
-        && a.terminal.image_protocols.sixel == b.terminal.image_protocols.sixel
-        && a.terminal.image_protocols.apc == b.terminal.image_protocols.apc
-        // Fields below have live handlers; previously absent from this gate.
-        && a.terminal.live_pane_resize == b.terminal.live_pane_resize
-        && a.terminal.pane_resize_step_cells == b.terminal.pane_resize_step_cells
-        && a.terminal.show_prompt_marks == b.terminal.show_prompt_marks
-        && a.terminal.broadcast_scope == b.terminal.broadcast_scope
-        && a.terminal.link_hover_tooltip == b.terminal.link_hover_tooltip
-        && a.terminal.link_hover_delay_ms == b.terminal.link_hover_delay_ms
-        && a.terminal.edit_command_clears_line == b.terminal.edit_command_clears_line
-        && a.terminal.command_history_scope == b.terminal.command_history_scope
-        && a.terminal.command_history_max_entries == b.terminal.command_history_max_entries
-        && a.terminal.scrollback_export_format == b.terminal.scrollback_export_format
-        && a.terminal.scrollback_export_dir == b.terminal.scrollback_export_dir
-        // Paste safety fields — live-applied via the two apply blocks.
-        && a.terminal.paste_confirm_multiline == b.terminal.paste_confirm_multiline
-        && a.terminal.paste_confirm_when_unbracketed == b.terminal.paste_confirm_when_unbracketed
-        && a.terminal.paste_strip_control_chars == b.terminal.paste_strip_control_chars
-        && a.terminal.highlight_on_jump == b.terminal.highlight_on_jump;
-    let ssh_eq = a.ssh_hosts == b.ssh_hosts;
-    let snippets_eq = a.snippets == b.snippets;
-    let ctx_rules_eq = a.context_rules == b.context_rules;
-    let bg_fx_eq = a.background_fx.enabled == b.background_fx.enabled
-        && a.background_fx.style == b.background_fx.style
-        && (a.background_fx.intensity - b.background_fx.intensity).abs() < f32::EPSILON
-        && (a.background_fx.speed - b.background_fx.speed).abs() < f32::EPSILON
-        && a.background_fx.color1 == b.background_fx.color1
-        && a.background_fx.color2 == b.background_fx.color2
-        && a.background_fx.react_to_keystrokes == b.background_fx.react_to_keystrokes
-        && (a.background_fx.band_lifetime_secs - b.background_fx.band_lifetime_secs).abs()
-            < f32::EPSILON
-        && a.background_fx.matrix_band_width == b.background_fx.matrix_band_width
-        && (a.background_fx.matrix_fall_speed - b.background_fx.matrix_fall_speed).abs()
-            < f32::EPSILON
-        && a.background_fx.max_emitters == b.background_fx.max_emitters
-        && a.background_fx.pause_when_unfocused == b.background_fx.pause_when_unfocused;
-    let bg_img_eq = a.appearance.background_image.path == b.appearance.background_image.path
-        && (a.appearance.background_image.opacity - b.appearance.background_image.opacity).abs()
-            < f32::EPSILON
-        && a.appearance.background_image.fit == b.appearance.background_image.fit
-        && (a.appearance.background_image.brightness - b.appearance.background_image.brightness)
-            .abs()
-            < f32::EPSILON
-        && (a.appearance.background_image.saturation - b.appearance.background_image.saturation)
-            .abs()
-            < f32::EPSILON
-        && (a.appearance.background_image.hue - b.appearance.background_image.hue).abs()
-            < f32::EPSILON;
-    let quake_eq = a.quake.edge == b.quake.edge
-        && a.quake.display == b.quake.display
-        && a.quake.animation == b.quake.animation
-        && a.quake.animation_ms == b.quake.animation_ms
-        && (a.quake.size_percent - b.quake.size_percent).abs() < f32::EPSILON
-        && a.quake.margin_px == b.quake.margin_px
-        && a.quake.hide_on_focus_loss == b.quake.hide_on_focus_loss;
-    let qs_eq = a.quick_select.alphabet == b.quick_select.alphabet
-        && a.quick_select.patterns == b.quick_select.patterns
-        && (a.quick_select.overlay_dim - b.quick_select.overlay_dim).abs() < f32::EPSILON
-        && a.keybinds.shortcuts.quick_select == b.keybinds.shortcuts.quick_select
-        && a.keybinds.shortcuts.pane_select == b.keybinds.shortcuts.pane_select;
-    // Status-bar: all five fields are applied via update_status_bar; previously
-    // absent from this gate so toggling the bar or changing segments required a
-    // restart to take effect.
-    let sb_eq = a.status_bar.enabled == b.status_bar.enabled
-        && a.status_bar.position == b.status_bar.position
-        && a.status_bar.left_segments == b.status_bar.left_segments
-        && a.status_bar.right_segments == b.status_bar.right_segments
-        && a.status_bar.update_interval_ms == b.status_bar.update_interval_ms;
-    // Shortcuts: the entire map is live-applied via `state.shortcuts = …` in
-    // both apply blocks. Previously only quick_select and pane_select were in
-    // the gate; changing any other binding required a restart.
-    let sc = &a.keybinds.shortcuts;
-    let sc2 = &b.keybinds.shortcuts;
-    let shortcuts_eq = sc.new_tab == sc2.new_tab
-        && sc.close_tab == sc2.close_tab
-        && sc.next_tab == sc2.next_tab
-        && sc.prev_tab == sc2.prev_tab
-        && sc.move_tab_left == sc2.move_tab_left
-        && sc.move_tab_right == sc2.move_tab_right
-        && sc.profile_picker == sc2.profile_picker
-        && sc.restart_tab == sc2.restart_tab
-        && sc.copy == sc2.copy
-        && sc.paste == sc2.paste
-        && sc.select_all == sc2.select_all
-        && sc.find == sc2.find
-        && sc.clear == sc2.clear
-        && sc.settings == sc2.settings
-        && sc.font_increase == sc2.font_increase
-        && sc.font_decrease == sc2.font_decrease
-        && sc.font_reset == sc2.font_reset
-        && sc.scroll_line_up == sc2.scroll_line_up
-        && sc.scroll_line_down == sc2.scroll_line_down
-        && sc.scroll_page_up == sc2.scroll_page_up
-        && sc.scroll_page_down == sc2.scroll_page_down
-        && sc.scroll_top == sc2.scroll_top
-        && sc.scroll_bottom == sc2.scroll_bottom
-        && sc.ai_assistant == sc2.ai_assistant
-        && sc.command_palette == sc2.command_palette
-        && sc.explain_selection == sc2.explain_selection
-        && sc.clear_scrollback == sc2.clear_scrollback
-        && sc.reopen_closed_tab == sc2.reopen_closed_tab
-        && sc.stay_on_top == sc2.stay_on_top
-        && sc.snap_top == sc2.snap_top
-        && sc.snap_bottom == sc2.snap_bottom
-        && sc.snap_left == sc2.snap_left
-        && sc.snap_right == sc2.snap_right
-        && sc.snap_center == sc2.snap_center
-        && sc.snap_maximize == sc2.snap_maximize
-        && sc.split_right == sc2.split_right
-        && sc.split_down == sc2.split_down
-        && sc.split_left == sc2.split_left
-        && sc.split_up == sc2.split_up
-        && sc.close_pane == sc2.close_pane
-        && sc.focus_pane_left == sc2.focus_pane_left
-        && sc.focus_pane_right == sc2.focus_pane_right
-        && sc.focus_pane_up == sc2.focus_pane_up
-        && sc.focus_pane_down == sc2.focus_pane_down
-        && sc.toggle_pane_zoom == sc2.toggle_pane_zoom
-        && sc.resize_pane_left == sc2.resize_pane_left
-        && sc.resize_pane_right == sc2.resize_pane_right
-        && sc.resize_pane_up == sc2.resize_pane_up
-        && sc.resize_pane_down == sc2.resize_pane_down
-        && sc.activate_tab_1 == sc2.activate_tab_1
-        && sc.activate_tab_2 == sc2.activate_tab_2
-        && sc.activate_tab_3 == sc2.activate_tab_3
-        && sc.activate_tab_4 == sc2.activate_tab_4
-        && sc.activate_tab_5 == sc2.activate_tab_5
-        && sc.activate_tab_6 == sc2.activate_tab_6
-        && sc.activate_tab_7 == sc2.activate_tab_7
-        && sc.activate_tab_8 == sc2.activate_tab_8
-        && sc.activate_tab_9 == sc2.activate_tab_9
-        && sc.last_tab == sc2.last_tab
-        && sc.prev_prompt == sc2.prev_prompt
-        && sc.next_prompt == sc2.next_prompt
-        && sc.copy_mode == sc2.copy_mode
-        && sc.quick_select == sc2.quick_select
-        && sc.pane_select == sc2.pane_select
-        && sc.reload_config == sc2.reload_config
-        && sc.toggle_fullscreen == sc2.toggle_fullscreen
-        && sc.toggle_zen_mode == sc2.toggle_zen_mode
-        && sc.toggle_broadcast_input == sc2.toggle_broadcast_input
-        && sc.new_window == sc2.new_window
-        && sc.move_tab_to_new_window == sc2.move_tab_to_new_window
-        && sc.move_pane_to_new_tab == sc2.move_pane_to_new_tab
-        && sc.move_pane_to_new_window == sc2.move_pane_to_new_window
-        && sc.open_snippets == sc2.open_snippets
-        && sc.fix_last_command == sc2.fix_last_command
-        && sc.open_clipboard_history == sc2.open_clipboard_history;
-    let keybinds_eq = a.keybinds.quake == b.keybinds.quake
-        && shortcuts_eq
-        && a.keybinds.custom == b.keybinds.custom
-        && a.keybinds.key_tables == b.keybinds.key_tables
-        && a.keybinds.mouse == b.keybinds.mouse;
-    let clipboard_history_eq = a.clipboard_history.enabled == b.clipboard_history.enabled
-        && a.clipboard_history.size == b.clipboard_history.size
-        && a.clipboard_history.capture_osc52 == b.clipboard_history.capture_osc52;
-    let ai_eq = a.ai.suggestions.enabled == b.ai.suggestions.enabled
-        && a.ai.suggestions.trigger == b.ai.suggestions.trigger
-        && a.ai.suggestions.idle_secs == b.ai.suggestions.idle_secs
-        && a.ai.suggestions.context_lines == b.ai.suggestions.context_lines;
-    cur_eq
-        && appr_eq
-        && font_eq
-        && window_eq
-        && bell_eq
-        && editor_eq
-        && terminal_eq
-        && ssh_eq
-        && snippets_eq
-        && ctx_rules_eq
-        && bg_fx_eq
-        && bg_img_eq
-        && quake_eq
-        && qs_eq
-        && sb_eq
-        && keybinds_eq
-        && clipboard_history_eq
-        && ai_eq
-}
+    // Derived structural equality over the WHOLE config tree. This used to
+    // be a hand-written ~150-field diff that silently omitted entire
+    // sections (profiles, ai providers, gpu, updates, integration,
+    // directory_jump, resource_indicators, the [ssh] block, two dozen
+    // shortcuts, ...) - changing ONLY one of those fields in Settings was
+    // treated as "no change": neither live-applied nor persisted. Deriving
+    // PartialEq on every config struct makes the gate exhaustive by
+    // construction, and new fields are covered automatically.
+    a == b}
 
 // ── SSH import helpers / live-merge ──────────────────────────────────────────
 
@@ -12821,16 +12723,6 @@ mod tests {
         assert!(!rects_close(a, (100, 200, 800, 650), 6));
         // Moved 20px horizontally → not close.
         assert!(!rects_close(a, (120, 200, 800, 600), 6));
-    }
-
-    #[test]
-    fn lerp_rect_interpolates_position_and_keeps_target_size() {
-        // Halfway between two positions; size always taken from the target.
-        let a = (0, 0, 100, 200);
-        let b = (200, 100, 800, 600);
-        assert_eq!(lerp_rect(a, b, 0.0), (0, 0, 800, 600));
-        assert_eq!(lerp_rect(a, b, 0.5), (100, 50, 800, 600));
-        assert_eq!(lerp_rect(a, b, 1.0), (200, 100, 800, 600));
     }
 
     #[test]
@@ -14193,134 +14085,145 @@ mod tests {
         );
     }
 
-    // ── offscreen_rect ────────────────────────────────────────────────────────
+    // ── collapsed_edge_rect / scale_origin_rect ───────────────────────────────
 
-    /// Helper: assert the off-screen rect is fully past the given edge.
-    fn assert_offscreen_past_edge(
+    /// Helper: the collapsed rect must stay fully INSIDE the monitor — the
+    /// invariant that fixes the "window visible on the monitor above while
+    /// sliding" bug. Also asserts the dock edge stays pinned.
+    fn assert_collapsed_inside_monitor(
         edge: terminale_config::QuakeEdge,
         mon: terminale_config::MonitorRect,
         target: terminale_config::WindowRect,
     ) {
-        let off = offscreen_rect(edge, Some(mon), target);
+        let off = collapsed_edge_rect(edge, Some(mon), target);
         let (tx, ty, tw, th) = target;
         let (ox, oy, ow, oh) = off;
         let (mx, my, mw, mh) = mon;
 
-        // Size must be preserved.
-        assert_eq!(
-            ow, tw,
-            "offscreen_rect must preserve width for edge {edge:?}"
+        // Every collapsed rect must be fully inside the monitor bounds.
+        assert!(ox >= mx, "{edge:?}: x ({ox}) must be >= monitor left ({mx})");
+        assert!(oy >= my, "{edge:?}: y ({oy}) must be >= monitor top ({my})");
+        assert!(
+            ox + ow as i32 <= mx + mw as i32,
+            "{edge:?}: right edge must be inside the monitor"
         );
-        assert_eq!(
-            oh, th,
-            "offscreen_rect must preserve height for edge {edge:?}"
+        assert!(
+            oy + oh as i32 <= my + mh as i32,
+            "{edge:?}: bottom edge must be inside the monitor"
         );
 
-        // Position must be fully outside the monitor.
+        // The docked edge stays pinned; the perpendicular extent collapses.
         match edge {
             terminale_config::QuakeEdge::Top => {
-                // Window bottom must be at or above monitor top.
-                assert!(
-                    oy + oh as i32 <= my,
-                    "Top off-screen: bottom ({}) must be <= monitor top ({})",
-                    oy + oh as i32,
-                    my
-                );
-                assert_eq!(ox, tx, "Top offscreen must preserve x");
+                assert_eq!(oy, my, "Top: top edge pinned at monitor top");
+                assert_eq!((ox, ow, oh), (tx, tw, 1), "Top: width kept, height collapsed");
             }
             terminale_config::QuakeEdge::Bottom => {
-                // Window top must be at or below monitor bottom.
-                assert!(
-                    oy >= my + mh as i32,
-                    "Bottom off-screen: top ({oy}) must be >= monitor bottom ({})",
-                    my + mh as i32
+                assert_eq!(
+                    oy + oh as i32,
+                    my + mh as i32,
+                    "Bottom: bottom edge pinned at monitor bottom"
                 );
-                assert_eq!(ox, tx, "Bottom offscreen must preserve x");
+                assert_eq!((ox, ow, oh), (tx, tw, 1));
             }
             terminale_config::QuakeEdge::Left => {
-                // Window right edge must be at or left of monitor left.
-                assert!(
-                    ox + ow as i32 <= mx,
-                    "Left off-screen: right ({}) must be <= monitor left ({mx})",
-                    ox + ow as i32
-                );
-                assert_eq!(oy, ty, "Left offscreen must preserve y");
+                assert_eq!(ox, mx, "Left: left edge pinned");
+                assert_eq!((oy, ow, oh), (ty, 1, th));
             }
             terminale_config::QuakeEdge::Right => {
-                // Window left edge must be at or right of monitor right.
-                assert!(
-                    ox >= mx + mw as i32,
-                    "Right off-screen: left ({ox}) must be >= monitor right ({})",
-                    mx + mw as i32
+                assert_eq!(
+                    ox + ow as i32,
+                    mx + mw as i32,
+                    "Right: right edge pinned at monitor right"
                 );
-                assert_eq!(oy, ty, "Right offscreen must preserve y");
+                assert_eq!((oy, ow, oh), (ty, 1, th));
             }
             terminale_config::QuakeEdge::Off => {}
         }
     }
 
     #[test]
-    fn offscreen_rect_top_is_fully_above_monitor() {
+    fn collapsed_rect_top_stays_inside_monitor() {
         let mon = (0, 0, 1920u32, 1080u32);
         let target = (0, 0, 1920u32, 540u32);
-        assert_offscreen_past_edge(terminale_config::QuakeEdge::Top, mon, target);
-        // Exact value: y should be my - th = 0 - 540 = -540.
-        let off = offscreen_rect(terminale_config::QuakeEdge::Top, Some(mon), target);
-        assert_eq!(off, (0, -540, 1920, 540));
+        assert_collapsed_inside_monitor(terminale_config::QuakeEdge::Top, mon, target);
+        let off = collapsed_edge_rect(terminale_config::QuakeEdge::Top, Some(mon), target);
+        assert_eq!(off, (0, 0, 1920, 1));
     }
 
     #[test]
-    fn offscreen_rect_bottom_is_fully_below_monitor() {
+    fn collapsed_rect_bottom_stays_inside_monitor() {
         let mon = (0, 0, 1920u32, 1080u32);
         let target = (0, 756, 1920u32, 324u32);
-        assert_offscreen_past_edge(terminale_config::QuakeEdge::Bottom, mon, target);
-        // Exact value: y = my + mh = 0 + 1080 = 1080.
-        let off = offscreen_rect(terminale_config::QuakeEdge::Bottom, Some(mon), target);
-        assert_eq!(off, (0, 1080, 1920, 324));
+        assert_collapsed_inside_monitor(terminale_config::QuakeEdge::Bottom, mon, target);
+        let off = collapsed_edge_rect(terminale_config::QuakeEdge::Bottom, Some(mon), target);
+        assert_eq!(off, (0, 1079, 1920, 1));
     }
 
     #[test]
-    fn offscreen_rect_left_is_fully_left_of_monitor() {
+    fn collapsed_rect_left_stays_inside_monitor() {
         let mon = (100, 50, 1920u32, 1080u32);
         let target = (100, 50, 480u32, 1080u32);
-        assert_offscreen_past_edge(terminale_config::QuakeEdge::Left, mon, target);
-        // Exact value: x = mx - tw = 100 - 480 = -380.
-        let off = offscreen_rect(terminale_config::QuakeEdge::Left, Some(mon), target);
-        assert_eq!(off, (-380, 50, 480, 1080));
+        assert_collapsed_inside_monitor(terminale_config::QuakeEdge::Left, mon, target);
+        let off = collapsed_edge_rect(terminale_config::QuakeEdge::Left, Some(mon), target);
+        assert_eq!(off, (100, 50, 1, 1080));
     }
 
     #[test]
-    fn offscreen_rect_right_is_fully_right_of_monitor() {
+    fn collapsed_rect_right_stays_inside_monitor() {
         let mon = (100, 50, 1920u32, 1080u32);
         let target = (1540, 50, 480u32, 1080u32);
-        assert_offscreen_past_edge(terminale_config::QuakeEdge::Right, mon, target);
-        // Exact value: x = mx + mw = 100 + 1920 = 2020.
-        let off = offscreen_rect(terminale_config::QuakeEdge::Right, Some(mon), target);
-        assert_eq!(off, (2020, 50, 480, 1080));
+        assert_collapsed_inside_monitor(terminale_config::QuakeEdge::Right, mon, target);
+        let off = collapsed_edge_rect(terminale_config::QuakeEdge::Right, Some(mon), target);
+        assert_eq!(off, (2019, 50, 1, 1080));
     }
 
     #[test]
-    fn offscreen_rect_off_edge_falls_back_to_above() {
-        // When edge is Off (free-floating), the fallback should slide from above.
+    fn collapsed_rect_off_edge_collapses_in_place() {
+        // Free-floating: collapse at the target's own top edge — never
+        // translate above it (the old behaviour leaked onto the monitor above).
         let target = (200, 300, 800u32, 600u32);
-        let off = offscreen_rect(terminale_config::QuakeEdge::Off, None, target);
-        // y = ty - th = 300 - 600 = -300.
-        assert_eq!(off, (200, -300, 800, 600));
+        let off = collapsed_edge_rect(terminale_config::QuakeEdge::Off, None, target);
+        assert_eq!(off, (200, 300, 800, 1));
     }
 
     #[test]
-    fn offscreen_rect_preserves_full_dimensions() {
-        // Regardless of edge, width and height must equal the target's.
+    fn collapsed_rect_never_leaves_monitor_for_any_edge() {
         let mon = (0, 0, 2560u32, 1440u32);
         let target = (0, 0, 2560u32, 720u32);
         for edge in terminale_config::QuakeEdge::all() {
-            let off = offscreen_rect(edge, Some(mon), target);
-            assert_eq!(
-                (off.2, off.3),
-                (target.2, target.3),
-                "size must be preserved for edge {edge:?}"
+            let off = collapsed_edge_rect(edge, Some(mon), target);
+            let (ox, oy, ow, oh) = off;
+            assert!(
+                ox >= 0 && oy >= 0 && ox + ow as i32 <= 2560 && oy + oh as i32 <= 1440,
+                "collapsed rect must stay inside the monitor for edge {edge:?}, got {off:?}"
             );
         }
+    }
+
+    #[test]
+    fn scale_origin_rect_is_a_point_at_edge_centre() {
+        let mon = (0, 0, 1920u32, 1080u32);
+        let target = (0, 0, 1920u32, 540u32);
+        let off = scale_origin_rect(terminale_config::QuakeEdge::Top, Some(mon), target);
+        // 1×1 point at the centre of the top edge.
+        assert_eq!(off, (960, 0, 1, 1));
+        let off = scale_origin_rect(terminale_config::QuakeEdge::Bottom, Some(mon), target);
+        assert_eq!(off, (960, 1079, 1, 1));
+    }
+
+    #[test]
+    fn anim_rest_rect_fade_keeps_target_geometry() {
+        // Fade animates opacity only — its rest rect IS the target.
+        let mon = (0, 0, 1920u32, 1080u32);
+        let target = (0, 0, 1920u32, 540u32);
+        let off = anim_rest_rect(
+            terminale_config::QuakeAnimation::Fade,
+            terminale_config::QuakeEdge::Top,
+            Some(mon),
+            target,
+        );
+        assert_eq!(off, target);
     }
 
     // ── lerp_rect_full (Scale mode) ────────────────────────────────────────────
@@ -14361,19 +14264,6 @@ mod tests {
             "height at midpoint must be ~270, got {}",
             mid.3
         );
-    }
-
-    #[test]
-    fn lerp_rect_slide_midpoint_position_correct_size_always_target() {
-        // Slide: size must always equal the target, only position interpolates.
-        let off = (0, -540, 1920u32, 540u32);
-        let tgt = (0, 0, 1920u32, 540u32);
-        let mid = lerp_rect(off, tgt, 0.5);
-        assert_eq!(mid.0, 0);
-        assert_eq!(mid.1, -270);
-        // Size is always taken from `to`.
-        assert_eq!(mid.2, tgt.2);
-        assert_eq!(mid.3, tgt.3);
     }
 
     // ── configs_identical: new-field coverage ─────────────────────────────────

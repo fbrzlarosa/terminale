@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Anthropic-specific knobs.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ClaudeAiConfig {
     /// `$ANTHROPIC_API_KEY` if empty — never write the secret to the
@@ -28,7 +28,7 @@ impl Default for ClaudeAiConfig {
 }
 
 /// OpenAI-specific knobs.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct OpenAiAiConfig {
     /// `$OPENAI_API_KEY` if empty.
@@ -50,7 +50,7 @@ impl Default for OpenAiAiConfig {
 }
 
 /// Ollama-specific knobs.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct OllamaAiConfig {
     /// Daemon endpoint (defaults to the standard localhost port).
@@ -110,7 +110,7 @@ impl SuggestionTrigger {
 /// Proactive AI command-suggestion bar — the strip at the bottom of the window
 /// that reads recent terminal output and proposes the next command, with an
 /// inject button so the user can drop it onto the prompt for review.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct AiSuggestionsConfig {
     /// Master switch. When `false` the bar never appears and no provider
@@ -162,7 +162,7 @@ impl AiSuggestionsConfig {
 }
 
 /// Per-provider configuration block for the v2.0 AI assistant.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct AiConfig {
     /// Which provider should be used when the user invokes the

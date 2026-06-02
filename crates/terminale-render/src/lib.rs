@@ -609,6 +609,9 @@ pub struct Renderer {
     /// Override RGB for the focus-border stroke. `None` = fallback accent
     /// colour `ACCENT_FOCUS_BORDER`. Mirrors `appearance.focus_border_color`.
     focus_border_color: Option<[u8; 3]>,
+    /// Opacity of the focus-border stroke (0.0..=1.0). Mirrors
+    /// `appearance.focus_border_opacity`.
+    focus_border_alpha: f32,
     /// Pane ids that are currently receiving broadcast input. Set by the app
     /// each frame when broadcast mode is active; empty when broadcast is off.
     /// A distinct tinted border (amber) is drawn around these panes in
@@ -911,6 +914,12 @@ pub enum SuggestionBarState {
         /// Short human-readable failure reason.
         message: String,
     },
+    /// Unobtrusive "fix the failed command" offer (amber text). Shows a
+    /// `[Fix]` action button in place of `[INJECT]`.
+    Hint {
+        /// Short human-readable hint (e.g. the failed command + exit code).
+        message: String,
+    },
 }
 
 /// Retained state for the command-suggestion bar overlay.
@@ -954,6 +963,8 @@ enum SuggestionBody {
     Ready(String),
     /// The request failed.
     Error(String),
+    /// "Fix the failed command" offer (amber, `[Fix]` action button).
+    Hint(String),
 }
 
 /// Pure layout of the suggestion bar + its buttons from the surface size, DPI
@@ -1903,6 +1914,7 @@ impl Renderer {
             divider_quads: Vec::new(),
             focus_border_thickness_px: 2.0 * scale_factor,
             focus_border_color: None,
+            focus_border_alpha: 0.35,
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
@@ -2092,6 +2104,7 @@ impl Renderer {
             divider_quads: Vec::new(),
             focus_border_thickness_px: 2.0 * scale_factor,
             focus_border_color: None,
+            focus_border_alpha: 0.35,
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
@@ -2292,6 +2305,7 @@ impl Renderer {
             divider_quads: Vec::new(),
             focus_border_thickness_px: 2.0 * scale_factor,
             focus_border_color: None,
+            focus_border_alpha: 0.35,
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
@@ -2597,7 +2611,10 @@ impl Renderer {
         if self.search_overlay.is_some() {
             return None;
         }
-        let has_inject = matches!(bar.state, SuggestionBarState::Ready { .. });
+        let has_inject = matches!(
+            bar.state,
+            SuggestionBarState::Ready { .. } | SuggestionBarState::Hint { .. }
+        );
         let scale = if self.scale_factor > 0.0 {
             self.scale_factor
         } else {
@@ -2651,6 +2668,9 @@ impl Renderer {
                 SuggestionBarState::Error { message } => {
                     (false, SuggestionBody::Error(message.clone()))
                 }
+                SuggestionBarState::Hint { message } => {
+                    (true, SuggestionBody::Hint(message.clone()))
+                }
             },
         };
         let layout = suggestion_bar_layout(
@@ -2693,6 +2713,7 @@ impl Renderer {
         let dim = GlyphonColor::rgb(0x8a, 0x97, 0xbf);
         let bright = GlyphonColor::rgb(0xe6, 0xea, 0xf8);
         let err = GlyphonColor::rgb(0xff, 0x9b, 0x9b);
+        let warn = GlyphonColor::rgb(0xf0, 0xc6, 0x74);
 
         // "AI" label (accent).
         {
@@ -2719,6 +2740,7 @@ impl Renderer {
             }
             SuggestionBody::Ready(c) => (c.clone(), bright),
             SuggestionBody::Error(m) => (format!("error: {m}"), err),
+            SuggestionBody::Hint(m) => (m.clone(), warn),
         };
         let cmd_str = if raw.chars().count() > max_chars && max_chars > 1 {
             let kept: String = raw.chars().take(max_chars - 1).collect();
@@ -2739,9 +2761,13 @@ impl Renderer {
             texts.push((buf, [cmd_x * scale, ty]));
         }
 
-        // Inject caption, centred in the button.
+        // Action caption ([Inject] / [Fix]), centred in the button.
         if let Some(r) = layout.inject {
-            let cap = "Inject";
+            let cap = if matches!(body, SuggestionBody::Hint(_)) {
+                "Fix"
+            } else {
+                "Inject"
+            };
             let cap_w = cap.chars().count() as f32 * char_w;
             let cx = r.x + (r.w - cap_w) * 0.5;
             let mut buf = Buffer::new(&mut self.font_system, metrics);
@@ -4056,7 +4082,16 @@ impl Renderer {
         } else {
             0.0
         };
-        self.padding_px + sb_h + tab_h + res_h
+        // The AI suggestion bar floats directly above the resource strip;
+        // reserve its band while it is open so the bottom grid rows never
+        // render (or stay hidden) under it. The app reflows the PTY on the
+        // open/close transition (see the suggestion sync in about_to_wait).
+        let sug_h = if self.suggestion_bar.is_some() {
+            SUGGESTION_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        self.padding_px + sb_h + tab_h + res_h + sug_h
     }
 
     /// Convert a window pixel area to terminal cell dimensions.
@@ -5185,6 +5220,11 @@ impl Renderer {
         self.focus_border_color = color;
     }
 
+    /// Set the focus-border stroke opacity (clamped to `0.0..=1.0`).
+    pub fn set_focus_border_alpha(&mut self, alpha: f32) {
+        self.focus_border_alpha = alpha.clamp(0.0, 1.0);
+    }
+
     /// Set the ids of panes currently receiving broadcast input. While this
     /// list is non-empty a distinct amber tinted border is drawn around those
     /// panes so the user always sees broadcast mode is active. Pass an empty
@@ -5445,36 +5485,32 @@ impl Renderer {
                 // boundary by ±half_thick into both neighbours).
                 let i = t.ceil();
                 let accent = self.focus_border_color.unwrap_or(ACCENT_FOCUS_BORDER);
+                // Translucent stroke: drawn on the main layer (behind the
+                // glyph pass) at the configured opacity, so it reads as a
+                // background hint instead of a hard frame against the text.
+                let a = self.focus_border_alpha.clamp(0.0, 1.0);
                 // Top + bottom strokes (clamped to zero inner width).
                 let inner_w = (fw - 2.0 * i).max(0.0);
                 let inner_h = (fh - 2.0 * i).max(0.0);
                 // Top
-                self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + i],
-                    [inner_w, t],
-                    accent,
-                    1.0,
-                ));
+                self.focus_border_quads
+                    .push(Quad::new([fx + i, fy + i], [inner_w, t], accent, a));
                 // Bottom
                 self.focus_border_quads.push(Quad::new(
                     [fx + i, fy + fh - i - t],
                     [inner_w, t],
                     accent,
-                    1.0,
+                    a,
                 ));
                 // Left (full height corners filled by verticals)
-                self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + i],
-                    [t, inner_h],
-                    accent,
-                    1.0,
-                ));
+                self.focus_border_quads
+                    .push(Quad::new([fx + i, fy + i], [t, inner_h], accent, a));
                 // Right
                 self.focus_border_quads.push(Quad::new(
                     [fx + fw - i - t, fy + i],
                     [t, inner_h],
                     accent,
-                    1.0,
+                    a,
                 ));
             }
         }
@@ -9785,6 +9821,7 @@ mod tests {
                 (66.0, 8.0),         // tab bar + status bar top
                 (44.0, 30.0),        // tab bar top + status bar bottom
                 (66.0, 56.0),        // everything: both bars + resource strip
+                (66.0, 86.0),        // + the AI suggestion bar band (30px)
             ] {
                 for h_logical in [400.0_f32, 600.0, 768.0, 911.0, 1080.0] {
                     let h_px = (h_logical * scale).round();

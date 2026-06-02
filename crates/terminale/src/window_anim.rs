@@ -489,8 +489,23 @@ pub(crate) fn snap_window(state: &mut RunningState, edge: terminale_config::Snap
         edge,
         (pos.x, pos.y, size.width, size.height),
     );
-    // A snap supersedes any in-flight Quake slide.
+    // A snap supersedes any in-flight Quake slide. If a Fade was mid-flight,
+    // restore full opacity — the cancelled animation would otherwise leave
+    // the window semi-transparent.
+    if state.quake_anim.is_some() {
+        set_window_alpha(&state.window, 255);
+    }
     state.quake_anim = None;
+    // An explicit user re-position also supersedes any remembered floating
+    // geometry: the next Quake show must re-dock from the current monitor,
+    // not replay a stale quake_user_rect captured by a title-bar un-dock.
+    state.quake_user_rect = None;
+    // The snapped rect is the new docked baseline so a later title-bar drag
+    // still detects the un-dock against it (maybe_undock_quake_on_drag
+    // compares the live geometry to quake_last_dock_rect). quake_pre_dock_rect
+    // is left untouched on purpose — it holds the genuine pre-dock floating
+    // size a future drag should restore.
+    state.quake_last_dock_rect = Some(rect);
     apply_window_rect(&state.window, rect, true);
     state.window.request_redraw();
 }
@@ -600,22 +615,10 @@ pub(crate) fn maybe_undock_quake_on_drag(state: &mut RunningState, cursor_px: (f
     tracing::debug!(?dock, ?pre, ?target, "quake: un-docked on title-bar drag");
 }
 
-/// Linear-interpolate **position only** between two rects; size is always
-/// taken from `b`. Used by Slide and Bounce where the window size is constant
-/// throughout the animation.
-pub(crate) fn lerp_rect(
-    a: terminale_config::WindowRect,
-    b: terminale_config::WindowRect,
-    t: f32,
-) -> terminale_config::WindowRect {
-    #[allow(clippy::cast_possible_truncation)]
-    let lerp_i = |s: i32, e: i32| s + ((e - s) as f32 * t) as i32;
-    (lerp_i(a.0, b.0), lerp_i(a.1, b.1), b.2, b.3)
-}
-
 /// Linear-interpolate **both position and size** between two rects.
-/// Used by the `Scale` animation where the window grows from a collapsed strip
-/// at the dock edge to the full target rect.
+/// Used by every geometric Quake animation (Slide/Bounce/Scale): the reveal
+/// grows the window from a collapsed rect at the dock edge to the full
+/// target, so size always interpolates alongside position.
 pub(crate) fn lerp_rect_full(
     a: terminale_config::WindowRect,
     b: terminale_config::WindowRect,
@@ -633,20 +636,20 @@ pub(crate) fn lerp_rect_full(
     )
 }
 
-// ── offscreen_rect ────────────────────────────────────────────────────────────
+// ── collapsed_edge_rect / scale_origin_rect ──────────────────────────────────
 
-/// Compute the off-screen start rect for a Quake show animation (and the
-/// off-screen end rect for a hide animation).
+/// Compute the collapsed start rect for a Quake show animation (and the
+/// collapsed end rect for a hide animation) for the Slide/Bounce reveal.
 ///
-/// The window is placed **fully past the dock edge** so the opening frame is
-/// invisible to the user. The full target width and height are preserved, which
-/// means `lerp_rect` (position-only interpolation) produces a true slide with
-/// no size change. For `QuakeEdge::Off` or when `mon_rect` is unavailable, a
-/// fallback places the window one full height above the target (vertical slide
-/// that keeps the window off-screen upward).
+/// The window is collapsed to a 1-px strip **at the dock edge, inside the
+/// monitor** — the docked edge stays pinned and only the perpendicular extent
+/// animates. Unlike the old fully-past-the-edge translation, no interpolated
+/// frame ever leaves the monitor, so a display stacked above/beside never
+/// shows the window mid-slide. For `QuakeEdge::Off` or when `mon_rect` is
+/// unavailable, the window collapses in place at the target's own top edge.
 ///
 /// Unit-testable: no RunningState dependencies.
-pub(crate) fn offscreen_rect(
+pub(crate) fn collapsed_edge_rect(
     edge: terminale_config::QuakeEdge,
     mon_rect: Option<terminale_config::MonitorRect>,
     target: terminale_config::WindowRect,
@@ -655,38 +658,123 @@ pub(crate) fn offscreen_rect(
     let (tx, ty, tw, th) = target;
 
     match (edge, mon_rect) {
-        // Top-docked: place window just above the monitor's top edge.
-        (QuakeEdge::Top, Some((_, my, _, _))) => {
-            #[allow(clippy::cast_possible_wrap)]
-            let off_y = my - th as i32;
-            (tx, off_y, tw, th)
-        }
-        // Bottom-docked: place window just below the monitor's bottom edge.
+        // Top-docked: top edge pinned at the monitor top, height collapsed.
+        (QuakeEdge::Top, Some((_, my, _, _))) => (tx, my, tw, 1),
+        // Bottom-docked: bottom edge pinned at the monitor bottom.
         (QuakeEdge::Bottom, Some((_, my, _, mh))) => {
             #[allow(clippy::cast_possible_wrap)]
-            let off_y = my + mh as i32;
-            (tx, off_y, tw, th)
+            let y = my + mh as i32 - 1;
+            (tx, y, tw, 1)
         }
-        // Left-docked: place window just left of the monitor's left edge.
-        (QuakeEdge::Left, Some((mx, _, _, _))) => {
-            #[allow(clippy::cast_possible_wrap)]
-            let off_x = mx - tw as i32;
-            (off_x, ty, tw, th)
-        }
-        // Right-docked: place window just right of the monitor's right edge.
+        // Left-docked: left edge pinned, width collapsed.
+        (QuakeEdge::Left, Some((mx, _, _, _))) => (mx, ty, 1, th),
+        // Right-docked: right edge pinned.
         (QuakeEdge::Right, Some((mx, _, mw, _))) => {
             #[allow(clippy::cast_possible_wrap)]
-            let off_x = mx + mw as i32;
-            (off_x, ty, tw, th)
+            let x = mx + mw as i32 - 1;
+            (x, ty, 1, th)
         }
-        // Free-floating or no monitor info: fall back to sliding from above.
-        _ => {
+        // Free-floating or no monitor info: collapse in place (top edge of
+        // the target rect) — never translate off the visible area.
+        _ => (tx, ty, tw, 1),
+    }
+}
+
+/// Collapsed start/end rect for the `Scale` animation: a 1×1 point at the
+/// **centre of the dock edge**, so the window zooms in/out from that point
+/// (both axes), staying inside the monitor the whole time. Distinguishes
+/// Scale visually from the axis-only Slide reveal.
+pub(crate) fn scale_origin_rect(
+    edge: terminale_config::QuakeEdge,
+    mon_rect: Option<terminale_config::MonitorRect>,
+    target: terminale_config::WindowRect,
+) -> terminale_config::WindowRect {
+    use terminale_config::QuakeEdge;
+    let (tx, ty, tw, th) = target;
+    #[allow(clippy::cast_possible_wrap)]
+    let (cx, cy) = (tx + (tw / 2) as i32, ty + (th / 2) as i32);
+
+    match (edge, mon_rect) {
+        (QuakeEdge::Top, Some((_, my, _, _))) => (cx, my, 1, 1),
+        (QuakeEdge::Bottom, Some((_, my, _, mh))) => {
             #[allow(clippy::cast_possible_wrap)]
-            let off_y = ty - th as i32;
-            (tx, off_y, tw, th)
+            let y = my + mh as i32 - 1;
+            (cx, y, 1, 1)
+        }
+        (QuakeEdge::Left, Some((mx, _, _, _))) => (mx, cy, 1, 1),
+        (QuakeEdge::Right, Some((mx, _, mw, _))) => {
+            #[allow(clippy::cast_possible_wrap)]
+            let x = mx + mw as i32 - 1;
+            (x, cy, 1, 1)
+        }
+        // Free-floating: zoom from the target's top-centre.
+        _ => (cx, ty, 1, 1),
+    }
+}
+
+/// Pick the animation's collapsed rest rect for the given style. `Fade`
+/// keeps the full target geometry (only opacity animates); `None` is
+/// handled by the callers (instant).
+pub(crate) fn anim_rest_rect(
+    kind: terminale_config::QuakeAnimation,
+    edge: terminale_config::QuakeEdge,
+    mon_rect: Option<terminale_config::MonitorRect>,
+    target: terminale_config::WindowRect,
+) -> terminale_config::WindowRect {
+    use terminale_config::QuakeAnimation;
+    match kind {
+        QuakeAnimation::Scale => scale_origin_rect(edge, mon_rect, target),
+        QuakeAnimation::Fade => target,
+        _ => collapsed_edge_rect(edge, mon_rect, target),
+    }
+}
+
+// ── set_window_alpha ─────────────────────────────────────────────────────────
+
+/// Set the whole-window opacity (0 = fully transparent, 255 = opaque) for
+/// the `Fade` Quake animation. Windows-only: flips `WS_EX_LAYERED` on and
+/// drives `SetLayeredWindowAttributes`; at `alpha == 255` the layered bit is
+/// removed again so the window returns to the normal (non-layered)
+/// presentation path. No-op on other platforms (Fade degrades to instant).
+#[cfg(target_os = "windows")]
+pub(crate) fn set_window_alpha(window: &Window, alpha: u8) {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    #[link(name = "user32")]
+    extern "system" {
+        fn GetWindowLongPtrW(hwnd: isize, n_index: i32) -> isize;
+        fn SetWindowLongPtrW(hwnd: isize, n_index: i32, dw_new_long: isize) -> isize;
+        fn SetLayeredWindowAttributes(hwnd: isize, color: u32, alpha: u8, flags: u32) -> i32;
+    }
+    const GWL_EXSTYLE: i32 = -20;
+    const WS_EX_LAYERED: isize = 0x0008_0000;
+    const LWA_ALPHA: u32 = 0x0000_0002;
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+    let hwnd = h.hwnd.get();
+    // SAFETY: hwnd is a live Win32 HWND owned by winit; these user32 calls
+    // are documented as safe with any valid HWND.
+    unsafe {
+        let cur = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if alpha == 255 {
+            // Fully opaque: restore the normal presentation path.
+            SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, cur & !WS_EX_LAYERED);
+        } else {
+            if cur & WS_EX_LAYERED == 0 {
+                SetWindowLongPtrW(hwnd, GWL_EXSTYLE, cur | WS_EX_LAYERED);
+            }
+            SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
         }
     }
 }
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 
 // ── refresh_quake_last_monitor ────────────────────────────────────────────────
 
@@ -825,17 +913,29 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
         state.quake_visible = false;
 
         if animated && dur.as_millis() > 0 {
-            // Slide/Bounce/Scale: animate the window geometry out past the dock edge.
-            // We need the monitor rect to compute a proper off-screen destination.
-            // Re-use `compute_quake_target` to get the monitor; if that fails
-            // (e.g. free-floating mode), fall back to a vertical slide above.
+            // Slide/Bounce: collapse the window onto the dock edge (reveal in
+            // reverse); Scale: shrink to a point at the edge centre; Fade:
+            // geometry stays put and only the opacity animates. Every variant
+            // stays inside the monitor — no frame ever crosses onto a
+            // neighbouring display.
             let mon_rect = compute_quake_target(state, quake_cfg).and_then(|(_, m)| m);
-            let off = offscreen_rect(quake_cfg.edge, mon_rect, rect);
+            let off = anim_rest_rect(quake_cfg.animation, quake_cfg.edge, mon_rect, rect);
+            // Rapid-toggle: if a SHOW animation is still in flight, collapse
+            // from the live (mid-reveal) geometry instead of jumping back to
+            // the resting rect first. The SAVED rect above stays `anim.to`
+            // (the resting geometry) — only the animation start differs.
+            let from = if state.quake_anim.is_some() {
+                let p = state.window.outer_position().unwrap_or_default();
+                let s = state.window.inner_size();
+                (p.x, p.y, s.width, s.height)
+            } else {
+                rect
+            };
             state.quake_anim = Some(QuakeAnim {
                 start: std::time::Instant::now(),
                 duration: dur,
                 showing: false,
-                from: rect,
+                from,
                 to: off,
                 anim_kind: quake_cfg.animation,
             });
@@ -906,23 +1006,29 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
 
     if let Some((rect, mon_rect)) = target_and_mon {
         if animated && dur.as_millis() > 0 {
-            // Begin off-screen (past the dock edge), then slide/bounce/scale in.
-            // Place the window at the off-screen start position BEFORE making it
-            // visible so the first frame is never at the final rect.
+            let is_fade = matches!(quake_cfg.animation, terminale_config::QuakeAnimation::Fade);
+            // Begin collapsed at the dock edge (Slide/Bounce/Scale) or at the
+            // final rect with alpha 0 (Fade), then animate in. Place the
+            // window at the start geometry BEFORE making it visible so the
+            // first frame is never at the final rect.
             //
             // Rapid-toggle case: if the HIDE animation is still in flight the
-            // window is visible at an intermediate position — slide back in
-            // from THERE instead of teleporting off-screen first (the jump
-            // made fast toggles flicker).
+            // window is visible at an intermediate position — animate back in
+            // from THERE instead of teleporting first (the jump made fast
+            // toggles flicker).
             let from = if state.quake_anim.is_some() {
                 let p = state.window.outer_position().unwrap_or_default();
                 let s = state.window.inner_size();
                 (p.x, p.y, s.width, s.height)
             } else {
-                let off = offscreen_rect(quake_cfg.edge, mon_rect, rect);
+                let off = anim_rest_rect(quake_cfg.animation, quake_cfg.edge, mon_rect, rect);
                 apply_window_rect(&state.window, off, true);
                 off
             };
+            if is_fade {
+                // Start fully transparent; pump ramps the alpha up.
+                set_window_alpha(&state.window, 0);
+            }
             state.window.set_visible(true);
             state.window.focus_window();
             state.quake_anim = Some(QuakeAnim {
@@ -1065,61 +1171,75 @@ pub(crate) fn compute_quake_target(
 /// duration until the next frame is needed (`Some`) while animating, or
 /// `None` when idle/finished. Called from `about_to_wait`.
 pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Duration> {
+    use terminale_config::QuakeAnimation;
     let anim = state.quake_anim.as_ref()?;
     let elapsed = anim.start.elapsed();
     let total = anim.duration;
+    let is_fade = matches!(anim.anim_kind, QuakeAnimation::Fade);
     if elapsed >= total {
         // Finished.
         let showing = anim.showing;
         let to = anim.to;
-        let kind = anim.anim_kind;
         state.quake_anim = None;
         if showing {
-            // Snap to exact final rect on the last frame.
-            let is_scale = matches!(kind, terminale_config::QuakeAnimation::Scale);
-            apply_window_rect(&state.window, to, is_scale);
+            // Snap to exact final rect on the last frame. Every geometric
+            // variant is now a reveal (size interpolates), so the final
+            // frame must also resize.
+            apply_window_rect(&state.window, to, true);
         } else {
             state.window.set_visible(false);
+        }
+        // Fade: always return to full opacity once the animation is over —
+        // a hidden transparent window would otherwise reappear invisible on
+        // a later instant/slide show.
+        if is_fade {
+            set_window_alpha(&state.window, 255);
         }
         return None;
     }
     #[allow(clippy::cast_precision_loss)]
     let t = elapsed.as_secs_f32() / total.as_secs_f32();
 
-    // Showing: t goes 0→1 (off-screen → on-screen).
-    // Hiding:  t goes 0→1 but the rect goes from-target → off-screen.
+    // Showing: t goes 0→1 (collapsed/transparent → resting rect).
+    // Hiding:  t goes 0→1 but from resting → collapsed/transparent.
     // Either way the same easing applies.
 
     // Choose the easing curve per animation variant.
     let eased = match anim.anim_kind {
-        terminale_config::QuakeAnimation::Bounce => {
-            // Spring overshoot: cubic-out with a sin-damped bounce at ~80% of t.
+        QuakeAnimation::Bounce => {
+            // Springy growth: cubic-out with a sin-damped dip mid-flight.
+            // Clamped to 1.0 — the reveal interpolates SIZE, and overshooting
+            // past the target rect could poke beyond the monitor edge.
             use std::f32::consts::PI;
             let base = 1.0 - (1.0 - t).powi(3);
-            let overshoot = (1.0 - (t * PI).sin().abs() * 0.18).clamp(0.9, 1.06);
-            (base * overshoot).clamp(0.0, 1.06)
+            let wobble = (1.0 - (t * PI).sin().abs() * 0.18).clamp(0.9, 1.06);
+            (base * wobble).clamp(0.0, 1.0)
         }
         _ => {
-            // Ease-out cubic (Slide, Scale, and any future rect-interp variant).
+            // Ease-out cubic (Slide, Scale, Fade).
             1.0 - (1.0 - t).powi(3)
         }
     };
 
-    let is_scale = matches!(anim.anim_kind, terminale_config::QuakeAnimation::Scale);
-    let cur = if is_scale {
-        // Scale interpolates both position AND size so the window grows from a
-        // collapsed strip at the dock edge to the full target rect. Note that
-        // calling `request_inner_size` each frame may be less smooth on Windows
-        // due to ConPTY resize throttling — Slide is the recommended default.
-        lerp_rect_full(anim.from, anim.to, eased)
+    if is_fade {
+        // Fade: geometry is constant (from == to == resting rect); only the
+        // whole-window opacity animates. No-op on non-Windows (degrades to
+        // an instant show/hide at animation end).
+        let a = if anim.showing { eased } else { 1.0 - eased };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        set_window_alpha(&state.window, (a * 255.0).round().clamp(0.0, 255.0) as u8);
     } else {
-        // Slide/Bounce: position-only interpolation; size is always `to`.
-        lerp_rect(anim.from, anim.to, eased)
-    };
-    apply_window_rect(&state.window, cur, is_scale);
-    // A pure reposition (no size change) doesn't always generate a paint on
-    // Windows, so the slide can look like it "jumps". Force a redraw each
-    // frame so the animation actually plays.
+        // Slide/Bounce (axis reveal) and Scale (point zoom) interpolate both
+        // position and size — the docked edge stays pinned and the window
+        // never leaves the monitor. The PTY grid is NOT resized during the
+        // animation (see the pending_resize guard in main.rs): the surface
+        // clips the full-size frame, which is what makes it read as a reveal.
+        let cur = lerp_rect_full(anim.from, anim.to, eased);
+        apply_window_rect(&state.window, cur, true);
+    }
+    // A pure reposition/alpha change doesn't always generate a paint on
+    // Windows, so the animation can look like it "jumps". Force a redraw
+    // each frame so it actually plays.
     state.window.request_redraw();
     // ~60 Hz frame cadence.
     Some(std::time::Duration::from_millis(16))

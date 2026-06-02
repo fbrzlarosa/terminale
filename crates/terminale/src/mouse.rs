@@ -369,18 +369,31 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                 crate::handle_save_prompt_click(state, hit);
                 return;
             }
-            // Suggestion bar hit-test: inject or dismiss the proposed command.
+            // Suggestion bar hit-test: inject/fix or dismiss.
             if let Some(hit) = state.renderer.suggestion_bar_hit(pos_px.0, pos_px.1) {
                 match hit {
                     terminale_render::SuggestionBarHit::Inject => {
-                        if let crate::suggestions::SuggestionState::Ready(cmd) =
-                            &state.suggestions.state
-                        {
-                            if let Some(tab) = state.tabs.get(state.active_tab) {
-                                let _ = tab.session.write_input(cmd.as_bytes());
+                        match &state.suggestions.state {
+                            crate::suggestions::SuggestionState::Ready(cmd) => {
+                                if let Some(tab) = state.tabs.get(state.active_tab) {
+                                    let _ = tab.session.write_input(cmd.as_bytes());
+                                }
+                                state.suggestions.state =
+                                    crate::suggestions::SuggestionState::Hidden;
+                            }
+                            crate::suggestions::SuggestionState::Hint(_) => {
+                                // [Fix] — same flow as the FixLastCommand
+                                // shortcut: seed the AI assistant with the
+                                // failed block's command/output/exit code.
+                                state.suggestions.state =
+                                    crate::suggestions::SuggestionState::Hidden;
+                                crate::shortcuts::fix_last_command(state);
+                            }
+                            _ => {
+                                state.suggestions.state =
+                                    crate::suggestions::SuggestionState::Hidden;
                             }
                         }
-                        state.suggestions.state = crate::suggestions::SuggestionState::Hidden;
                     }
                     terminale_render::SuggestionBarHit::Dismiss => {
                         state.suggestions.state = crate::suggestions::SuggestionState::Hidden;

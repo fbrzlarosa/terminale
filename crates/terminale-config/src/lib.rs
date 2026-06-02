@@ -124,7 +124,7 @@ pub enum ConfigError {
 }
 
 /// Root configuration object loaded from `config.toml`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct Config {
     /// Font settings.
@@ -1069,6 +1069,7 @@ animated_tab_drag = false
             ("slide", QuakeAnimation::Slide),
             ("bounce", QuakeAnimation::Bounce),
             ("scale", QuakeAnimation::Scale),
+            ("fade", QuakeAnimation::Fade),
         ] {
             let toml_src = format!("[quake]\nanimation = \"{raw}\"\n");
             let cfg: Config = toml::from_str(&toml_src)
@@ -1079,10 +1080,12 @@ animated_tab_drag = false
 
     #[test]
     fn quake_animation_legacy_variants_map_to_slide() {
-        // Removed overlay variants (fade, zoom, pixel_dissolve, glitch,
+        // Removed overlay variants (zoom, pixel_dissolve, glitch,
         // scanline_wipe) must still parse without error — they map to Slide
-        // for backward compatibility with existing user configs.
-        for raw in ["fade", "zoom", "pixel_dissolve", "glitch", "scanline_wipe"] {
+        // for backward compatibility with existing user configs. (`fade` is
+        // a REAL variant again as of 0.1.12 — covered by the parse test
+        // above, not here.)
+        for raw in ["zoom", "pixel_dissolve", "glitch", "scanline_wipe"] {
             let toml_src = format!("[quake]\nanimation = \"{raw}\"\n");
             let cfg: Config = toml::from_str(&toml_src)
                 .unwrap_or_else(|e| panic!("legacy animation `{raw}` must parse: {e}"));

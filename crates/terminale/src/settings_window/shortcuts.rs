@@ -599,15 +599,12 @@ impl SettingsWindow {
                 .color(egui::Color32::from_rgb(140, 160, 200)),
         );
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Each entry maps a combo to an ordered list of actions. \
-                 Named actions (e.g. NewTab, Copy) run the built-in command; \
-                 entries starting with \"send:\" write bytes to the active pane \
-                 (\\n, \\r, \\t, \\e, \\\\, \\xNN are decoded).",
-            )
-            .weak()
-            .small(),
+        sublabel(
+            ui,
+            "Each entry maps a combo to an ordered list of actions. \
+             Named actions (e.g. NewTab, Copy) run the built-in command; \
+             entries starting with \"send:\" write bytes to the active pane \
+             (\\n, \\r, \\t, \\e, \\\\, \\xNN are decoded).",
         );
         ui.add_space(6.0);
 
@@ -732,14 +729,11 @@ impl SettingsWindow {
                 .color(egui::Color32::from_rgb(140, 160, 200)),
         );
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Each key table is activated by a leader combo. \
-                 While active, the next key dispatches its action list. \
-                 Esc or a configurable timeout exits the mode.",
-            )
-            .weak()
-            .small(),
+        sublabel(
+            ui,
+            "Each key table is activated by a leader combo. \
+             While active, the next key dispatches its action list. \
+             Esc or a configurable timeout exits the mode.",
         );
         ui.add_space(6.0);
 
@@ -929,14 +923,11 @@ impl SettingsWindow {
                 .color(egui::Color32::from_rgb(140, 160, 200)),
         );
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new(
-                "Map a mouse button + modifiers + click count to an action sequence. \
-                 Matching bindings run their actions and suppress the built-in behaviour \
-                 for that press. No entries = all default mouse behaviour is preserved.",
-            )
-            .weak()
-            .small(),
+        sublabel(
+            ui,
+            "Map a mouse button + modifiers + click count to an action sequence. \
+             Matching bindings run their actions and suppress the built-in behaviour \
+             for that press. No entries = all default mouse behaviour is preserved.",
         );
         ui.add_space(6.0);
 

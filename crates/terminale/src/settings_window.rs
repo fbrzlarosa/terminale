@@ -2790,19 +2790,25 @@ fn maybe_highlight_row(
 }
 
 fn sublabel(ui: &mut egui::Ui, text: &str) {
-    // Feature-description text under each control. egui's `.small()` read as too
-    // tiny, so bump it to ~90% of the body size — still secondary, but legible,
-    // and independent of the configured body font size.
-    let size = ui
-        .style()
-        .text_styles
-        .get(&egui::TextStyle::Body)
-        .map_or(13.0, |f| f.size * 0.9);
+    // Feature-description text under each control. egui's `.small()` read as
+    // too tiny, so size it relative to Body: 90% of Body plus one point
+    // (default Body 14.0 → 13.6pt) — still secondary, but legible, and it
+    // tracks the configured body font size.
+    let size = sublabel_size(ui);
     ui.label(
         egui::RichText::new(text)
             .size(size)
             .color(egui::Color32::from_rgb(120, 130, 160)),
     );
+}
+
+/// The font size `sublabel` renders at — exposed so description-like text
+/// that needs a custom color (e.g. warnings) can match it exactly.
+fn sublabel_size(ui: &egui::Ui) -> f32 {
+    ui.style()
+        .text_styles
+        .get(&egui::TextStyle::Body)
+        .map_or(14.0, |f| f.size * 0.9 + 1.0)
 }
 
 /// A small bold sub-header inside a settings page — used to group related

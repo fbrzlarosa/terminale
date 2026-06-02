@@ -45,7 +45,7 @@ impl CursorStyle {
 
 /// Cursor configuration. Mirrors the most common settings users tweak in
 /// other terminals (style, blink rate, custom colour).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct CursorConfig {
     /// Cursor shape.

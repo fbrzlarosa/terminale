@@ -96,7 +96,7 @@ impl GpuPowerPreference {
 
 /// GPU backend selection. Lets users force a specific graphics API or
 /// disable hardware acceleration outright (`backend = "software"`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct GpuConfig {
     /// Graphics API to target: `auto`, `vulkan`, `dx12`, `metal`, `gl`, or

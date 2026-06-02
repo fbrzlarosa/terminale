@@ -21,6 +21,10 @@ pub enum SuggestionState {
     Ready(String),
     /// The provider errored; a short message is shown in place of the command.
     Error(String),
+    /// Unobtrusive "Fix last command" offer after a non-zero exit
+    /// (`ai.offer_fix_on_failure`). Shows a [Fix] button instead of
+    /// [Inject]; shown independently of the auto-suggestion trigger.
+    Hint(String),
 }
 
 /// Per-window runtime state for the proactive suggestion bar.

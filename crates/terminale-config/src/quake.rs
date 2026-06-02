@@ -6,37 +6,33 @@ use serde::{Deserialize, Serialize};
 
 /// Open/close animation for the Quake show/hide toggle.
 ///
-/// All variants animate the **OS window geometry** (position and, for `Scale`,
-/// size). There are no in-content shader effects.
+/// `Slide`/`Bounce`/`Scale` animate the **OS window geometry** as an
+/// edge-pinned reveal that never leaves the monitor; `Fade` animates the
+/// whole-window opacity (Windows; instant elsewhere). There are no
+/// in-content shader effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuakeAnimation {
     /// Show/hide instantly, no animation.
     None,
-    /// Slide the window in from the dock edge (default). The window travels
-    /// from fully off-screen past the dock edge to its final position with an
-    /// ease-out cubic curve.
+    /// Slide (default): an edge-pinned reveal — the docked edge stays put
+    /// and the window's perpendicular extent grows/shrinks with an ease-out
+    /// cubic curve. Never crosses onto a neighbouring monitor.
     ///
-    /// Old config values `fade`, `zoom`, `pixel_dissolve`, `glitch`, and
-    /// `scanline_wipe` are silently mapped to `Slide` for backward compatibility.
-    #[serde(
-        alias = "fade",
-        alias = "zoom",
-        alias = "pixel_dissolve",
-        alias = "glitch",
-        alias = "scanline_wipe"
-    )]
+    /// Old config values `zoom`, `pixel_dissolve`, `glitch`, and
+    /// `scanline_wipe` are silently mapped to `Slide` for backward
+    /// compatibility.
+    #[serde(alias = "zoom", alias = "pixel_dissolve", alias = "glitch", alias = "scanline_wipe")]
     Slide,
-    /// Bounce — like Slide but with a spring overshoot near the end.
-    ///
-    /// Interpolates the window position; may stutter on Wayland.
+    /// Bounce — like Slide but with a springy, sin-damped growth curve.
     Bounce,
-    /// Scale — the window grows from a collapsed strip at the dock edge to its
-    /// full size, interpolating both position and size each frame.
-    ///
-    /// Note: resizing the surface each frame may be less smooth than Slide on
-    /// Windows (ConPTY resize throttling). Slide is the recommended default.
+    /// Scale — the window zooms from a point at the centre of the dock edge,
+    /// interpolating both axes each frame.
     Scale,
+    /// Fade — the window stays at its resting geometry and the whole-window
+    /// opacity animates (Windows layered-window alpha). On macOS/Linux this
+    /// currently degrades to an instant show/hide.
+    Fade,
 }
 
 impl Default for QuakeAnimation {
@@ -48,8 +44,8 @@ impl Default for QuakeAnimation {
 impl QuakeAnimation {
     /// All variants in display order — useful for UI dropdowns.
     #[must_use]
-    pub fn all() -> [Self; 4] {
-        [Self::None, Self::Slide, Self::Bounce, Self::Scale]
+    pub fn all() -> [Self; 5] {
+        [Self::None, Self::Slide, Self::Bounce, Self::Scale, Self::Fade]
     }
 
     /// Human-readable label for UI rendering.
@@ -60,6 +56,7 @@ impl QuakeAnimation {
             Self::Slide => "Slide",
             Self::Bounce => "Bounce",
             Self::Scale => "Scale",
+            Self::Fade => "Fade",
         }
     }
 }
@@ -150,7 +147,7 @@ impl Default for QuakeDisplay {
 /// when Quake became pure show/hide. Tolerating obsolete fields here lets
 /// older user configs keep loading instead of falling back to defaults
 /// (which silently loses ALL the user's other settings).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct QuakeConfig {
     /// Open/close animation style. Defaults to [`QuakeAnimation::Slide`].

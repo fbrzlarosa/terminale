@@ -212,7 +212,7 @@ impl KeyboardEncoding {
 /// Each toggle gates the corresponding OSC/DCS parser at parse time; the
 /// GPU upload and blit pipeline is always compiled in. Disabling a protocol
 /// is useful when a runaway script floods the terminal with large images.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ImageProtocolsConfig {
     /// Accept `OSC 1337;File=…` inline images (OSC 1337 inline-image protocol).
@@ -391,7 +391,7 @@ impl ScrollbackExportFormat {
 // ── TerminalConfig ────────────────────────────────────────────────────────────
 
 /// Terminal-grid behaviour knobs.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct TerminalConfig {
     /// Characters treated as word boundaries when expanding a double-click
@@ -651,7 +651,7 @@ impl TerminalConfig {
 }
 
 /// External-editor integration for clickable `file:line:col` references.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct EditorConfig {
     /// Command template launched on Ctrl+click of a path. Supports the

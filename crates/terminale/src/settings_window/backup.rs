@@ -59,12 +59,15 @@ impl SettingsWindow {
                 "Include SSH credentials from the OS keychain",
             );
             if self.backup.include_credentials {
+                // Warning keeps its amber color but matches the sublabel size
+                // so it stays as legible as every other description.
+                let size = sublabel_size(ui);
                 ui.label(
                     egui::RichText::new(
                         "\u{26A0} The backup will contain your SSH passwords (encrypted with your \
                          passphrase). Keep the file and passphrase safe.",
                     )
-                    .small()
+                    .size(size)
                     .color(egui::Color32::from_rgb(235, 190, 110)),
                 );
             } else {

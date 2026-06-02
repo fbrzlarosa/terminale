@@ -203,7 +203,7 @@ impl TabBarPosition {
 }
 
 /// Theme / palette settings.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct AppearanceConfig {
     /// Name of the active theme (must match a builtin or a user-defined theme).
@@ -260,6 +260,11 @@ pub struct AppearanceConfig {
     /// built-in accent colour `[0x7d, 0xa6, 0xff]`.
     #[schemars(with = "Option<String>")]
     pub focus_border_color: Option<[u8; 3]>,
+    /// Opacity of the focus-border stroke (`0.0..=1.0`). The stroke is drawn
+    /// on the background layer (under the text); a low default keeps it a
+    /// subtle hint instead of a hard frame crowding the first row.
+    /// Default: `0.35`.
+    pub focus_border_opacity: f32,
     /// When `true` and a tab holds more than one pane, each pane shows a
     /// 22 px header strip with its title and a close X. Set `false` to
     /// reclaim the vertical space.
@@ -366,6 +371,7 @@ impl Default for AppearanceConfig {
             divider_color: None,
             focus_border_thickness_logical: 2.0,
             focus_border_color: None,
+            focus_border_opacity: 0.35,
             show_pane_headers: true,
             tab_bar_enabled: true,
             tab_bar_position: TabBarPosition::Top,
@@ -527,6 +533,12 @@ impl AppearanceConfig {
             return Err(ConfigError::Invalid {
                 field: "appearance.focus_border_thickness_logical",
                 message: "must be between 0.0 and 8.0",
+            });
+        }
+        if !(0.0..=1.0).contains(&self.focus_border_opacity) {
+            return Err(ConfigError::Invalid {
+                field: "appearance.focus_border_opacity",
+                message: "must be between 0.0 and 1.0",
             });
         }
         if !(120.0..=360.0).contains(&self.vertical_tab_bar_width) {

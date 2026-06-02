@@ -32,7 +32,7 @@ impl BellMode {
 }
 
 /// Bell configuration block.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct BellConfig {
     /// What to do when the focused app emits `BEL`.

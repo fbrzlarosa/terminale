@@ -215,7 +215,7 @@ fn default_zen_fullscreen() -> bool {
 }
 
 /// Window configuration.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct WindowConfig {
     /// Window opacity in `[0.0, 1.0]`.
