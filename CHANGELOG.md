@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.11]
+
+### Fixed
+- macOS: a docked Quake window no longer leaves an empty strip below the
+  menu bar and no longer stutters while sliding. Dock modes are positioned
+  natively (`NSWindow.setFrame` against the screen's visible frame, with
+  AppKit's built-in frame animation) instead of through winit, which
+  double-counts the menu bar and repositions frame-by-frame. The app is
+  also activated on show, so the hotkey takes keyboard focus from any app
+
 ## [0.1.10]
 
 ### Added
