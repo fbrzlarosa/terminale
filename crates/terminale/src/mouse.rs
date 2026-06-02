@@ -464,15 +464,18 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                     return;
                 }
                 Some(TabHit::CloseWindow) => {
-                    // Honour confirm_close like the OS close button.
-                    if crate::close_confirmed(state) {
+                    // Honour confirm_close like the OS close button: queue
+                    // the request so the App opens the confirmation dialog.
+                    if state.confirm_close {
+                        state.pending_close_confirm =
+                            Some(crate::confirm_close::CloseTarget::Window);
+                        state.window.request_redraw();
+                    } else {
                         // signal to the App to close this window
                         state.window.set_visible(false);
                         // A visibility-false window is reaped by
                         // `reap_empty_windows`; clear tabs so it qualifies.
                         state.tabs.clear();
-                    } else {
-                        state.window.request_redraw();
                     }
                     return;
                 }

@@ -61,6 +61,10 @@ pub struct AiAssistantWindow {
     /// Set when the user clicks "Inject" — the host reads this and writes
     /// the command into the active PTY, then clears it.
     inject_request: Option<String>,
+    /// Structured terminal-context snapshot (`<context>…</context>`) built by
+    /// the host when the window opens — OS/shell/cwd, recent commands with
+    /// exit codes, last failure output. Sent once as a system message.
+    term_context: Option<String>,
     requested_close: bool,
     next_repaint: Option<std::time::Instant>,
     first_frame_done: bool,
@@ -81,6 +85,10 @@ impl AiAssistantWindow {
         // (used by "Explain Selection" — the assistant starts answering
         // immediately instead of waiting for the user to type).
         initial_prompt: Option<String>,
+        // Structured terminal-context snapshot (`<context>…</context>`) from
+        // the focused pane; sent once as a leading system message so even a
+        // plain open reasons about the real OS/shell/cwd/last failure.
+        term_context: Option<String>,
     ) -> Self {
         let mut attrs = Window::default_attributes()
             .with_title("terminale — AI")
@@ -172,6 +180,7 @@ impl AiAssistantWindow {
             input: String::new(),
             provider,
             inject_request: None,
+            term_context,
             requested_close: false,
             next_repaint: None,
             first_frame_done: false,
@@ -337,10 +346,23 @@ impl AiAssistantWindow {
         // Build the conversation with a terminal-focused system prompt so
         // command suggestions come back in fenced blocks we can extract.
         let mut messages = vec![terminale_ai::AiMessage::system(
-            "You are a terminal assistant embedded in a shell. Be concise. \
-             When you suggest a shell command, put ONLY the command inside a \
-             fenced code block (```), no prose inside the block.",
+            "You are a terminal assistant embedded in a shell. You may be \
+             given the user's OS, shell, cwd, recent commands with their exit \
+             status, and the last failed command's output inside a <context> \
+             block — treat that context as authoritative. Be concise. When a \
+             command failed, first state the one-line cause, then give the \
+             corrected command. When you suggest a shell command, put ONLY \
+             the command inside a fenced code block (```), no prose inside \
+             the block. NEVER suggest a command byte-identical to one marked \
+             FAILED in the context — fix it or propose a different approach. \
+             Match the user's actual shell syntax (PowerShell cmdlets on \
+             PowerShell, never `ls -l` there).",
         )];
+        // Terminal-context snapshot (set by the host when the window opens):
+        // sent ONCE as a leading system message, not re-sent per user turn.
+        if let Some(ctx) = &self.term_context {
+            messages.push(terminale_ai::AiMessage::system(ctx.clone()));
+        }
         for m in &self.transcript {
             messages.push(match m.role {
                 Role::User => terminale_ai::AiMessage::user(m.text.clone()),
@@ -351,7 +373,9 @@ impl AiAssistantWindow {
             model,
             messages,
             max_tokens,
-            temperature: None,
+            // Low temperature: terminal Q&A wants the most-likely correct
+            // fix, not creative variety (mirrors the suggestion bar).
+            temperature: Some(0.2),
         };
 
         let proxy = self.proxy.clone();

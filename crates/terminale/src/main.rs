@@ -11,6 +11,7 @@
 mod ai_assistant_window;
 mod app_icon;
 mod config_watch;
+mod confirm_close;
 mod context_menu_window;
 mod copy_mode;
 #[cfg(target_os = "linux")]
@@ -667,6 +668,7 @@ fn main() -> Result<()> {
         settings: None,
         context_menu: None,
         password_prompt: None,
+        confirm_close_dialog: None,
         paste_guard_dialog: None,
         paste_guard_window_idx: 0,
         proxy: event_loop.create_proxy(),
@@ -949,6 +951,8 @@ struct TerminaleApp {
     /// Paste-safety confirmation dialog. Open when a multi-line paste is
     /// pending and the safety policy requires confirmation. On confirm the
     /// buffered text is written to the PTY; on cancel it is dropped.
+    /// Close-confirmation dialog (`window.confirm_close`), at most one open.
+    confirm_close_dialog: Option<confirm_close::ConfirmCloseDialog>,
     paste_guard_dialog: Option<paste_guard::PasteGuardDialog>,
     /// Index into `self.windows` of the window that triggered the pending
     /// paste guard. Used to route the confirmed payload back to the right PTY.
@@ -1641,12 +1645,8 @@ struct TermWindow {
     /// none. Read by `refresh_autodetect_links` and the hover handler.
     link_underline: terminale_config::LinkUnderline,
     /// When `true`, a tab / window close needs a confirming second close
-    /// action within [`CONFIRM_CLOSE_WINDOW`]. Mirrors `window.confirm_close`.
+    /// action via the confirmation dialog. Mirrors `window.confirm_close`.
     confirm_close: bool,
-    /// `Some(deadline)` while a close is armed and waiting for the
-    /// confirming second action. Cleared once it fires, expires, or any
-    /// other action intervenes. Only meaningful when `confirm_close`.
-    pending_close: Option<std::time::Instant>,
     /// Whether the window is pinned above all others. Mirrors
     /// `window.always_on_top`; applied live to the OS window level when
     /// toggled from settings / palette / menu.
@@ -2131,6 +2131,10 @@ struct TermWindow {
     /// stashed here so the App event loop can open the dialog.
     /// `Some((text, bracketed))` means a guard dialog should be opened.
     pending_paste_guard: Option<(String, bool)>,
+    /// When `window.confirm_close` is on, a tab/window close request is
+    /// stashed here so the App event loop can open the confirmation dialog
+    /// (it needs `event_loop`, which `RunningState`-level code never has).
+    pending_close_confirm: Option<crate::confirm_close::CloseTarget>,
 
     // ── Paste safety mirrors ──────────────────────────────────────────────────
     /// Mirror of `config.terminal.paste_confirm_multiline`. When `true`,
@@ -2516,7 +2520,6 @@ impl TerminaleApp {
             word_separators: self.config.terminal.word_separators.clone(),
             link_underline: self.config.terminal.link_underline,
             confirm_close: self.config.window.confirm_close,
-            pending_close: None,
             always_on_top: self.config.window.always_on_top,
             closed_tabs: Vec::new(),
             previous_active_tab: None,
@@ -2661,6 +2664,7 @@ impl TerminaleApp {
             clipboard_history_capture_osc52: self.config.clipboard_history.capture_osc52,
             pending_paste_clipboard_entry: None,
             pending_paste_guard: None,
+            pending_close_confirm: None,
             paste_confirm_multiline: self.config.terminal.paste_confirm_multiline,
             paste_confirm_when_unbracketed: self.config.terminal.paste_confirm_when_unbracketed,
             paste_strip_control_chars: self.config.terminal.paste_strip_control_chars,
@@ -4321,25 +4325,14 @@ impl TerminaleApp {
             return;
         };
 
-        // Build context from the focused pane's buffer before touching suggestions.
-        let ctx_lines = self.config.ai.suggestions.context_lines as usize;
-        let (context, current_line, shell) = if let Some(tab) = state.tabs.get(state.active_tab) {
-            let emu = tab.emulator.lock();
-            let all_lines = emu.buffer_lines_text();
-            let start = all_lines.len().saturating_sub(ctx_lines);
-            let context = all_lines[start..].join("\n");
-            // The cursor's visible row maps into buffer_lines_text() AFTER the
-            // scrollback prefix (history_size + viewport row); see
-            // `suggestions::current_line_index`.
-            let (_, crow) = emu.cursor();
-            let buf_idx = suggestions::current_line_index(crow, emu.history_size());
-            let current_line = all_lines.get(buf_idx).cloned().unwrap_or_default();
-            // The launching profile name is our best shell hint (e.g.
-            // "PowerShell", "bash") so the model matches the right syntax.
-            (context, current_line, tab.profile_name.clone())
-        } else {
-            (String::new(), String::new(), String::new())
-        };
+        // Build STRUCTURED context from the focused pane's OSC 133 command
+        // blocks: recent commands with exit status, plus the last command's
+        // scoped output when it failed. This is what lets the model honour
+        // "never re-suggest the command that just failed" — the old 200-line
+        // raw scrollback dump gave it no way to tell commands, echoes and
+        // errors apart, so it kept proposing the failed command back.
+        let fallback_tail = (self.config.ai.suggestions.context_lines as usize).min(40);
+        let sctx = build_suggestion_context(state, fallback_tail);
 
         // Bump generation and set Loading state.
         state.suggestions.generation = state.suggestions.generation.wrapping_add(1);
@@ -4379,12 +4372,14 @@ impl TerminaleApp {
         let generation = state.suggestions.generation;
         let proxy = self.proxy.clone();
 
-        let messages = terminale_ai::suggestion_messages(
-            &context,
-            &current_line,
-            &shell,
-            std::env::consts::OS,
-        );
+        // Defensive dedup: even with the structured prompt, a weak model may
+        // ignore the rule and re-emit the failed command — discard that
+        // verbatim repeat instead of surfacing it.
+        let failed_cmd = sctx
+            .last_error
+            .as_ref()
+            .map(|e| e.command.trim().to_string());
+        let messages = terminale_ai::suggestion_messages(&sctx);
         let req = terminale_ai::AiRequest {
             model,
             messages,
@@ -4399,6 +4394,9 @@ impl TerminaleApp {
             let provider = terminale_ai::build_provider(&provider_name, secret, ollama_url);
             let outcome = match provider.complete(req).await {
                 Ok(text) => match terminale_ai::extract_suggested_command(&text) {
+                    Some(cmd) if failed_cmd.as_deref() == Some(cmd.trim()) => {
+                        suggestions::SuggestionOutcome::Error("no suggestion".into())
+                    }
                     Some(cmd) => suggestions::SuggestionOutcome::Ready(cmd),
                     None => suggestions::SuggestionOutcome::Error("no suggestion".into()),
                 },
@@ -4695,7 +4693,8 @@ impl TerminaleApp {
                         .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
                     state.confirm_close = cfg.window.confirm_close;
                     if !state.confirm_close {
-                        state.pending_close = None;
+                        // Turning the feature off cancels any queued request.
+                        state.pending_close_confirm = None;
                     }
                     state.renderer.set_background_alpha(cfg.window.opacity);
                     state.renderer.set_padding(cfg.window.padding as f32);
@@ -6167,6 +6166,38 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             }
         }
 
+        // Close-confirmation dialog route — handled separately.
+        if let Some(dialog) = self.confirm_close_dialog.as_mut() {
+            if dialog.id() == id {
+                let close = dialog.handle_event(&event);
+                let outcome = dialog.take_outcome();
+                let target = dialog.target();
+                let parent = dialog.parent_id();
+                if close {
+                    self.confirm_close_dialog = None;
+                }
+                if let Some(confirm_close::ConfirmCloseOutcome::Confirm) = outcome {
+                    if let Some(idx) = self.window_index(parent) {
+                        match target {
+                            confirm_close::CloseTarget::Window => {
+                                self.windows.remove(idx);
+                                if self.windows.is_empty() {
+                                    event_loop.exit();
+                                }
+                            }
+                            confirm_close::CloseTarget::Tab(t) => {
+                                // `close_tab` guards a stale index itself.
+                                tabs::close_tab(&mut self.windows[idx], t);
+                                self.windows[idx].window.request_redraw();
+                            }
+                        }
+                    }
+                }
+                // Cancelled outcome → keep everything open.
+                return;
+            }
+        }
+
         // Paste-guard confirmation dialog route — handled separately.
         if let Some(dialog) = self.paste_guard_dialog.as_mut() {
             if dialog.id() == id {
@@ -6267,16 +6298,33 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
 
         // CloseRequested closes only THIS window. The process exits only
         // when the last terminal window is gone. Honour `confirm_close` for
-        // the OS close button / Alt+F4 too: the first request arms, a second
-        // within the window actually closes.
+        // the OS close button / Alt+F4 too: a confirmation dialog opens and
+        // the window closes only on Confirm.
         if matches!(event, WindowEvent::CloseRequested) {
-            if close_confirmed(&mut self.windows[idx]) {
+            if self.windows[idx].confirm_close {
+                if self.confirm_close_dialog.is_none() {
+                    let state = &self.windows[idx];
+                    let n = state.tabs.len();
+                    let detail = format!(
+                        "{n} tab{} will be closed.",
+                        if n == 1 { "" } else { "s" }
+                    );
+                    self.confirm_close_dialog = Some(confirm_close::ConfirmCloseDialog::open(
+                        event_loop,
+                        &state.window,
+                        confirm_close::CloseTarget::Window,
+                        detail,
+                        state.renderer.instance(),
+                        state.renderer.adapter(),
+                        state.renderer.device(),
+                        state.renderer.queue(),
+                    ));
+                }
+            } else {
                 self.windows.remove(idx);
                 if self.windows.is_empty() {
                     event_loop.exit();
                 }
-            } else {
-                self.windows[idx].window.request_redraw();
             }
             return;
         }
@@ -7138,6 +7186,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             state.open_ai_requested = false;
             let seed = state.pending_ai_prompt.take();
             if self.ai_assistant.is_none() {
+                // Snapshot the focused pane's structured context (OS, shell,
+                // cwd, recent commands + exit codes, last failure output) so
+                // even a plain open doesn't start from a blank slate.
+                let term_ctx = terminale_ai::assistant_context_block(&build_suggestion_context(
+                    state, 40,
+                ));
                 let win = ai_assistant_window::AiAssistantWindow::open(
                     event_loop,
                     self.config.ai.clone(),
@@ -7148,6 +7202,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.renderer.device(),
                     state.renderer.queue(),
                     seed,
+                    Some(term_ctx),
                 );
                 self.ai_assistant = Some(win);
             } else if let Some(ai) = self.ai_assistant.as_mut() {
@@ -7398,6 +7453,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // Paste-guard dialog trigger: capture so we can open the dialog after
         // the state borrow ends (dialog open needs wgpu handles from state).
         let pending_paste_guard = state.pending_paste_guard.take();
+        // Close-confirmation dialog trigger — same deferred-open pattern.
+        let pending_close_confirm = state.pending_close_confirm.take();
         // Workspace save/open deferred so we can operate on the full window
         // state after the borrow ends.
         let pending_save_ws = state.pending_save_workspace.take();
@@ -7575,6 +7632,45 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 );
                 self.paste_guard_dialog = Some(dialog);
                 self.paste_guard_window_idx = idx;
+            }
+        }
+
+        // ── Close-confirmation dialog ─────────────────────────────────────────
+
+        // Open the confirmation dialog for a queued tab/window close request
+        // (`window.confirm_close`). At most one dialog at a time — a second
+        // request while one is open is dropped (the user must answer first).
+        if let Some(target) = pending_close_confirm {
+            if self.confirm_close_dialog.is_none() {
+                if let Some(state) = self.windows.get(idx) {
+                    let detail = match target {
+                        confirm_close::CloseTarget::Window => {
+                            let n = state.tabs.len();
+                            format!("{n} tab{} will be closed.", if n == 1 { "" } else { "s" })
+                        }
+                        confirm_close::CloseTarget::Tab(t) => state
+                            .tabs
+                            .get(t)
+                            .map(|tab| {
+                                let title = tab
+                                    .custom_title
+                                    .clone()
+                                    .unwrap_or_else(|| tab.profile_name.clone());
+                                format!("\u{201c}{title}\u{201d} will be closed.")
+                            })
+                            .unwrap_or_default(),
+                    };
+                    self.confirm_close_dialog = Some(confirm_close::ConfirmCloseDialog::open(
+                        event_loop,
+                        &state.window,
+                        target,
+                        detail,
+                        state.renderer.instance(),
+                        state.renderer.adapter(),
+                        state.renderer.device(),
+                        state.renderer.queue(),
+                    ));
+                }
             }
         }
 
@@ -8438,10 +8534,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                             .renderer
                             .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
                         state.confirm_close = cfg.window.confirm_close;
-                        // Disarming any pending confirm if the user turned the
-                        // feature off keeps a stale armed deadline from acting.
+                        // Turning the feature off cancels any queued request.
                         if !state.confirm_close {
-                            state.pending_close = None;
+                            state.pending_close_confirm = None;
                         }
                         state.renderer.set_background_alpha(cfg.window.opacity);
                         state.renderer.set_padding(cfg.window.padding as f32);
@@ -9195,6 +9290,73 @@ fn resize_all_tabs(state: &mut RunningState, width_px: u32, height_px: u32) {
             }
         }
     }
+}
+
+/// Build the structured terminal context for the AI features from the
+/// focused pane: OS, shell, cwd (OSC 7), the last ~5 commands with their
+/// exit codes (OSC 133 command blocks) and — when the most recent command
+/// failed — that command's own output, capped to the Fix-feature limits.
+/// Shells without OSC 133 integration degrade to a small raw output tail
+/// of at most `fallback_tail_lines` lines.
+///
+/// Shared by the proactive suggestion bar and the AI assistant window so
+/// both reason over the same, signal-dense view of the terminal.
+fn build_suggestion_context(
+    state: &RunningState,
+    fallback_tail_lines: usize,
+) -> terminale_ai::SuggestionContext {
+    let mut sctx = terminale_ai::SuggestionContext {
+        os: std::env::consts::OS.to_string(),
+        ..Default::default()
+    };
+    if let Some(tab) = state.tabs.get(state.active_tab) {
+        let emu = tab.emulator.lock();
+        let all_lines = emu.buffer_lines_text();
+        // The cursor's visible row maps into buffer_lines_text() AFTER the
+        // scrollback prefix (history_size + viewport row); see
+        // `suggestions::current_line_index`.
+        let (_, crow) = emu.cursor();
+        let buf_idx = suggestions::current_line_index(crow, emu.history_size());
+        sctx.current_line = all_lines.get(buf_idx).cloned().unwrap_or_default();
+        // The launching profile name is our best shell hint (e.g.
+        // "PowerShell", "bash") so the model matches the right syntax.
+        sctx.shell = tab.profile_name.clone();
+        let blocks = emu.command_blocks();
+        if blocks.is_empty() {
+            // No shell integration: fall back to a SMALL raw output tail —
+            // signal density matters more than volume here.
+            let start = all_lines.len().saturating_sub(fallback_tail_lines);
+            sctx.output_tail = all_lines[start..].join("\n");
+        } else {
+            const RECENT_COMMANDS: usize = 5;
+            let s = blocks.len().saturating_sub(RECENT_COMMANDS);
+            sctx.recent_commands = blocks[s..]
+                .iter()
+                .filter(|b| !b.command_text.trim().is_empty())
+                .map(|b| (b.command_text.clone(), b.exit_code))
+                .collect();
+            if let Some(b) = blocks.last() {
+                sctx.cwd = b.cwd.clone();
+                if let Some(code) = b.exit_code.filter(|&c| c != 0) {
+                    #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+                    let hist = emu.history_size() as i32;
+                    let out_end = b.end_line.unwrap_or(b.output_start_line);
+                    let output = crate::shortcuts::extract_block_output_lines(
+                        &all_lines,
+                        hist,
+                        b.output_start_line,
+                        out_end,
+                    );
+                    sctx.last_error = Some(terminale_ai::LastError {
+                        command: b.command_text.clone(),
+                        exit: code,
+                        output,
+                    });
+                }
+            }
+        }
+    }
+    sctx
 }
 
 /// Map the per-window suggestion runtime state to the render-layer bar.

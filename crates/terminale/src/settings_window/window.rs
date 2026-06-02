@@ -77,7 +77,8 @@ impl SettingsWindow {
             self.highlight_row(ui, hr.response.rect, Section::Window, "Confirm close");
             sublabel(
                 ui,
-                "Require a confirming second close action within ~1.5 s before a tab or the window closes. No dialog — a brief flash signals the first press.",
+                "Show a confirmation dialog before a tab or the window closes. \
+                 Close confirms, Cancel/Esc keeps everything open.",
             );
         });
 

@@ -522,41 +522,21 @@ pub(crate) fn reopen_closed_tab(state: &mut RunningState) {
     }
 }
 
-// ── close_confirmed / request_close_tab / close_tab ──────────────────────────
-
-/// How long an armed close stays valid while waiting for the confirming
-/// second close action (`window.confirm_close`).
-pub(crate) const CONFIRM_CLOSE_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
-
-/// `true` when a close action should proceed right now.
-pub(crate) fn close_confirmed(state: &mut RunningState) -> bool {
-    if !state.confirm_close {
-        return true;
-    }
-    let now = std::time::Instant::now();
-    match state.pending_close {
-        Some(deadline) if now <= deadline => {
-            // Second action inside the window — let it through.
-            state.pending_close = None;
-            true
-        }
-        _ => {
-            // Arm (or re-arm) and wait for the confirming action. Flash the
-            // visual bell as non-modal feedback that the close was seen but
-            // needs a confirming second action.
-            state.pending_close = Some(now + CONFIRM_CLOSE_WINDOW);
-            state.renderer.trigger_visual_bell();
-            state.window.request_redraw();
-            false
-        }
-    }
-}
+// ── request_close_tab / close_tab ─────────────────────────────────────────────
 
 /// Close `idx`, honouring `window.confirm_close`.
+///
+/// With confirmation enabled the request is queued for the App loop, which
+/// opens a real confirmation dialog ([`crate::confirm_close`]) — the old
+/// "flash + press close again within 1.5 s" mechanism read as "nothing
+/// happened" and is gone. The close proceeds only on Confirm.
 pub(crate) fn request_close_tab(state: &mut RunningState, idx: usize) {
-    if close_confirmed(state) {
+    if !state.confirm_close {
         close_tab(state, idx);
+        return;
     }
+    state.pending_close_confirm = Some(crate::confirm_close::CloseTarget::Tab(idx));
+    state.window.request_redraw();
 }
 
 pub(crate) fn close_tab(state: &mut RunningState, idx: usize) {

@@ -24,7 +24,10 @@ use tokio::sync::mpsc;
 pub use claude::ClaudeProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
-pub use suggestion::{extract_suggested_command, suggestion_messages};
+pub use suggestion::{
+    assistant_context_block, extract_suggested_command, suggestion_messages, LastError,
+    SuggestionContext,
+};
 
 /// Build a boxed provider from a provider name. `secret` is the API key
 /// for cloud providers (ignored by Ollama); `ollama_url` is the daemon
