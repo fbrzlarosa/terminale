@@ -1,0 +1,53 @@
+# ONE-OFF: backfill the v0.1.9 release notes with the .dmg download rows.
+# v0.1.9 was published by the workflow snapshot from BEFORE the
+# patch-release-notes job existed (25ad7bc), so its Download table lacks the
+# macOS .dmg entries even though the assets are attached. This workflow runs
+# once on push and applies the same patch the release pipeline now performs
+# automatically; it is removed right after it has run.
+name: Patch v0.1.9 notes (one-off)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/patch-v019-notes-once.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Insert .dmg rows into the v0.1.9 Download table
+        run: |
+          tag="v0.1.9"
+          repo="${{ github.repository }}"
+          base="https://github.com/$repo/releases/download/$tag"
+          gh release view "$tag" --repo "$repo" --json body -q .body > body.md
+
+          if grep -q "apple-darwin\.dmg" body.md; then
+            echo "dmg rows already present; nothing to do"
+            exit 0
+          fi
+
+          rows=""
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            file="terminale-$tag-$target.dmg"
+            case "$target" in
+              aarch64-*) platform="Apple Silicon macOS (GUI app)";;
+              *)         platform="Intel macOS (GUI app)";;
+            esac
+            rows="$rows| [$file]($base/$file) | $platform | [checksum]($base/$file.sha256) |"$'\n'
+          done
+
+          awk -v rows="$rows" '
+            { print }
+            /^## Download terminale/ { in_dl=1 }
+            in_dl && /^\|-+\|/ { printf "%s", rows; in_dl=0 }
+          ' body.md > body-new.md
+
+          gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+          echo "v0.1.9 notes patched"
