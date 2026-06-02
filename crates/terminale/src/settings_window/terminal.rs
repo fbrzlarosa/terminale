@@ -17,7 +17,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Scroll step");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.window.scroll_step_lines, 1..=20)
+                    egui::Slider::new(&mut self.config.window.scroll_step_lines, 1..=50)
                         .suffix(" lines")
                         .text(""),
                 );
@@ -40,7 +40,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Alt-screen scroll step");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.window.alt_screen_scroll_lines, 1..=20)
+                    egui::Slider::new(&mut self.config.window.alt_screen_scroll_lines, 1..=50)
                         .suffix(" lines")
                         .text(""),
                 );
@@ -128,7 +128,8 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Scrollback");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.window.scrollback_lines, 0..=200_000)
+                    egui::Slider::new(&mut self.config.window.scrollback_lines, 0..=1_000_000)
+                        .logarithmic(true)
                         .suffix(" lines")
                         .text(""),
                 );

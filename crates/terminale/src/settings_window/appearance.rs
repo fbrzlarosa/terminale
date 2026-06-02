@@ -571,10 +571,12 @@ impl SettingsWindow {
 
                     let hr = ui.horizontal(|ui| {
                         field_label(ui, "Max concurrent bands");
+                        // The GPU emitter buffer caps at 48 — values past it
+                        // were silently clamped, so don't offer them.
                         let r = ui.add(
                             egui::Slider::new(
                                 &mut self.config.background_fx.max_emitters,
-                                1_u32..=64,
+                                1_u32..=48,
                             )
                             .text(""),
                         );
@@ -714,7 +716,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Tab min width");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.appearance.tab_min_width, 40.0..=400.0)
+                    egui::Slider::new(&mut self.config.appearance.tab_min_width, 16.0..=800.0)
                         .step_by(1.0)
                         .suffix(" px")
                         .text(""),
@@ -731,7 +733,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Tab max width");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.appearance.tab_max_width, 40.0..=400.0)
+                    egui::Slider::new(&mut self.config.appearance.tab_max_width, 16.0..=800.0)
                         .step_by(1.0)
                         .suffix(" px")
                         .text(""),

@@ -84,7 +84,8 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Update interval");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.status_bar.update_interval_ms, 200..=10000)
+                    egui::Slider::new(&mut self.config.status_bar.update_interval_ms, 200..=60000)
+                        .logarithmic(true)
                         .suffix(" ms")
                         .text(""),
                 );
@@ -159,6 +160,9 @@ impl SettingsWindow {
         use terminale_config::StatusSegment;
 
         let mut remove_idx: Option<usize> = None;
+        let mut move_up_idx: Option<usize> = None;
+        let mut move_down_idx: Option<usize> = None;
+        let count = segments.len();
         for (i, seg) in segments.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 ui.label(segment_kind_label(seg));
@@ -196,11 +200,33 @@ impl SettingsWindow {
                     }
                     _ => {}
                 }
+                // Reorder controls — segments render in list order, and
+                // delete + re-add was the only way to reorder before.
+                if ui
+                    .add_enabled(i > 0, egui::Button::new("\u{2191}").small())
+                    .clicked()
+                {
+                    move_up_idx = Some(i);
+                    *dirty = true;
+                }
+                if ui
+                    .add_enabled(i + 1 < count, egui::Button::new("\u{2193}").small())
+                    .clicked()
+                {
+                    move_down_idx = Some(i);
+                    *dirty = true;
+                }
                 if ui.small_button("Remove").clicked() {
                     remove_idx = Some(i);
                     *dirty = true;
                 }
             });
+        }
+        if let Some(i) = move_up_idx {
+            segments.swap(i, i - 1);
+        }
+        if let Some(i) = move_down_idx {
+            segments.swap(i, i + 1);
         }
         if let Some(i) = remove_idx {
             segments.remove(i);

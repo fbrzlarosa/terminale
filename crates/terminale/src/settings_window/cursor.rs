@@ -53,7 +53,8 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Rate");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.cursor.blink_rate_ms, 80..=2000)
+                    egui::Slider::new(&mut self.config.cursor.blink_rate_ms, 60..=5000)
+                        .logarithmic(true)
                         .suffix(" ms")
                         .text(""),
                 );
@@ -136,7 +137,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Cell tint");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.cursor.cell_tint_opacity, 0.0..=0.6)
+                    egui::Slider::new(&mut self.config.cursor.cell_tint_opacity, 0.0..=1.0)
                         .step_by(0.01)
                         .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
                         .text(""),

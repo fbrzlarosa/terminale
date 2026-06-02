@@ -139,7 +139,9 @@ impl SettingsWindow {
                         "Ctrl+Shift+A",
                     ),
                     ("find", "Find in buffer", |s| &mut s.find, "Ctrl+Shift+F"),
-                    ("clear", "Clear screen", |s| &mut s.clear, "Ctrl+L"),
+                    // Reset default must match the ShortcutsConfig schema
+                    // default ("Ctrl+K"), not the historical Ctrl+L.
+                    ("clear", "Clear screen", |s| &mut s.clear, "Ctrl+K"),
                     (
                         "clear_scrollback",
                         "Clear scrollback",

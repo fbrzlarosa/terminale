@@ -385,7 +385,10 @@ mod tests {
         assert!(u.contains("FAILED(101) $ cargo build"), "failure marked");
         assert!(u.contains("<last_command_error>"), "error section present");
         assert!(u.contains("error[E0308]"), "error output embedded");
-        assert!(u.contains("<current_input>\ncar\n"), "current line embedded");
+        assert!(
+            u.contains("<current_input>\ncar\n"),
+            "current line embedded"
+        );
         assert!(
             !u.contains("<recent_output>"),
             "raw tail must be omitted when command blocks exist"

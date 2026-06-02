@@ -6305,10 +6305,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 if self.confirm_close_dialog.is_none() {
                     let state = &self.windows[idx];
                     let n = state.tabs.len();
-                    let detail = format!(
-                        "{n} tab{} will be closed.",
-                        if n == 1 { "" } else { "s" }
-                    );
+                    let detail =
+                        format!("{n} tab{} will be closed.", if n == 1 { "" } else { "s" });
                     self.confirm_close_dialog = Some(confirm_close::ConfirmCloseDialog::open(
                         event_loop,
                         &state.window,
@@ -7189,9 +7187,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // Snapshot the focused pane's structured context (OS, shell,
                 // cwd, recent commands + exit codes, last failure output) so
                 // even a plain open doesn't start from a blank slate.
-                let term_ctx = terminale_ai::assistant_context_block(&build_suggestion_context(
-                    state, 40,
-                ));
+                let term_ctx =
+                    terminale_ai::assistant_context_block(&build_suggestion_context(state, 40));
                 let win = ai_assistant_window::AiAssistantWindow::open(
                     event_loop,
                     self.config.ai.clone(),
@@ -8888,7 +8885,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // one. The fix-offer Hint is exempt — it is governed by
             // `ai.offer_fix_on_failure`, not by the suggestion trigger.
             if (!sg_enabled || sg_trigger == terminale_config::SuggestionTrigger::Off)
-                && !matches!(state.suggestions.state, suggestions::SuggestionState::Hint(_))
+                && !matches!(
+                    state.suggestions.state,
+                    suggestions::SuggestionState::Hint(_)
+                )
             {
                 state.suggestions.state = suggestions::SuggestionState::Hidden;
             }
@@ -8899,7 +8899,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // FixLastCommand shortcut). Keyed per (pane, block-count) so each
             // failure offers at most once; never replaces live bar content.
             if self.config.ai.offer_fix_on_failure
-                && matches!(state.suggestions.state, suggestions::SuggestionState::Hidden)
+                && matches!(
+                    state.suggestions.state,
+                    suggestions::SuggestionState::Hidden
+                )
             {
                 let failed = state.tabs.get(state.active_tab).and_then(|tab| {
                     let pane_id = tab.focused;
@@ -11922,7 +11925,8 @@ fn configs_identical(a: &Config, b: &Config) -> bool {
     // treated as "no change": neither live-applied nor persisted. Deriving
     // PartialEq on every config struct makes the gate exhaustive by
     // construction, and new fields are covered automatically.
-    a == b}
+    a == b
+}
 
 // ── SSH import helpers / live-merge ──────────────────────────────────────────
 
@@ -14263,7 +14267,10 @@ mod tests {
         let (mx, my, mw, mh) = mon;
 
         // Every collapsed rect must be fully inside the monitor bounds.
-        assert!(ox >= mx, "{edge:?}: x ({ox}) must be >= monitor left ({mx})");
+        assert!(
+            ox >= mx,
+            "{edge:?}: x ({ox}) must be >= monitor left ({mx})"
+        );
         assert!(oy >= my, "{edge:?}: y ({oy}) must be >= monitor top ({my})");
         assert!(
             ox + ow as i32 <= mx + mw as i32,
@@ -14278,7 +14285,11 @@ mod tests {
         match edge {
             terminale_config::QuakeEdge::Top => {
                 assert_eq!(oy, my, "Top: top edge pinned at monitor top");
-                assert_eq!((ox, ow, oh), (tx, tw, 1), "Top: width kept, height collapsed");
+                assert_eq!(
+                    (ox, ow, oh),
+                    (tx, tw, 1),
+                    "Top: width kept, height collapsed"
+                );
             }
             terminale_config::QuakeEdge::Bottom => {
                 assert_eq!(

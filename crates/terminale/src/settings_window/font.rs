@@ -247,7 +247,7 @@ impl SettingsWindow {
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Font size");
                 let r = ui.add(
-                    egui::Slider::new(&mut self.config.font.size, 6.0..=48.0)
+                    egui::Slider::new(&mut self.config.font.size, 6.0..=96.0)
                         .step_by(0.5)
                         .suffix(" pt")
                         .text(""),
@@ -277,7 +277,8 @@ impl SettingsWindow {
                     dirty = true;
                 }
                 if ui.small_button("Reset").clicked() {
-                    self.config.font.line_height = 1.25;
+                    // Matches FontConfig's type default (1.2), not 1.25.
+                    self.config.font.line_height = 1.2;
                     dirty = true;
                 }
             });

@@ -3005,16 +3005,19 @@ fn profile_card(
             });
 
             ui.add_space(4.0);
-            let mut args_joined = profile.args.join(" ");
+            // Quote-aware join/split so an argument that legitimately contains
+            // a space (a path, `-c "echo hi"`) round-trips intact instead of
+            // being shattered into multiple argv slots.
+            let mut args_joined = join_args(&profile.args);
             ui.horizontal(|ui| {
                 field_label(ui, "Arguments");
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut args_joined)
                         .desired_width(360.0)
-                        .hint_text("space-separated arguments"),
+                        .hint_text("arguments — quote ones containing spaces"),
                 );
                 if r.changed() {
-                    profile.args = args_joined.split_whitespace().map(String::from).collect();
+                    profile.args = split_args(&args_joined);
                     *dirty_flag = true;
                 }
             });
@@ -3041,7 +3044,123 @@ fn profile_card(
                     *dirty_flag = true;
                 }
             });
+
+            ui.add_space(4.0);
+            // Environment variables — one KEY=VALUE per line. This editor was
+            // missing entirely: `profile.env` was config-file-only.
+            //
+            // While the editor has focus the text lives in egui temp memory so
+            // incomplete lines ("FOO" with no `=` yet) survive between frames;
+            // only complete KEY=VALUE lines are committed to `profile.env`.
+            // On blur the text is rebuilt (sorted) from the canonical map.
+            let env_id = ui.make_persistent_id(("profile-env-edit", idx));
+            let rebuilt = {
+                let mut lines = profile
+                    .env
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>();
+                lines.sort();
+                lines.join("\n")
+            };
+            let focused = ui.memory(|m| m.has_focus(env_id));
+            let mut env_joined = if focused {
+                ui.data(|d| d.get_temp::<String>(env_id)).unwrap_or(rebuilt)
+            } else {
+                rebuilt
+            };
+            ui.horizontal_top(|ui| {
+                field_label(ui, "Environment");
+                let r = ui.add(
+                    egui::TextEdit::multiline(&mut env_joined)
+                        .id(env_id)
+                        .desired_width(360.0)
+                        .desired_rows(2)
+                        .font(egui::TextStyle::Monospace)
+                        .hint_text("KEY=VALUE, one per line"),
+                );
+                if r.changed() {
+                    profile.env = env_joined
+                        .lines()
+                        .filter_map(|l| {
+                            let (k, v) = l.trim().split_once('=')?;
+                            let k = k.trim();
+                            if k.is_empty() {
+                                return None;
+                            }
+                            Some((k.to_string(), v.to_string()))
+                        })
+                        .collect();
+                    *dirty_flag = true;
+                }
+            });
+            ui.data_mut(|d| d.insert_temp(env_id, env_joined));
         });
+}
+
+/// Join argv entries into a single editable line, double-quoting any entry
+/// that contains whitespace or quotes (escaping embedded `"` as `\"`).
+fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.is_empty() || a.chars().any(char::is_whitespace) || a.contains('"') {
+                format!("\"{}\"", a.replace('"', "\\\""))
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Split an arguments line into argv entries, honouring double/single quotes
+/// (and `\"` escapes inside double quotes) so quoted arguments keep their
+/// spaces. Inverse of [`join_args`].
+fn split_args(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_token = false;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        match quote {
+            Some('"') => match c {
+                '"' => quote = None,
+                '\\' if chars.peek() == Some(&'"') => {
+                    cur.push('"');
+                    chars.next();
+                }
+                _ => cur.push(c),
+            },
+            Some(_) => {
+                if c == '\'' {
+                    quote = None;
+                } else {
+                    cur.push(c);
+                }
+            }
+            None => match c {
+                '"' | '\'' => {
+                    quote = Some(c);
+                    in_token = true;
+                }
+                c if c.is_whitespace() => {
+                    if in_token {
+                        out.push(std::mem::take(&mut cur));
+                        in_token = false;
+                    }
+                }
+                _ => {
+                    cur.push(c);
+                    in_token = true;
+                }
+            },
+        }
+    }
+    if in_token {
+        out.push(cur);
+    }
+    out
 }
 
 /// Which title-bar icon to paint. Thin alias kept for the call sites

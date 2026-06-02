@@ -782,9 +782,11 @@ height_ratio = 0.5
 width_ratio = 0.9
 top_offset_px = 24
 "#;
-        // `fade` is now an unknown variant — serde falls back to the default (Slide).
+        // `fade` is a REAL variant again as of 0.1.12 (Windows layered-window
+        // opacity animation) — a pre-rework `fade` config now gets the actual
+        // fade instead of silently degrading to Slide.
         let cfg: Config = toml::from_str(toml_src).expect("obsolete fields must be tolerated");
-        assert_eq!(cfg.quake.animation, QuakeAnimation::Slide);
+        assert_eq!(cfg.quake.animation, QuakeAnimation::Fade);
         assert_eq!(cfg.quake.animation_ms, 250);
     }
 
@@ -1049,8 +1051,8 @@ animated_tab_drag = false
     }
 
     #[test]
-    fn quake_animation_all_returns_four() {
-        assert_eq!(QuakeAnimation::all().len(), 4);
+    fn quake_animation_all_returns_five() {
+        assert_eq!(QuakeAnimation::all().len(), 5);
     }
 
     #[test]

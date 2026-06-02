@@ -22,7 +22,12 @@ pub enum QuakeAnimation {
     /// Old config values `zoom`, `pixel_dissolve`, `glitch`, and
     /// `scanline_wipe` are silently mapped to `Slide` for backward
     /// compatibility.
-    #[serde(alias = "zoom", alias = "pixel_dissolve", alias = "glitch", alias = "scanline_wipe")]
+    #[serde(
+        alias = "zoom",
+        alias = "pixel_dissolve",
+        alias = "glitch",
+        alias = "scanline_wipe"
+    )]
     Slide,
     /// Bounce — like Slide but with a springy, sin-damped growth curve.
     Bounce,
@@ -45,7 +50,13 @@ impl QuakeAnimation {
     /// All variants in display order — useful for UI dropdowns.
     #[must_use]
     pub fn all() -> [Self; 5] {
-        [Self::None, Self::Slide, Self::Bounce, Self::Scale, Self::Fade]
+        [
+            Self::None,
+            Self::Slide,
+            Self::Bounce,
+            Self::Scale,
+            Self::Fade,
+        ]
     }
 
     /// Human-readable label for UI rendering.

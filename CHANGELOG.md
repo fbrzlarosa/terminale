@@ -21,6 +21,65 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.12]
+
+### Added
+- Real close-confirmation dialog: with `window.confirm_close` on, closing a
+  tab or window now opens a Confirm/Cancel dialog (Esc/click-outside cancels)
+  instead of the old "flash + press close again within 1.5 s" mechanism that
+  read as "nothing happened"
+- `Fade` Quake animation — whole-window opacity fade on Windows (layered
+  window); a legacy `animation = "fade"` config now gets a real fade instead
+  of silently degrading to Slide
+- `ai.offer_fix_on_failure` is now implemented (the toggle existed but did
+  nothing): after a command exits non-zero, an unobtrusive amber hint with a
+  [Fix] button appears in the suggestion bar and routes to the AI assistant
+- Settings → Appearance → "Focus border opacity": the focused-pane border is
+  now translucent by default (0.35) — it was a hard fully-opaque ring that
+  crowded the first row of text
+- Profile editor: environment-variables editor (KEY=VALUE per line) — the
+  `env` field was config-file-only; quoted arguments with spaces now survive
+  the Arguments field round-trip
+- Status bar segment editor: ↑/↓ reorder buttons (was delete + re-add)
+
+### Fixed
+- Settings changes are no longer silently dropped: the live-apply gate
+  compared ~150 hand-picked fields and missed entire sections (profiles, AI
+  provider keys/models, GPU, updates, integration, directory jump, resource
+  indicators, the [ssh] block, two dozen shortcut bindings, …) — editing only
+  one of those in Settings neither applied nor saved it. The gate now derives
+  full structural equality over the whole config, so every field present and
+  future is covered
+- Bottom rows no longer render under the AI suggestion bar: its 30 px band is
+  reserved in the grid's bottom budget while open (stacked above the CPU/RAM
+  strip) and the PTY reflows on open/close
+- Quake: an explicit position→top/bottom/left/right snap now clears the
+  remembered floating geometry, so hide/show re-docks full-width instead of
+  replaying the size from a previous title-bar un-dock
+- Quake animations stay inside the monitor: show/hide is an edge-pinned
+  reveal (the old slide travelled fully past the edge — visible on a stacked
+  monitor above); Scale is now a real zoom from the dock edge (it was
+  accidentally identical to Slide); the PTY grid is not resized mid-animation
+- AI suggestions stopped re-proposing the command that just failed: both the
+  suggestion bar and Ask AI now receive structured context (recent commands
+  with exit codes via OSC 133, the failed command's own output, cwd, shell)
+  instead of a raw 200-line scrollback dump, plus a verbatim-repeat guard;
+  Ask AI also gets the terminal context on plain opens and answers at low
+  temperature
+- Settings live-apply gaps: scrollback now applies to every split pane (was
+  focused-pane-only); zen_hide edits apply while zen is active; vertical
+  tab-bar width applies from the in-app save; profile edits refresh the
+  default-profile cache and picker entries; snippet renames refresh the
+  palette on external config reloads
+- Eased cursor blink actually animates (repaints at `cursor.animation_fps`,
+  which was a dead setting; the smooth fade rendered as a hard step)
+- Settings description text bumped +1 pt (12.6 → 13.6) and the four
+  description paragraphs that bypassed the shared helper now use it
+- Settings slider ranges now reach the full validated range (font size,
+  scroll steps, scrollback, blink rate, cell tint, tab widths, status-bar
+  interval); background-FX "max bands" capped at the real GPU limit (48);
+  the line-height and clear-screen Reset buttons restore the true defaults
+
 ## [0.1.11]
 
 ### Fixed
