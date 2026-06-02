@@ -491,6 +491,10 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                         state.last_titlebar_click = None;
                     } else {
                         state.last_titlebar_click = Some((now, pos_px));
+                        // Docked Quake window: dragging the title bar un-docks
+                        // it — shrink back to the pre-dock floating size
+                        // before the OS drag takes over (Chrome-style).
+                        crate::maybe_undock_quake_on_drag(state, pos_px);
                         let _ = state.window.drag_window();
                     }
                     return;

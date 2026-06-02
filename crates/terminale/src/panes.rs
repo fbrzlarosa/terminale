@@ -932,10 +932,13 @@ pub(crate) fn resize_active_tab_panes(state: &mut RunningState) {
         .iter()
         .map(|s| {
             let (_, _, w, h) = s.rect_px;
+            // Pane sub-rects are chrome-free (built from the body area), so
+            // convert without re-subtracting the chrome offsets — same fix
+            // as in resize_all_tabs.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let (cols, rows) = state
                 .renderer
-                .pixels_to_cells(w.max(1.0) as u32, h.max(1.0) as u32);
+                .rect_to_cells(w.max(1.0) as u32, h.max(1.0) as u32);
             (s.pane_id, cols, rows)
         })
         .collect();
@@ -944,6 +947,10 @@ pub(crate) fn resize_active_tab_panes(state: &mut RunningState) {
     };
     for (id, cols, rows) in updates {
         if let Some(pane) = tab.panes.get_mut(&id) {
+            // Same-size guard — see resize_all_tabs for the rationale.
+            if pane.cols == cols && pane.rows == rows {
+                continue;
+            }
             // Emulator FIRST — grid must be at new size before PTY notifies
             // the shell (same rationale as in resize_all_tabs).
             pane.emulator.lock().resize(cols, rows);

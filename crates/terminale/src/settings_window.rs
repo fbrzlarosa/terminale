@@ -1988,7 +1988,7 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Shortcuts,
-            label: "Restart crashed tab",
+            label: "Restart session",
         },
         SearchEntry {
             section: Section::Shortcuts,

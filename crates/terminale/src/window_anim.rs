@@ -376,6 +376,53 @@ pub(crate) fn rects_close(
         && (i64::from(a.3) - i64::from(b.3)).abs() <= i64::from(tol)
 }
 
+/// Chrome-style un-dock on title-bar drag. Called right before a title-bar
+/// `drag_window()`: when the Quake window is currently sitting AT its dock
+/// geometry, shrink it back to the floating size it had before the first
+/// dock (`quake_pre_dock_rect`), repositioning so the grabbed title-bar
+/// point stays under the cursor proportionally — exactly like dragging a
+/// maximized browser window. The restored geometry is recorded as the
+/// user-adjusted rect so subsequent hide/show cycles keep it instead of
+/// re-docking.
+pub(crate) fn maybe_undock_quake_on_drag(state: &mut RunningState, cursor_px: (f32, f32)) {
+    // Only while the Quake window is shown in dock mode at the dock
+    // geometry. A present user rect means it is already un-docked; no
+    // animation may be in flight (a mid-slide rect is not "docked").
+    if !state.quake_visible || state.quake_user_rect.is_some() || state.quake_anim.is_some() {
+        return;
+    }
+    let Some(dock) = state.quake_last_dock_rect else {
+        return;
+    };
+    let Some(pre) = state.quake_pre_dock_rect else {
+        return;
+    };
+    let pos = state.window.outer_position().unwrap_or_default();
+    let size = state.window.inner_size();
+    let cur = (pos.x, pos.y, size.width, size.height);
+    // Bail unless the window actually sits at the dock rect (tolerance for
+    // DWM nudging it by a few px).
+    if !rects_close(cur, dock, 12) {
+        return;
+    }
+    // Nothing to restore if the pre-dock geometry is degenerate or already
+    // matches the dock size.
+    if pre.2 == 0 || pre.3 == 0 || rects_close(pre, cur, 12) {
+        return;
+    }
+    // Keep the grabbed point under the cursor proportionally on the x axis;
+    // keep the title bar (window top) at its current screen height so the
+    // cursor stays on it when the OS drag takes over.
+    #[allow(clippy::cast_possible_truncation)]
+    let new_x = (f64::from(pos.x) + f64::from(cursor_px.0)
+        - f64::from(cursor_px.0) * f64::from(pre.2) / f64::from(size.width.max(1)))
+    .round() as i32;
+    let target = (new_x, pos.y, pre.2, pre.3);
+    apply_window_rect(&state.window, target, true);
+    state.quake_user_rect = Some(target);
+    tracing::debug!(?dock, ?pre, ?target, "quake: un-docked on title-bar drag");
+}
+
 /// Linear-interpolate **position only** between two rects; size is always
 /// taken from `b`. Used by Slide and Bounce where the window size is constant
 /// throughout the animation.
@@ -540,7 +587,17 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
         // any saved rect, else origin.
         let size = state.window.inner_size();
         let pos = state.window.outer_position().unwrap_or_default();
-        let rect = (pos.x, pos.y, size.width, size.height);
+        let mut rect = (pos.x, pos.y, size.width, size.height);
+        // A toggle can land while the SHOW animation is still in flight; the
+        // live window geometry is then an interpolated mid-slide frame, not
+        // where the window rests. Saving it would corrupt the position
+        // memory (and be misread as a user adjustment just below, since it
+        // differs from the dock rect). Use the animation's resting target.
+        if let Some(anim) = &state.quake_anim {
+            if anim.showing {
+                rect = anim.to;
+            }
+        }
         state.quake_saved_rect = Some(rect);
         // Dock mode: if the user moved/resized the window away from the dock
         // rect we last applied, remember that geometry so the next show
@@ -562,8 +619,13 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
         // on-screen; after hiding the rect may sit on the wrong monitor and
         // the call would return a stale result.  We use this snapshot in
         // `compute_quake_target` to resolve `QuakeDisplay::Current` correctly
-        // across hide/show cycles.
-        state.quake_last_monitor = state.window.current_monitor();
+        // across hide/show cycles. Skip the refresh while an animation is in
+        // flight — the window may be mid-slide (even partially off-screen)
+        // and would report the wrong monitor; the previous snapshot is the
+        // accurate one in that case.
+        if state.quake_anim.is_none() {
+            state.quake_last_monitor = state.window.current_monitor();
+        }
         state.quake_visible = false;
 
         if animated && dur.as_millis() > 0 {
@@ -628,15 +690,27 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
             // Begin off-screen (past the dock edge), then slide/bounce/scale in.
             // Place the window at the off-screen start position BEFORE making it
             // visible so the first frame is never at the final rect.
-            let off = offscreen_rect(quake_cfg.edge, mon_rect, rect);
-            apply_window_rect(&state.window, off, true);
+            //
+            // Rapid-toggle case: if the HIDE animation is still in flight the
+            // window is visible at an intermediate position — slide back in
+            // from THERE instead of teleporting off-screen first (the jump
+            // made fast toggles flicker).
+            let from = if state.quake_anim.is_some() {
+                let p = state.window.outer_position().unwrap_or_default();
+                let s = state.window.inner_size();
+                (p.x, p.y, s.width, s.height)
+            } else {
+                let off = offscreen_rect(quake_cfg.edge, mon_rect, rect);
+                apply_window_rect(&state.window, off, true);
+                off
+            };
             state.window.set_visible(true);
             state.window.focus_window();
             state.quake_anim = Some(QuakeAnim {
                 start: std::time::Instant::now(),
                 duration: dur,
                 showing: true,
-                from: off,
+                from,
                 to: rect,
                 anim_kind: quake_cfg.animation,
             });

@@ -315,7 +315,11 @@ pub(crate) fn dispatch_shortcut(state: &mut RunningState, action: ShortcutAction
             crate::open_ssh_quick_connect(state);
         }
         ProfilePicker => state.open_profile_picker = true,
-        RestartTab => crate::restart_active_tab(state),
+        // Upgraded from the legacy "restart crashed tab" (which only worked
+        // on crashed tabs, spawned a hardcoded shell and destroyed split
+        // layouts): now a layout-preserving, profile-aware in-place restart
+        // of the focused pane. Deferred to the App loop for config access.
+        RestartTab => state.pending_restart_pane = true,
         Copy => crate::copy_selection(state),
         Paste => match crate::paste_clipboard(state) {
             crate::tabs::PasteAction::Sent => {}

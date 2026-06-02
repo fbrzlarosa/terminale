@@ -1854,6 +1854,11 @@ struct TermWindow {
     /// Set by Ctrl+Shift+T to ask the App to open a profile picker popup
     /// anchored to the tab bar.
     open_profile_picker: bool,
+    /// Set by the RestartTab shortcut to ask the App to restart the focused
+    /// pane's session. Deferred to the App loop because the respawn profile
+    /// is resolved from `self.config` (command/args/env), which the
+    /// state-level shortcut dispatch cannot reach.
+    pending_restart_pane: bool,
     /// Set by Ctrl+Shift+A to ask the App to open the AI assistant window.
     open_ai_requested: bool,
     /// `Some(idx)` asks the App (which owns the Tokio runtime + the SSH
@@ -2563,6 +2568,7 @@ impl TerminaleApp {
             open_menu_at: None,
             menu_context: MenuContext::Terminal,
             open_profile_picker: false,
+            pending_restart_pane: false,
             open_ai_requested: false,
             pending_ssh_host: None,
             open_ssh_picker: false,
@@ -4894,6 +4900,22 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         state.pending_hook_session_start.push((0, startup_program));
         self.windows.push(state);
 
+        // The tab bar was enabled AFTER the first tab's PTY/emulator were
+        // sized (spawn_tab ran while `renderer.tab_bar` was still None, so
+        // `pixels_to_cells` excluded the 36px bar), leaving the grid 1-2
+        // rows too tall for the final chrome. Re-size it NOW — synchronously,
+        // before any shell output is drained and before the window is
+        // revealed — so ConPTY boots at its final size and the first prompt
+        // can't be displaced by a post-reveal shrink-reflow (the
+        // intermittent "prompt one row lower on a fresh launch" glitch).
+        // The same-size guard in resize_all_tabs makes this a no-op when
+        // the chrome doesn't change the row count.
+        {
+            let state = self.windows.last_mut().expect("window just pushed");
+            let s = state.window.inner_size();
+            resize_all_tabs(state, s.width, s.height);
+        }
+
         // ── Session restore on launch ─────────────────────────────────────────
         // Before showing the window, check if the user wants the last session
         // restored. If so, replace the just-spawned default tab with the saved
@@ -6064,6 +6086,29 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                                 new_tab_with_profile(state, &p);
                             }
                         }
+                    } else if action_id == MenuAction::RestartSession.as_u32() {
+                        // Restart needs `self.config` to resolve the pane's
+                        // profile by name (command/args/env), so it is
+                        // dispatched here instead of dispatch_menu_action.
+                        let prof = self
+                            .focused_window_mut()
+                            .and_then(|state| {
+                                state
+                                    .tabs
+                                    .get(state.active_tab)
+                                    .map(|t| t.profile_name.clone())
+                            })
+                            .and_then(|name| {
+                                self.config
+                                    .profiles
+                                    .profiles
+                                    .iter()
+                                    .find(|p| p.name == name)
+                                    .cloned()
+                            });
+                        if let Some(state) = self.focused_window_mut() {
+                            crate::tabs::restart_focused_pane(state, prof.as_ref());
+                        }
                     } else if let Some(state) = self.focused_window_mut() {
                         dispatch_menu_action(state, action_id);
                     }
@@ -7167,6 +7212,25 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         {
             let cfg = self.config.quake.clone();
             toggle_quake(state, &cfg);
+        }
+
+        // Deferred pane restart (Ctrl+Shift+R / palette): resolved here so
+        // the respawn profile comes from `self.config` — the same lookup the
+        // context-menu "Restart session" path performs at dispatch time.
+        if std::mem::take(&mut state.pending_restart_pane) {
+            let prof = state
+                .tabs
+                .get(state.active_tab)
+                .map(|t| t.profile_name.clone())
+                .and_then(|name| {
+                    self.config
+                        .profiles
+                        .profiles
+                        .iter()
+                        .find(|p| p.name == name)
+                        .cloned()
+                });
+            crate::tabs::restart_focused_pane(state, prof.as_ref());
         }
 
         // Profile picker: anchor a popup just under the title-bar's
@@ -8971,11 +9035,23 @@ fn resize_all_tabs(state: &mut RunningState, width_px: u32, height_px: u32) {
         let tab = &mut state.tabs[tab_idx];
         for (id, rect) in pane_rects {
             let (_, _, w, h) = rect;
+            // The pane sub-rect comes from `walk_pane_tree` over the chrome-
+            // free body area, so convert it WITHOUT re-subtracting the chrome
+            // offsets (`pixels_to_cells` here double-counted the tab/status
+            // bars + padding and left a multi-row dead band at the bottom).
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let (cols, rows) = state
                 .renderer
-                .pixels_to_cells(w.max(1.0) as u32, h.max(1.0) as u32);
+                .rect_to_cells(w.max(1.0) as u32, h.max(1.0) as u32);
             if let Some(pane) = tab.panes.get_mut(&id) {
+                // Same-size guard: skip the emulator/PTY round-trip when the
+                // grid hasn't actually changed. Beyond saving work, this stops
+                // the OS's first post-show Resized (and ScaleFactorChanged)
+                // from re-forwarding an identical size to ConPTY, which would
+                // trigger a spurious reflow of already-printed shell output.
+                if pane.cols == cols && pane.rows == rows {
+                    continue;
+                }
                 // Emulator FIRST so the grid is already at the new size when
                 // ConPTY/PTY repaints triggered by session.resize() arrive on
                 // the next tick (or the same tick's post-resize drain).
@@ -10024,7 +10100,7 @@ fn cycle_search_match(state: &mut RunningState, dir: i32) {
         }));
 }
 
-// restart_active_tab are now in tabs.rs
+// restart_focused_pane is in tabs.rs
 // switch_tab..close_tab are now in tabs.rs
 /// Richer menu item used for building the egui context-menu popup.
 ///
@@ -10122,6 +10198,10 @@ enum MenuAction {
     AssignTabToGroup,
     /// Remove the active tab from its group.
     ClearTabGroup,
+    /// Restart the focused pane's session in place (kill + respawn the same
+    /// profile, keeping the pane tree). Dispatched at App level — it needs
+    /// `self.config` to resolve the pane's profile by name.
+    RestartSession,
 }
 
 impl MenuAction {
@@ -10170,6 +10250,7 @@ impl MenuAction {
             Self::NewTabGroup => 36,
             Self::AssignTabToGroup => 37,
             Self::ClearTabGroup => 38,
+            Self::RestartSession => 39,
         }
     }
     fn from_u32(v: u32) -> Option<Self> {
@@ -10213,6 +10294,7 @@ impl MenuAction {
             36 => Self::NewTabGroup,
             37 => Self::AssignTabToGroup,
             38 => Self::ClearTabGroup,
+            39 => Self::RestartSession,
             _ => return None,
         })
     }
@@ -10453,6 +10535,10 @@ fn dispatch_menu_action(state: &mut RunningState, action_id: u32) {
         return;
     };
     match action {
+        // Normally intercepted at App level (it needs `self.config` to
+        // resolve the profile); this state-level fallback defers to the
+        // App loop, which performs the same config-resolved restart.
+        MenuAction::RestartSession => state.pending_restart_pane = true,
         MenuAction::Copy => copy_selection(state),
         MenuAction::Paste => match paste_clipboard(state) {
             PasteAction::Sent => {}
@@ -10867,6 +10953,25 @@ fn menu_items_all(state: &RunningState) -> Vec<(RichMenuItem, MenuAction)> {
                 submenu: None,
             },
             MenuAction::CopyCurrentPath,
+        ),
+        (
+            RichMenuItem {
+                label: "Restart session".into(),
+                icon: Some("\u{21bb}".into()), // ↻
+                hotkey: {
+                    let b = binding_for(ShortcutAction::RestartTab, &state.shortcuts);
+                    (!b.is_empty()).then_some(b)
+                },
+                // SSH sessions are rebuilt by the async connect flow, not a
+                // local respawn — grey the item out for them.
+                enabled: state
+                    .tabs
+                    .get(state.active_tab)
+                    .is_some_and(|t| t.ssh_host_name.is_empty()),
+                separator_before: false,
+                submenu: None,
+            },
+            MenuAction::RestartSession,
         ),
         (
             RichMenuItem {
@@ -13522,8 +13627,12 @@ mod tests {
                 "action id {id} must stay below PROFILE_PICKER_BASE"
             );
         }
-        // Values above the last static variant (38 = ClearTabGroup) must not resolve.
-        assert!(MenuAction::from_u32(39).is_none());
+        assert!(matches!(
+            MenuAction::from_u32(39),
+            Some(MenuAction::RestartSession)
+        ));
+        // Values above the last static variant (39 = RestartSession) must not resolve.
+        assert!(MenuAction::from_u32(40).is_none());
     }
 
     /// Snap action ids round-trip correctly through MenuAction.

@@ -54,7 +54,7 @@ impl SettingsWindow {
                     ),
                     (
                         "restart_tab",
-                        "Restart crashed tab",
+                        "Restart session",
                         |s| &mut s.restart_tab,
                         "Ctrl+Shift+R",
                     ),

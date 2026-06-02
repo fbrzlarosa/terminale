@@ -1342,6 +1342,14 @@ fn cells_for(
 ///
 /// Arguments are in the **same space** (logical or physical — they must be
 /// consistent with each other). Returns a value in [0, cell_h).
+/// X offset (physical px) that right-aligns the status-bar right text:
+/// the measured logical text width is scaled to physical and subtracted
+/// from the surface width together with an 8px (logical) right margin.
+/// Pure so the alignment arithmetic is unit-testable without wgpu.
+fn status_bar_right_tx(surface_w_px: f32, text_w_logical: f32, scale: f32) -> f32 {
+    (surface_w_px - text_w_logical * scale - 8.0 * scale).max(0.0)
+}
+
 fn vertical_remainder(logical_h: f32, cell_h: f32, top: f32, bottom: f32) -> f32 {
     let usable = (logical_h - top - bottom).max(cell_h);
     let rows = (usable / cell_h).floor().max(1.0);
@@ -4051,6 +4059,12 @@ impl Renderer {
     }
 
     /// Convert a window pixel area to terminal cell dimensions.
+    ///
+    /// Expects the **full window** size: the chrome offsets (tab bar,
+    /// status bar, resource strip, padding) are subtracted internally.
+    /// For a body/pane sub-rect that already had the chrome stripped use
+    /// [`Self::rect_to_cells`] instead — feeding a body rect here
+    /// double-subtracts the chrome and loses several rows.
     #[must_use]
     pub fn pixels_to_cells(&self, width_px: u32, height_px: u32) -> (u16, u16) {
         cells_for(
@@ -4066,6 +4080,32 @@ impl Renderer {
                 right: self.right_offset_logical(),
             },
         )
+    }
+
+    /// Convert a body/pane sub-rect (physical px) to cell dimensions.
+    ///
+    /// Counterpart of [`Self::pixels_to_cells`] for rects that ALREADY had
+    /// the window chrome removed — the `body_*_px()` body area or a pane
+    /// sub-rect from `walk_pane_tree`. No offsets are subtracted here:
+    /// `body_left/right_px` strip the horizontal padding and any vertical
+    /// tab strip, and `body_top/bottom_px` strip the vertical chrome
+    /// (including padding, which lives inside the top/bottom offsets), so
+    /// for a single-pane body this returns exactly what `pixels_to_cells`
+    /// returns for the full window. (`body_top_px` also includes the
+    /// sub-cell centering shift, which is < half a cell and therefore
+    /// never changes the floored row count.)
+    #[must_use]
+    pub fn rect_to_cells(&self, w_px: u32, h_px: u32) -> (u16, u16) {
+        let s = self.scale_factor;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let cols = (((w_px as f32 / s).max(self.cell_width)) / self.cell_width)
+            .floor()
+            .max(1.0) as u16;
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let rows = (((h_px as f32 / s).max(self.cell_height)) / self.cell_height)
+            .floor()
+            .max(1.0) as u16;
+        (cols, rows)
     }
 
     /// Translate a window pixel position to a (col, row) cell index.
@@ -7030,24 +7070,31 @@ impl Renderer {
                 status_bar_text_areas.push((buf, [tx, ty]));
             }
 
-            // Right text: right-aligned. Estimate glyph width in logical px
-            // (0.6 em per char at 85% of font size) then convert to physical.
+            // Right text: right-aligned against the bar's right edge. The
+            // x-offset uses the REAL shaped width measured from the buffer's
+            // layout runs — a char-count × 0.6em estimate systematically
+            // under-measured (the text is shaped at 0.85 × font_size while
+            // cell_width is already ≈ 0.6 × font_size), pushing the clock
+            // past the window edge where glyphon clips it.
             if !sb.right.is_empty() {
                 let mut buf = Buffer::new(&mut self.font_system, text_metrics);
-                buf.set_size(
-                    &mut self.font_system,
-                    Some(half_w_logical),
-                    Some(STATUS_BAR_HEIGHT),
-                );
+                // No width cap: keep the text on a single line so the
+                // measured run width is the true width (a Some(width) here
+                // would word-wrap long strings and corrupt the measurement).
+                buf.set_size(&mut self.font_system, None, Some(STATUS_BAR_HEIGHT));
                 buf.set_text(
                     &mut self.font_system,
                     &sb.right,
                     Attrs::new().family(Family::Monospace).color(text_color),
                     Shaping::Basic,
                 );
-                // Estimated text width in physical pixels.
-                let est_w_px = sb.right.chars().count() as f32 * self.cell_width * 0.6 * scale;
-                let tx = (surface_w - est_w_px - 8.0 * scale).max(0.0);
+                // Real shaped width in logical px (buffer metrics are
+                // logical; the TextArea below multiplies by scale_factor).
+                let text_w_logical = buf
+                    .layout_runs()
+                    .map(|run| run.line_w)
+                    .fold(0.0_f32, f32::max);
+                let tx = status_bar_right_tx(surface_w, text_w_logical, scale);
                 let ty = bar_y;
                 status_bar_text_areas.push((buf, [tx, ty]));
             }
@@ -9153,32 +9200,27 @@ mod tests {
     // x-offset that keeps the text inside the bar at any DPI scale.
 
     /// Helper that mirrors the production formula for the status-bar
-    /// right-text x offset, extracted so we can unit-test it without wgpu.
-    fn status_bar_right_tx(
-        surface_w_px: f32,
-        char_count: usize,
-        cell_width_logical: f32,
-        scale: f32,
-    ) -> f32 {
-        let est_w_px = char_count as f32 * cell_width_logical * 0.6 * scale;
-        (surface_w_px - est_w_px - 8.0 * scale).max(0.0)
-    }
-
     #[test]
     fn status_bar_right_tx_is_inside_bar() {
-        // At 1× DPI: 1280 wide surface, cell 8 logical px, 10-char text.
-        let tx = status_bar_right_tx(1280.0, 10, 8.0, 1.0);
+        // At 1× DPI: 1280 wide surface, ~85 logical px of measured text.
+        let tx = status_bar_right_tx(1280.0, 85.0, 1.0);
         // Must be left of the right edge minus right margin.
         assert!(tx < 1280.0 - 8.0, "x must leave space for right margin");
         assert!(tx > 0.0, "x must be positive");
+        // The text's right edge (tx + width*scale) must sit exactly at the
+        // 8px right margin — the property the old char-count estimate broke.
+        assert!(
+            ((tx + 85.0) - (1280.0 - 8.0)).abs() < 0.01,
+            "right edge must land on the right margin"
+        );
     }
 
     #[test]
     fn status_bar_right_tx_dpi_scaling() {
         // At 2× DPI the surface is twice as wide in physical px.
         // The text x must scale proportionally so the visual position is the same.
-        let tx1 = status_bar_right_tx(1280.0, 10, 8.0, 1.0);
-        let tx2 = status_bar_right_tx(2560.0, 10, 8.0, 2.0);
+        let tx1 = status_bar_right_tx(1280.0, 85.0, 1.0);
+        let tx2 = status_bar_right_tx(2560.0, 85.0, 2.0);
         // tx2 should be approximately tx1 * 2 (same logical position, double physical).
         let ratio = tx2 / tx1;
         assert!(
@@ -9190,7 +9232,7 @@ mod tests {
     #[test]
     fn status_bar_right_tx_clamps_to_zero() {
         // For an absurdly long text on a tiny surface the formula must not go negative.
-        let tx = status_bar_right_tx(50.0, 100, 8.0, 1.0);
+        let tx = status_bar_right_tx(50.0, 800.0, 1.0);
         assert!(
             tx.abs() < f32::EPSILON,
             "must clamp to zero, not go negative"
@@ -9722,6 +9764,64 @@ mod tests {
             (0.0..20.0).contains(&odd),
             "remainder must be in [0, cell_h), got {odd}"
         );
+    }
+
+    /// REGRESSION (bottom-gap bug): the rows obtained by converting the
+    /// chrome-free body rect with the no-offset math (`rect_to_cells`) must
+    /// equal the rows `cells_for` computes from the full window. The old
+    /// resize path fed the body rect back through the offset-subtracting
+    /// conversion, double-counting the tab/status-bar chrome and losing
+    /// several rows — a dead band at the bottom after every resize, which
+    /// a freshly spawned tab (sized from the full window) did not have.
+    #[test]
+    fn body_rect_round_trip_matches_full_window_rows() {
+        let cell_w = 8.4_f32;
+        let cell_h = 16.8_f32;
+        let padding = 8.0_f32;
+        for &scale in &[1.0_f32, 1.25, 1.5, 2.0] {
+            for &(top, bottom) in &[
+                (44.0_f32, 8.0_f32), // tab bar top + padding
+                (66.0, 8.0),         // tab bar + status bar top
+                (44.0, 30.0),        // tab bar top + status bar bottom
+                (66.0, 56.0),        // everything: both bars + resource strip
+            ] {
+                for h_logical in [400.0_f32, 600.0, 768.0, 911.0, 1080.0] {
+                    let h_px = (h_logical * scale).round();
+                    // Family A — full window through cells_for (reference).
+                    let (_, rows_full) = cells_for(
+                        1024.0,
+                        h_px / scale,
+                        cell_w,
+                        cell_h,
+                        padding,
+                        GridOffsets {
+                            top,
+                            bottom,
+                            left: 0.0,
+                            right: 0.0,
+                        },
+                    );
+                    // Family B — the body rect exactly as resize_all_tabs
+                    // builds it: body_top_px includes the half-remainder
+                    // centering shift, body_bottom_px strips the bottom
+                    // offset (all physical px).
+                    let shift =
+                        vertical_remainder(h_px, cell_h * scale, top * scale, bottom * scale) / 2.0;
+                    let body_top_px = top * scale + shift;
+                    let body_bottom_px = h_px - bottom * scale;
+                    let body_h_px = (body_bottom_px - body_top_px).max(0.0);
+                    // rect_to_cells row math (no offsets — pure replica).
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let rows_body = (((body_h_px / scale).max(cell_h)) / cell_h)
+                        .floor()
+                        .max(1.0) as u16;
+                    assert_eq!(
+                        rows_body, rows_full,
+                        "rows mismatch: scale={scale} top={top} bottom={bottom} h={h_logical}"
+                    );
+                }
+            }
+        }
     }
 
     /// Shifting the grid origin down by remainder/2 distributes the sub-cell

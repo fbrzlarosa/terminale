@@ -16,7 +16,7 @@ pub(crate) const PALETTE_ACTIONS: &[(ShortcutAction, &str)] = &[
     (ShortcutAction::NewSshTab, "New SSH Tab…"),
     (ShortcutAction::CloseTab, "Close Tab"),
     (ShortcutAction::ReopenClosedTab, "Reopen Closed Tab"),
-    (ShortcutAction::RestartTab, "Restart Tab"),
+    (ShortcutAction::RestartTab, "Restart Session"),
     (ShortcutAction::NextTab, "Next Tab"),
     (ShortcutAction::PrevTab, "Previous Tab"),
     (ShortcutAction::MoveTabLeft, "Move Tab Left"),

@@ -649,63 +649,123 @@ pub(crate) fn close_exited_pane(state: &mut RunningState, pane_id: crate::PaneId
     state.window.request_redraw();
 }
 
-// ── restart_active_tab ────────────────────────────────────────────────────────
+// ── restart_focused_pane ──────────────────────────────────────────────────────
 
-/// Recreate the active tab's PTY + Emulator in-place.
-pub(crate) fn restart_active_tab(state: &mut RunningState) {
+/// Restart the focused pane's session **in place**: kill the child process
+/// and respawn `profile` (falling back to the default shell) inside the
+/// SAME pane, preserving the tab's pane tree and the pane's position.
+///
+/// Supersedes the old `restart_active_tab` (which only worked on crashed
+/// tabs, spawned a hardcoded shell and destroyed split layouts by
+/// rebuilding the whole TabState): this works on healthy panes too (the
+/// context-menu "Restart session"), keeps split layouts intact, honours
+/// the pane's profile command, and inherits the live OSC 7 cwd when the
+/// profile doesn't pin one — so the new shell starts where the old one
+/// was. Crashed panes restart naturally (`crashed` is reset below).
+///
+/// SSH tabs are skipped: their session is built by the async connect flow
+/// (`finish_ssh_tab`), not a local spawn; the menu item is disabled for
+/// them as well.
+pub(crate) fn restart_focused_pane(
+    state: &mut RunningState,
+    profile: Option<&terminale_config::Profile>,
+) {
     let active = state.active_tab;
-    let Some(old) = state.tabs.get(active) else {
+    let Some(tab) = state.tabs.get(active) else {
         return;
     };
-    if !old.crashed {
+    if !tab.ssh_host_name.is_empty() {
+        tracing::debug!("pane restart skipped: SSH session");
         return;
     }
-    let profile_name = old.profile_name.clone();
-    let icon = old.icon.clone();
-    let size = state.window.inner_size();
-    let initial = (terminale_term::DEFAULT_COLS, terminale_term::DEFAULT_ROWS);
-    let spec = terminale_core::SpawnSpec::just(if cfg!(windows) {
-        "powershell.exe"
-    } else {
-        "/bin/bash"
-    });
+    let pane_id = tab.focused;
+    let Some(pane) = tab.panes.get(&pane_id) else {
+        return;
+    };
+    let profile_name = pane.profile_name.clone();
+    let icon = pane.icon.clone();
+    // Spawn straight at the pane's current grid size — it keeps its
+    // sub-rect, so no post-spawn resize (and no ConPTY reflow) is needed.
+    let (cols, rows) = (pane.cols, pane.rows);
+    let inherited_cwd: Option<std::path::PathBuf> = tab
+        .emulator
+        .lock()
+        .current_dir()
+        .map(std::path::PathBuf::from);
+
+    // The respawn profile: the resolved config profile when the caller
+    // provides one (menu / keybind path resolves it by name), with the
+    // live cwd overlaid unless the profile pins its own; otherwise a
+    // cwd-only profile running the default shell — same semantics as
+    // new_tab / split.
+    let respawn: terminale_config::Profile = match profile {
+        Some(p) => {
+            let mut p = p.clone();
+            if p.cwd.is_none() {
+                p.cwd = inherited_cwd;
+            }
+            p
+        }
+        None => terminale_config::Profile {
+            name: profile_name.clone(),
+            command: String::new(),
+            args: Vec::new(),
+            env: Default::default(),
+            cwd: inherited_cwd,
+            icon: icon.clone(),
+        },
+    };
+
+    let spec = crate::build_spawn_spec(Some(&respawn), None);
     let proxy = state.proxy.clone();
     let notifier: terminale_core::DataNotifier = std::sync::Arc::new(move || {
         let _ = proxy.send_event(crate::UserEvent::PtyDataReady);
     });
-    let Ok(mut session) =
-        terminale_core::Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier)
+    let Ok(mut session) = terminale_core::Session::spawn_with_notifier(&spec, cols, rows, notifier)
     else {
-        tracing::warn!("tab restart failed: could not spawn session");
+        tracing::warn!(profile = %respawn.name, "pane restart failed: could not spawn session");
         return;
     };
     let Some(output_rx) = session.take_output() else {
         return;
     };
-    let (cols, rows) = state.renderer.pixels_to_cells(size.width, size.height);
-    let _ = session.resize(cols, rows);
     let mut emulator = terminale_term::Emulator::new(cols, rows);
     emulator.set_scrollback(state.scrollback_lines);
     emulator.set_palette(state.palette);
-    let new_tab = crate::TabState::new_single(crate::Pane {
-        profile_name,
-        icon,
-        custom_title: None,
-        user_title: None,
-        session,
-        output_rx,
-        emulator: std::sync::Arc::new(parking_lot::Mutex::new(emulator)),
-        cols,
-        rows,
-        scroll_lines: 0,
-        crashed: false,
-        autodetect_links: Vec::new(),
-        last_output_at: None,
-        last_input_at: None,
-    });
-    state.tabs[active] = new_tab;
+    emulator.set_command_blocks(state.command_blocks_enabled, state.max_command_blocks);
+
+    let Some(tab) = state.tabs.get_mut(active) else {
+        return;
+    };
+    let Some(pane) = tab.panes.get_mut(&pane_id) else {
+        return;
+    };
+    // Replacing `session` drops the old one, which kills the old child
+    // process (Session's Drop impl). The emulator is rebuilt from scratch
+    // so no stale grid/scrollback survives the restart.
+    pane.session = session;
+    pane.output_rx = output_rx;
+    pane.emulator = std::sync::Arc::new(parking_lot::Mutex::new(emulator));
+    pane.crashed = false;
+    pane.scroll_lines = 0;
+    pane.custom_title = None;
+    pane.last_output_at = None;
+    pane.last_input_at = None;
+    pane.autodetect_links.clear();
+
+    // Notify plugins: the old session ended (no exit status — we killed
+    // it; -1 mirrors the "no local status" convention), a new one started.
+    state.pending_hook_session_exit.push((pane_id, -1));
+    state
+        .pending_hook_session_start
+        .push((pane_id, respawn.name.clone()));
+
+    // Re-fit to the pane's sub-rect (no-op when cols/rows already match,
+    // thanks to the same-size guard) and reset the view state.
+    crate::panes::resize_active_tab_panes(state);
     state.renderer.set_scroll_lines(0);
     state.renderer.set_selection(None);
+    refresh_tab_bar(state);
     state.window.request_redraw();
 }
 
