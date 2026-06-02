@@ -100,6 +100,12 @@ windows-sys = { version = "0.59", features = [
 # the tree (via arboard); we only call one class method, no typed AppKit
 # bindings needed.
 objc2 = "0.6"
+# Quake dock-mode positioning uses native NSWindow.setFrame against
+# NSScreen.visibleFrame: winit's set_outer_position double-counts the macOS
+# menu bar (the window lands ~2x the menu-bar height below the top) and can't
+# place a window in the menu-bar band at all. We reach the NSWindow via the
+# winit raw window handle (same rwh major as winit).
+raw-window-handle = "0.6"
 
 [lints]
 workspace = true

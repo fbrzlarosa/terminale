@@ -290,6 +290,176 @@ pub(crate) fn apply_window_rect(window: &Window, rect: terminale_config::WindowR
     window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
 
+/// macOS: dock the window to a screen edge using the **native**
+/// `NSWindow.setFrame` against `NSScreen.visibleFrame`.
+///
+/// winit's `set_outer_position` is unusable for docking here: it double-counts
+/// the menu-bar height (a window asked for y=0 lands ~2× the menu-bar height
+/// below the top) and it can't place a window in the menu-bar band at all, so a
+/// top/left/right dock always shows an empty strip above the window. Going
+/// straight to AppKit with the screen's *visible* frame (which already excludes
+/// the menu bar and the Dock) places the window flush. `animate` runs AppKit's
+/// built-in frame animation — smooth, unlike winit per-frame repositioning.
+///
+/// Returns `false` (caller should fall back to the winit path) when the edge is
+/// `Off`, the handle isn't AppKit, or the NSWindow/NSScreen can't be read.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_dock_window(
+    window: &Window,
+    edge: terminale_config::QuakeEdge,
+    size_percent: f32,
+    margin_px: u32,
+    animate: bool,
+) -> bool {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyObject, Bool};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use terminale_config::QuakeEdge;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsRect {
+        origin: NsPoint,
+        size: NsSize,
+    }
+    // SAFETY: layouts match Cocoa's CGPoint/CGSize/CGRect (two/two/nested f64).
+    unsafe impl objc2::Encode for NsPoint {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGPoint",
+            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+        );
+    }
+    unsafe impl objc2::Encode for NsSize {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGSize",
+            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+        );
+    }
+    unsafe impl objc2::Encode for NsRect {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGRect",
+            &[
+                <NsPoint as objc2::Encode>::ENCODING,
+                <NsSize as objc2::Encode>::ENCODING,
+            ],
+        );
+    }
+
+    if matches!(edge, QuakeEdge::Off) {
+        return false;
+    }
+    let Ok(handle) = window.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return false;
+    };
+    // SAFETY: on AppKit the handle's `ns_view` is a valid `NSView*` for the
+    // window's lifetime; `-window` returns its owning `NSWindow*` (or nil).
+    let ns_window: *mut AnyObject = unsafe {
+        let view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+        msg_send![view, window]
+    };
+    if ns_window.is_null() {
+        return false;
+    }
+    // SAFETY: `-screen` returns the window's NSScreen or nil.
+    let ns_screen: *mut AnyObject = unsafe { msg_send![ns_window, screen] };
+    if ns_screen.is_null() {
+        return false;
+    }
+    // `visibleFrame` is Cocoa coords: origin bottom-left, y grows up, and it
+    // already excludes the menu bar (top) and the Dock.
+    // SAFETY: `-visibleFrame` returns an NSRect (4×f64).
+    let vf: NsRect = unsafe { msg_send![ns_screen, visibleFrame] };
+    let (vx, vy, vw, vh) = (vf.origin.x, vf.origin.y, vf.size.width, vf.size.height);
+    let frac = f64::from(size_percent).clamp(0.1, 1.0);
+    let m = f64::from(margin_px);
+    let rect = match edge {
+        QuakeEdge::Top => {
+            let h = vh * frac;
+            // Flush under the menu bar = top of the visible band, minus margin.
+            NsRect {
+                origin: NsPoint {
+                    x: vx,
+                    y: vy + vh - h - m,
+                },
+                size: NsSize {
+                    width: vw,
+                    height: h,
+                },
+            }
+        }
+        QuakeEdge::Bottom => {
+            let h = vh * frac;
+            NsRect {
+                origin: NsPoint { x: vx, y: vy + m },
+                size: NsSize {
+                    width: vw,
+                    height: h,
+                },
+            }
+        }
+        QuakeEdge::Left => {
+            let w = vw * frac;
+            NsRect {
+                origin: NsPoint { x: vx + m, y: vy },
+                size: NsSize {
+                    width: w,
+                    height: vh,
+                },
+            }
+        }
+        QuakeEdge::Right => {
+            let w = vw * frac;
+            NsRect {
+                origin: NsPoint {
+                    x: vx + vw - w - m,
+                    y: vy,
+                },
+                size: NsSize {
+                    width: w,
+                    height: vh,
+                },
+            }
+        }
+        QuakeEdge::Off => return false,
+    };
+    // SAFETY: setFrame:display:animate: is a standard NSWindow method.
+    unsafe {
+        let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES, animate: Bool::new(animate)];
+    }
+    true
+}
+
+/// macOS: bring the app to the foreground so a Quake show triggered from
+/// another app (or Space) actually takes keyboard focus. winit's
+/// `focus_window` alone does not activate a background app.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_activate() {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
+    // SAFETY: standard NSApplication activation call on the shared app.
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        if !app.is_null() {
+            let _: () = msg_send![app, activateIgnoringOtherApps: Bool::YES];
+        }
+    }
+}
+
 /// Snap the focused window to an edge / centre / full of its **current**
 /// monitor, using the pure [`terminale_config::snap_window_rect`] math. No-op
 /// when no monitor can be queried. Cancels Quake animation state so the snap
@@ -537,6 +707,14 @@ pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
     if !state.quake_visible {
         return;
     }
+    // Skip while a slide is in flight: every animation frame repositions the
+    // window, which fires `Moved`, which lands here — and `current_monitor()`
+    // is a non-trivial OS round-trip on macOS. Doing it 60×/s mid-slide just
+    // adds stutter; the monitor can't change during the animation anyway, and
+    // it's refreshed again on the next real `Moved`/`Focused`/`Resized`.
+    if state.quake_anim.is_some() {
+        return;
+    }
     let new_mon = state.window.current_monitor();
     // Only write when the handle has actually changed (name-based comparison
     // because `MonitorHandle` does not implement `PartialEq`).
@@ -582,6 +760,17 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     state.modifiers = winit::keyboard::ModifiersState::empty();
 
     if state.quake_visible {
+        // macOS dock modes are positioned natively (see the show path); hide
+        // them with a plain `set_visible(false)` rather than the winit slide,
+        // which would reposition frame-by-frame with the menu-bar coordinate
+        // bug and stutter. The next show re-docks from the visible frame.
+        #[cfg(target_os = "macos")]
+        if quake_cfg.edge != terminale_config::QuakeEdge::Off {
+            state.quake_visible = false;
+            state.quake_anim = None;
+            state.window.set_visible(false);
+            return;
+        }
         // Hiding — snapshot the exact geometry so the next show is a 1:1
         // restore. `outer_position` may fail on some platforms; fall back to
         // any saved rect, else origin.
@@ -684,6 +873,29 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     // it. `window.always_on_top` is the single source of truth for all
     // window modes including docked Quake.
     apply_window_level(&state.window, state.always_on_top);
+
+    // macOS dock modes (top/bottom/left/right): position natively against the
+    // screen's visible frame. winit's `set_outer_position` double-counts the
+    // menu bar, leaving an empty strip above the window; AppKit's `setFrame`
+    // places it flush and animates smoothly. Free-floating (`Off`) keeps the
+    // winit path below.
+    #[cfg(target_os = "macos")]
+    if quake_cfg.edge != terminale_config::QuakeEdge::Off {
+        state.window.set_visible(true);
+        macos_activate();
+        let want_anim = animated && dur.as_millis() > 0;
+        if macos_dock_window(
+            &state.window,
+            quake_cfg.edge,
+            quake_cfg.size_percent,
+            quake_cfg.margin_px,
+            want_anim,
+        ) {
+            state.quake_anim = None;
+            state.window.focus_window();
+            return;
+        }
+    }
 
     if let Some((rect, mon_rect)) = target_and_mon {
         if animated && dur.as_millis() > 0 {

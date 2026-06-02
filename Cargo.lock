@@ -6136,6 +6136,7 @@ dependencies = [
  "open",
  "parking_lot",
  "pollster",
+ "raw-window-handle",
  "regex",
  "resvg",
  "rfd",
