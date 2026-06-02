@@ -631,12 +631,13 @@ pub struct Renderer {
     /// shaped [`Buffer`]s are reused as-is.
     cached_focused_text: Vec<(Buffer, [f32; 2])>,
     /// Hash of every input the focused-pane text loop reads: per cell
-    /// `{hidden, ch, fg, bold, italic}` (fg is post `apply_sgr_attributes`
-    /// + `enforce_min_contrast`, so theme/dim/contrast changes miss) and
-    /// the globals `{font_size, line_height, the four family names,
-    /// ligatures, builtin_box_drawing, cols, cell sizes, body origins,
-    /// pad_px, ch_px}`. If the recomputed hash matches, the cached buffers
-    /// are provably identical to what a rebuild would produce.
+    /// `{hidden, ch, fg, bold, italic}` (fg is taken after
+    /// `apply_sgr_attributes` and `enforce_min_contrast`, so theme/dim/
+    /// contrast changes miss) and the globals `{font_size, line_height,
+    /// the four family names, ligatures, builtin_box_drawing, cols, cell
+    /// sizes, body origins, pad_px, ch_px}`. If the recomputed hash
+    /// matches, the cached buffers are provably identical to what a
+    /// rebuild would produce.
     focused_text_hash: u64,
     /// Cached `"GPU <name> (<backend>)"` label for the resource strip. The
     /// adapter is fixed for the renderer's lifetime; filled lazily on the
