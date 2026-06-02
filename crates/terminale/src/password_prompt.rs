@@ -224,8 +224,13 @@ impl PasswordPrompt {
             _ => {}
         }
 
+        // Don't let `RedrawRequested` re-arm itself: egui-winit reports
+        // repaint == true for it, so calling request_redraw here would spin a
+        // ~60 fps repaint loop while the window merely sits open. The paint
+        // happens in the RedrawRequested arm; render schedules its own
+        // follow-up repaint when an animation actually needs one.
         let response = self.egui_state.on_window_event(&self.window, event);
-        if response.repaint {
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
             self.window.request_redraw();
         }
 

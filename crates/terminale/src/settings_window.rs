@@ -611,8 +611,16 @@ impl SettingsWindow {
             _ => {}
         }
 
+        // `RedrawRequested` is a "paint now" signal, not input — yet egui-winit
+        // still reports `repaint == true` for it. Honouring that here calls
+        // `request_redraw()`, which produces another `RedrawRequested`, and so
+        // on: an unbroken ~60 fps repaint loop that pegs a CPU core while the
+        // window merely sits open (no input, no animation). The paint itself
+        // happens in the `RedrawRequested` arm below, and `render_frame`
+        // schedules its own follow-up repaint whenever an animation needs one,
+        // so suppress the self-retriggering redraw for that event.
         let response = self.egui_state.on_window_event(&self.window, event);
-        if response.repaint {
+        if response.repaint && !matches!(event, WindowEvent::RedrawRequested) {
             self.window.request_redraw();
         }
 
