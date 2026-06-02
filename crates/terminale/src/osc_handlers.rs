@@ -90,6 +90,12 @@ pub(crate) fn advance_caught(emulator: &Arc<Mutex<Emulator>>, chunk: &[u8]) -> b
 ///    command output bursts without making the spinner linger noticeably at
 ///    idle prompts.
 ///
+///    The fallback is suppressed while the user is typing: output that
+///    closely follows user input (`last_input_at` within 300 ms) is just
+///    keystroke echo or a prompt redraw — syntax-highlighting shells
+///    (PSReadLine, fish, zsh plugins) repaint the whole line on every key,
+///    so a chunk-size filter alone cannot tell echo apart from real output.
+///
 /// # Lock ordering
 ///
 /// Acquires the emulator mutex briefly to read the semantic state, then
@@ -100,9 +106,17 @@ pub(crate) fn pane_is_busy(pane: &Pane) -> bool {
     if pane.emulator.lock().semantic().is_command_running() {
         return true;
     }
-    // Fallback: recent output activity.
-    pane.last_output_at
-        .is_some_and(|t| t.elapsed() < Duration::from_millis(250))
+    // Fallback: recent output activity…
+    let recent_output = pane
+        .last_output_at
+        .is_some_and(|t| t.elapsed() < Duration::from_millis(250));
+    if !recent_output {
+        return false;
+    }
+    // …but not while the user is typing: output right after user input is
+    // echo / prompt repaint, not a running command.
+    pane.last_input_at
+        .is_none_or(|t| t.elapsed() >= Duration::from_millis(300))
 }
 
 // ── drain_pty_output ──────────────────────────────────────────────────────────

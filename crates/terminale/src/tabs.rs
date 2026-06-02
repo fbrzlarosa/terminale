@@ -701,6 +701,7 @@ pub(crate) fn restart_active_tab(state: &mut RunningState) {
         crashed: false,
         autodetect_links: Vec::new(),
         last_output_at: None,
+        last_input_at: None,
     });
     state.tabs[active] = new_tab;
     state.renderer.set_scroll_lines(0);
@@ -780,18 +781,22 @@ pub(crate) fn build_paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
 /// 1. [`paste_clipboard`] — when no confirmation is needed.
 /// 2. From the App loop — when the user confirmed the paste-guard dialog.
 pub(crate) fn send_paste_text(state: &mut RunningState, text: &str) {
-    let Some(tab) = state.tabs.get(state.active_tab) else {
+    let strip_control_chars = state.paste_strip_control_chars;
+    let Some(tab) = state.tabs.get_mut(state.active_tab) else {
         return;
     };
     let bracketed = tab.emulator.lock().bracketed_paste_enabled();
     // Optionally strip control bytes before building the payload.
-    let payload = if state.paste_strip_control_chars {
+    let payload = if strip_control_chars {
         let stripped = crate::paste_guard::strip_control_chars(text);
         build_paste_payload(&stripped, bracketed)
     } else {
         build_paste_payload(text, bracketed)
     };
     let _ = tab.session.write_input(&payload);
+    // Stamp the paste as user input so the busy-spinner fallback can tell
+    // the resulting echo / prompt repaint apart from real command output.
+    tab.focused_pane_mut().last_input_at = Some(std::time::Instant::now());
 }
 
 /// Outcome of a paste attempt: either the text was sent directly, or a

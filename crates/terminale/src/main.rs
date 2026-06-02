@@ -1188,6 +1188,12 @@ struct Pane {
     /// indicator for shells that do not emit OSC 133 sequences.
     /// `None` = pane has never received meaningful output.
     last_output_at: Option<std::time::Instant>,
+    /// Wall-clock instant of the last user input (keystroke or paste)
+    /// written to this pane's PTY. Used by [`osc_handlers::pane_is_busy`]
+    /// to tell keystroke echo / prompt redraws apart from real command
+    /// output — output that closely follows user input does not count as
+    /// "busy". `None` = no user input yet.
+    last_input_at: Option<std::time::Instant>,
 }
 
 // ── Tab-group types ───────────────────────────────────────────────────────────
@@ -6948,10 +6954,14 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     text,
                     app_cursor,
                 ) {
-                    if let Some(tab) = state.tabs.get(state.active_tab) {
+                    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
                         if let Err(e) = tab.session.write_input(&bytes) {
                             tracing::warn!(?e, "pty write failed");
                         }
+                        // Stamp the keystroke so the busy-spinner fallback can
+                        // tell prompt echo apart from real command output.
+                        tab.focused_pane_mut().last_input_at =
+                            Some(std::time::Instant::now());
                     }
                     // Broadcast: when broadcast-input is active, fan the same
                     // raw bytes out to every other live pane in the configured
@@ -8786,6 +8796,7 @@ fn spawn_pane(
         crashed: false,
         autodetect_links: Vec::new(),
         last_output_at: None,
+        last_input_at: None,
     }
 }
 

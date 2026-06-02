@@ -265,6 +265,7 @@ pub(crate) fn finish_ssh_tab(state: &mut RunningState, outcome: SshConnectOutcom
         crashed,
         autodetect_links: Vec::new(),
         last_output_at: None,
+        last_input_at: None,
     });
     // Record the SSH host name so context-rule matching can use it immediately.
     tab.ssh_host_name = host_name;
