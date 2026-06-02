@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.9]
+
+### Security
+- SSH library bumped (russh 0.45 → 0.61.1), closing five advisories: three
+  high-severity remote DoS vectors (unbounded post-decompression packet
+  size, unchecked CryptoVec allocation growth, pre-auth allocation in the
+  keyboard-interactive handler) and two moderate ones (channel-window
+  adjust overflow, server userauth state reuse)
+
+### Added
+- SSH agent authentication now works on Windows: terminale talks to the
+  OpenSSH agent service named pipe, with Pageant as fallback (previously
+  agent auth was Unix-only)
+
+### Changed
+- RSA keys now sign with the strongest SHA-2 hash the server advertises —
+  plain ssh-rsa/SHA-1 is refused by modern OpenSSH servers
+
 ## [0.1.8]
 
 ### Fixed
