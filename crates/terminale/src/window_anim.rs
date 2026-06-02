@@ -338,13 +338,19 @@ pub(crate) fn macos_dock_window(
     unsafe impl objc2::Encode for NsPoint {
         const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
             "CGPoint",
-            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+            &[
+                <f64 as objc2::Encode>::ENCODING,
+                <f64 as objc2::Encode>::ENCODING,
+            ],
         );
     }
     unsafe impl objc2::Encode for NsSize {
         const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
             "CGSize",
-            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+            &[
+                <f64 as objc2::Encode>::ENCODING,
+                <f64 as objc2::Encode>::ENCODING,
+            ],
         );
     }
     unsafe impl objc2::Encode for NsRect {
@@ -439,7 +445,8 @@ pub(crate) fn macos_dock_window(
     };
     // SAFETY: setFrame:display:animate: is a standard NSWindow method.
     unsafe {
-        let _: () = msg_send![ns_window, setFrame: rect, display: Bool::YES, animate: Bool::new(animate)];
+        let _: () =
+            msg_send![ns_window, setFrame: rect, display: Bool::YES, animate: Bool::new(animate)];
     }
     true
 }
