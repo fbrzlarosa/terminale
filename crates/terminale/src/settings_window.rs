@@ -134,6 +134,12 @@ pub struct SettingsWindow {
     config: Config,
     config_path: PathBuf,
     dirty: bool,
+    /// Set whenever an egui frame ran (`build_ui` is the only place
+    /// `config` is edited), consumed by the host's live-apply check in
+    /// `about_to_wait` via [`Self::take_config_maybe_changed`]. Gates the
+    /// full-`Config` clone + ~150-field diff so it runs once per settings
+    /// repaint instead of on every host tick while the panel is open.
+    config_maybe_changed: bool,
     status: Option<(StatusKind, String)>,
     section: Section,
     /// Live text in the sidebar search box. Filters which sidebar
@@ -351,6 +357,9 @@ impl SettingsWindow {
             config,
             config_path,
             dirty: false,
+            // Start true so the host's first live-apply check after the
+            // panel opens runs once even before the first egui frame.
+            config_maybe_changed: true,
             status: None,
             section: Section::Profiles,
             sidebar_search: String::new(),
@@ -402,6 +411,14 @@ impl SettingsWindow {
 
     pub fn current_config(&self) -> &Config {
         &self.config
+    }
+
+    /// Consume the "config may have changed" flag — `true` when at least
+    /// one egui frame (the only context that edits `config`) ran since the
+    /// last call. The host gates its clone + 150-field live-apply diff on
+    /// this instead of running it every `about_to_wait` tick.
+    pub fn take_config_maybe_changed(&mut self) -> bool {
+        std::mem::take(&mut self.config_maybe_changed)
     }
 
     /// Sync an externally-applied font size (a live Ctrl+± zoom) into this
@@ -656,6 +673,9 @@ impl SettingsWindow {
         let ui_start = std::time::Instant::now();
         let full_output = ctx.run(raw_input, |ctx| self.build_ui(ctx));
         let ui_ms = ui_start.elapsed().as_secs_f32() * 1000.0;
+        // `build_ui` is the only place `self.config` is edited — flag the
+        // frame so the host's live-apply diff runs (once) after it.
+        self.config_maybe_changed = true;
 
         // Honour egui's requested repaint cadence. Without this, in-flight
         // animations (hover fades, combo open/close, the recorder pulse)

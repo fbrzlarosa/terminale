@@ -8051,353 +8051,366 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // user's settings differ from the active config we push them down
         // to the renderer immediately so theme / cursor / etc. changes are
         // visible without closing the settings panel.
-        if let Some(s) = self.settings.as_ref() {
-            let new_cfg = s.current_config().clone();
-            if !configs_identical(&self.config, &new_cfg) {
-                let theme_changed = self.config.appearance.theme != new_cfg.appearance.theme;
-                let font_changed = self.config.font.family != new_cfg.font.family
-                    || self.config.font.bold_family != new_cfg.font.bold_family
-                    || self.config.font.italic_family != new_cfg.font.italic_family
-                    || self.config.font.bold_italic_family != new_cfg.font.bold_italic_family
-                    || (self.config.font.size - new_cfg.font.size).abs() >= f32::EPSILON
-                    || (self.config.font.line_height - new_cfg.font.line_height).abs()
-                        >= f32::EPSILON
-                    || self.config.font.ligatures != new_cfg.font.ligatures
-                    || (self.config.font.underline_thickness_px
-                        - new_cfg.font.underline_thickness_px)
-                        .abs()
-                        >= f32::EPSILON;
-                // Detect a startup-position change so we can apply it to the
-                // current session too — picking an edge in Settings should
-                // snap the focused window immediately, not only at next
-                // launch.
-                let new_startup_position = new_cfg.window.startup_position;
-                let startup_position_changed =
-                    self.config.window.startup_position != new_startup_position;
-                // Capture whether auto_reload_config changed before we
-                // overwrite self.config — used below to restart the watcher.
-                let auto_reload_changed =
-                    self.config.window.auto_reload_config != new_cfg.window.auto_reload_config;
-                let new_auto_reload = new_cfg.window.auto_reload_config;
-                self.config = new_cfg;
-                // Live-apply to EVERY open terminal window.
-                let cfg = self.config.clone();
-                for state in &mut self.windows {
-                    state.renderer.set_cursor(cursor_params_from_config(&cfg));
-                    state.bell_mode = cfg.bell.mode;
-                    state.scroll_step_lines = cfg.window.scroll_step_lines;
-                    state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
-                    state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
-                    if state.smooth_scroll != cfg.window.smooth_scroll {
-                        state.smooth_scroll = cfg.window.smooth_scroll;
-                        // Clear any stale remainder when toggling smooth scroll.
-                        state.smooth_scroll_remainder = 0.0;
-                    }
-                    state.copy_on_select = cfg.window.copy_on_select;
-                    state.animated_tab_drag = cfg.appearance.animated_tab_drag;
-                    // Quake-managed windows drive their own visibility; we only
-                    // touch the persistent window level here, never show/hide.
-                    if state.always_on_top != cfg.window.always_on_top {
-                        state.always_on_top = cfg.window.always_on_top;
-                        apply_window_level(&state.window, state.always_on_top);
-                    }
-                    if state.scrollback_lines != cfg.window.scrollback_lines {
-                        state.scrollback_lines = cfg.window.scrollback_lines;
-                        let sb = state.scrollback_lines;
-                        for tab in &state.tabs {
-                            tab.emulator.lock().set_scrollback(sb);
+        //
+        // Gated on `take_config_maybe_changed`: the panel's config can only
+        // change inside its egui frame, so the full-`Config` clone + the
+        // ~150-field `configs_identical` diff run once per settings repaint
+        // instead of on every `about_to_wait` tick while the panel is open.
+        if let Some(s) = self.settings.as_mut() {
+            if s.take_config_maybe_changed() {
+                let new_cfg = s.current_config().clone();
+                if !configs_identical(&self.config, &new_cfg) {
+                    let theme_changed = self.config.appearance.theme != new_cfg.appearance.theme;
+                    let font_changed = self.config.font.family != new_cfg.font.family
+                        || self.config.font.bold_family != new_cfg.font.bold_family
+                        || self.config.font.italic_family != new_cfg.font.italic_family
+                        || self.config.font.bold_italic_family != new_cfg.font.bold_italic_family
+                        || (self.config.font.size - new_cfg.font.size).abs() >= f32::EPSILON
+                        || (self.config.font.line_height - new_cfg.font.line_height).abs()
+                            >= f32::EPSILON
+                        || self.config.font.ligatures != new_cfg.font.ligatures
+                        || (self.config.font.underline_thickness_px
+                            - new_cfg.font.underline_thickness_px)
+                            .abs()
+                            >= f32::EPSILON;
+                    // Detect a startup-position change so we can apply it to the
+                    // current session too — picking an edge in Settings should
+                    // snap the focused window immediately, not only at next
+                    // launch.
+                    let new_startup_position = new_cfg.window.startup_position;
+                    let startup_position_changed =
+                        self.config.window.startup_position != new_startup_position;
+                    // Capture whether auto_reload_config changed before we
+                    // overwrite self.config — used below to restart the watcher.
+                    let auto_reload_changed =
+                        self.config.window.auto_reload_config != new_cfg.window.auto_reload_config;
+                    let new_auto_reload = new_cfg.window.auto_reload_config;
+                    self.config = new_cfg;
+                    // Live-apply to EVERY open terminal window.
+                    let cfg = self.config.clone();
+                    for state in &mut self.windows {
+                        state.renderer.set_cursor(cursor_params_from_config(&cfg));
+                        state.bell_mode = cfg.bell.mode;
+                        state.scroll_step_lines = cfg.window.scroll_step_lines;
+                        state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
+                        state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
+                        if state.smooth_scroll != cfg.window.smooth_scroll {
+                            state.smooth_scroll = cfg.window.smooth_scroll;
+                            // Clear any stale remainder when toggling smooth scroll.
+                            state.smooth_scroll_remainder = 0.0;
                         }
-                    }
-                    state.shortcuts = cfg.keybinds.shortcuts.clone();
-                    state.custom_keybinds.clone_from(&cfg.keybinds.custom);
-                    state.key_tables.clone_from(&cfg.keybinds.key_tables);
-                    state.mouse_bindings.clone_from(&cfg.keybinds.mouse);
-                    state.editor_command = cfg.editor.command.clone();
-                    // Refresh the cached SSH host names so palette / picker
-                    // entries reflect adds/edits/removes made in settings.
-                    // In `live` import mode we also merge the OpenSSH config.
-                    state.ssh_host_names = effective_ssh_host_names(&cfg);
-                    // Refresh cached snippet names so the snippet palette
-                    // reflects any add/edit/remove made in Settings.
-                    state.snippet_names = snippet_names_from(&cfg);
-                    // Refresh cached profile names + icons so the "New tab
-                    // with profile…" submenu reflects any profile edits.
-                    state.profile_names = cfg
-                        .profiles
-                        .profiles
-                        .iter()
-                        .map(|p| p.name.clone())
-                        .collect();
-                    state.profile_icons = cfg
-                        .profiles
-                        .profiles
-                        .iter()
-                        .map(|p| p.icon.clone())
-                        .collect();
-                    state.ssh_host_targets = ssh_host_targets_from(&cfg);
-                    state.offer_save_ssh_hosts = cfg.terminal.offer_save_ssh_hosts;
-                    // Phase E: refresh divider physical-px metrics and the
-                    // live-resize toggle from the new config.
-                    let sf = state.window.scale_factor() as f32;
-                    state.divider_thickness_px = cfg.appearance.divider_thickness_logical * sf;
-                    state.divider_grab_padding_px =
-                        cfg.appearance.divider_grab_padding_logical * sf;
-                    // Refresh focus-border config and push to renderer.
-                    state.focus_border_thickness_px =
-                        cfg.appearance.focus_border_thickness_logical * sf;
-                    state.focus_border_color = cfg.appearance.focus_border_color;
-                    state.renderer.set_focus_border_thickness_logical(
-                        cfg.appearance.focus_border_thickness_logical,
-                    );
-                    state
-                        .renderer
-                        .set_focus_border_color(cfg.appearance.focus_border_color);
-                    // Live-apply the divider colour override — None falls back to the
-                    // renderer's auto tone (derived from the background colour).
-                    state.divider_color = cfg.appearance.divider_color;
-                    state.live_pane_resize = cfg.terminal.live_pane_resize;
-                    state.pane_resize_step_cells = cfg.terminal.pane_resize_step_cells;
-                    state.show_prompt_marks = cfg.terminal.show_prompt_marks;
-                    state.os_notifications = cfg.terminal.os_notifications;
-                    // Update zen-mode mirror fields before applying chrome so
-                    // re-applying zen overrides uses the new config values.
-                    state.zen_hide.clone_from(&cfg.window.zen_hide);
-                    state.zen_fullscreen = cfg.window.zen_fullscreen;
-                    // Config mirrors for tab-bar-enabled and show-pane-headers.
-                    state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
-                    state.show_pane_headers_config = cfg.appearance.show_pane_headers;
-                    // Live-apply pane-header toggle: resize all panes so they
-                    // gain/lose the 22 px header band, then push to renderer.
-                    if state.show_pane_headers != cfg.appearance.show_pane_headers {
-                        state.show_pane_headers = cfg.appearance.show_pane_headers;
+                        state.copy_on_select = cfg.window.copy_on_select;
+                        state.animated_tab_drag = cfg.appearance.animated_tab_drag;
+                        // Quake-managed windows drive their own visibility; we only
+                        // touch the persistent window level here, never show/hide.
+                        if state.always_on_top != cfg.window.always_on_top {
+                            state.always_on_top = cfg.window.always_on_top;
+                            apply_window_level(&state.window, state.always_on_top);
+                        }
+                        if state.scrollback_lines != cfg.window.scrollback_lines {
+                            state.scrollback_lines = cfg.window.scrollback_lines;
+                            let sb = state.scrollback_lines;
+                            for tab in &state.tabs {
+                                tab.emulator.lock().set_scrollback(sb);
+                            }
+                        }
+                        state.shortcuts = cfg.keybinds.shortcuts.clone();
+                        state.custom_keybinds.clone_from(&cfg.keybinds.custom);
+                        state.key_tables.clone_from(&cfg.keybinds.key_tables);
+                        state.mouse_bindings.clone_from(&cfg.keybinds.mouse);
+                        state.editor_command = cfg.editor.command.clone();
+                        // Refresh the cached SSH host names so palette / picker
+                        // entries reflect adds/edits/removes made in settings.
+                        // In `live` import mode we also merge the OpenSSH config.
+                        state.ssh_host_names = effective_ssh_host_names(&cfg);
+                        // Refresh cached snippet names so the snippet palette
+                        // reflects any add/edit/remove made in Settings.
+                        state.snippet_names = snippet_names_from(&cfg);
+                        // Refresh cached profile names + icons so the "New tab
+                        // with profile…" submenu reflects any profile edits.
+                        state.profile_names = cfg
+                            .profiles
+                            .profiles
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect();
+                        state.profile_icons = cfg
+                            .profiles
+                            .profiles
+                            .iter()
+                            .map(|p| p.icon.clone())
+                            .collect();
+                        state.ssh_host_targets = ssh_host_targets_from(&cfg);
+                        state.offer_save_ssh_hosts = cfg.terminal.offer_save_ssh_hosts;
+                        // Phase E: refresh divider physical-px metrics and the
+                        // live-resize toggle from the new config.
+                        let sf = state.window.scale_factor() as f32;
+                        state.divider_thickness_px = cfg.appearance.divider_thickness_logical * sf;
+                        state.divider_grab_padding_px =
+                            cfg.appearance.divider_grab_padding_logical * sf;
+                        // Refresh focus-border config and push to renderer.
+                        state.focus_border_thickness_px =
+                            cfg.appearance.focus_border_thickness_logical * sf;
+                        state.focus_border_color = cfg.appearance.focus_border_color;
+                        state.renderer.set_focus_border_thickness_logical(
+                            cfg.appearance.focus_border_thickness_logical,
+                        );
+                        state
+                            .renderer
+                            .set_focus_border_color(cfg.appearance.focus_border_color);
+                        // Live-apply the divider colour override — None falls back to the
+                        // renderer's auto tone (derived from the background colour).
+                        state.divider_color = cfg.appearance.divider_color;
+                        state.live_pane_resize = cfg.terminal.live_pane_resize;
+                        state.pane_resize_step_cells = cfg.terminal.pane_resize_step_cells;
+                        state.show_prompt_marks = cfg.terminal.show_prompt_marks;
+                        state.os_notifications = cfg.terminal.os_notifications;
+                        // Update zen-mode mirror fields before applying chrome so
+                        // re-applying zen overrides uses the new config values.
+                        state.zen_hide.clone_from(&cfg.window.zen_hide);
+                        state.zen_fullscreen = cfg.window.zen_fullscreen;
+                        // Config mirrors for tab-bar-enabled and show-pane-headers.
+                        state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
+                        state.show_pane_headers_config = cfg.appearance.show_pane_headers;
+                        // Live-apply pane-header toggle: resize all panes so they
+                        // gain/lose the 22 px header band, then push to renderer.
+                        if state.show_pane_headers != cfg.appearance.show_pane_headers {
+                            state.show_pane_headers = cfg.appearance.show_pane_headers;
+                            if !state.zen {
+                                state
+                                    .renderer
+                                    .set_show_pane_headers(state.show_pane_headers);
+                            }
+                        }
+                        state.pane_tear_out = cfg.appearance.pane_tear_out;
+                        // Live-apply close-button style (render-only state — no
+                        // layout impact, so no resize needed).
+                        state
+                            .renderer
+                            .set_close_button_style(cfg.appearance.close_button_style);
+                        // ux-polish-b: tab bar visibility / position / single-tab
+                        // hide + cell-width multiplier. All live-applied so the
+                        // Settings panel produces immediate visual feedback.
                         if !state.zen {
                             state
                                 .renderer
-                                .set_show_pane_headers(state.show_pane_headers);
+                                .set_tab_bar_enabled(cfg.appearance.tab_bar_enabled);
                         }
-                    }
-                    state.pane_tear_out = cfg.appearance.pane_tear_out;
-                    // Live-apply close-button style (render-only state — no
-                    // layout impact, so no resize needed).
-                    state
-                        .renderer
-                        .set_close_button_style(cfg.appearance.close_button_style);
-                    // ux-polish-b: tab bar visibility / position / single-tab
-                    // hide + cell-width multiplier. All live-applied so the
-                    // Settings panel produces immediate visual feedback.
-                    if !state.zen {
                         state
                             .renderer
-                            .set_tab_bar_enabled(cfg.appearance.tab_bar_enabled);
-                    }
-                    state
-                        .renderer
-                        .set_tab_bar_placement(tab_bar_placement_from_config(&cfg));
-                    state
-                        .renderer
-                        .set_tab_bar_hide_if_single(cfg.appearance.tab_bar_hide_if_single);
-                    state.renderer.set_dim_amount(cfg.appearance.dim_amount);
-                    state
-                        .renderer
-                        .set_cell_width_multiplier(cfg.font.cell_width);
-                    // ux-polish-a: exit-behavior and hyperlink-rules are held in
-                    // module-level atomics / statics (not on TermWindow) so they
-                    // need to be explicitly synced via the same updater the
-                    // settings_window/terminal.rs panel uses.
-                    update_exit_behavior(cfg.terminal.exit_behavior);
-                    crate::links::update_hyperlink_rules(&cfg.terminal.hyperlink_rules);
-                    // Live-apply image protocol toggles to all open emulators.
-                    {
-                        let osc1337_on = cfg.terminal.image_protocols.osc1337;
-                        let sixel_on = cfg.terminal.image_protocols.sixel;
-                        let apc_on = cfg.terminal.image_protocols.apc;
-                        for tab in &state.tabs {
-                            let mut emu = tab.emulator.lock();
-                            emu.set_osc1337_images_enabled(osc1337_on);
-                            emu.set_sixel_images_enabled(sixel_on);
-                            emu.set_apc_graphics_enabled(apc_on);
+                            .set_tab_bar_placement(tab_bar_placement_from_config(&cfg));
+                        state
+                            .renderer
+                            .set_tab_bar_hide_if_single(cfg.appearance.tab_bar_hide_if_single);
+                        state.renderer.set_dim_amount(cfg.appearance.dim_amount);
+                        state
+                            .renderer
+                            .set_cell_width_multiplier(cfg.font.cell_width);
+                        // ux-polish-a: exit-behavior and hyperlink-rules are held in
+                        // module-level atomics / statics (not on TermWindow) so they
+                        // need to be explicitly synced via the same updater the
+                        // settings_window/terminal.rs panel uses.
+                        update_exit_behavior(cfg.terminal.exit_behavior);
+                        crate::links::update_hyperlink_rules(&cfg.terminal.hyperlink_rules);
+                        // Live-apply image protocol toggles to all open emulators.
+                        {
+                            let osc1337_on = cfg.terminal.image_protocols.osc1337;
+                            let sixel_on = cfg.terminal.image_protocols.sixel;
+                            let apc_on = cfg.terminal.image_protocols.apc;
+                            for tab in &state.tabs {
+                                let mut emu = tab.emulator.lock();
+                                emu.set_osc1337_images_enabled(osc1337_on);
+                                emu.set_sixel_images_enabled(sixel_on);
+                                emu.set_apc_graphics_enabled(apc_on);
+                            }
                         }
-                    }
-                    // Live-apply command-block capture settings.
-                    {
-                        let cb_enabled = cfg.terminal.command_blocks;
-                        let cb_max = cfg.terminal.max_command_blocks;
-                        state.command_blocks_enabled = cb_enabled;
-                        state.max_command_blocks = cb_max;
-                        for tab in &state.tabs {
-                            tab.emulator.lock().set_command_blocks(cb_enabled, cb_max);
+                        // Live-apply command-block capture settings.
+                        {
+                            let cb_enabled = cfg.terminal.command_blocks;
+                            let cb_max = cfg.terminal.max_command_blocks;
+                            state.command_blocks_enabled = cb_enabled;
+                            state.max_command_blocks = cb_max;
+                            for tab in &state.tabs {
+                                tab.emulator.lock().set_command_blocks(cb_enabled, cb_max);
+                            }
                         }
-                    }
-                    state
-                        .word_separators
-                        .clone_from(&cfg.terminal.word_separators);
-                    // Live-apply the link-underline mode: re-run autodetect so
-                    // switching to/from `Always` immediately adds/clears the
-                    // persistent URL underlines (hover sync handles `Hover`).
-                    if state.link_underline != cfg.terminal.link_underline {
-                        state.link_underline = cfg.terminal.link_underline;
-                        refresh_autodetect_links(state);
-                    }
-                    // Live-apply link hover tooltip toggle and delay.
-                    state.link_hover_tooltip = cfg.terminal.link_hover_tooltip;
-                    state.link_hover_delay_ms = cfg.terminal.link_hover_delay_ms;
-                    if !state.link_hover_tooltip {
-                        state.link_hover_start = None;
-                        state.renderer.set_tooltip(None);
-                    }
-                    // Live-apply clipboard read policy.
-                    state.clipboard_read_policy = cfg.terminal.clipboard_read;
-                    // Live-apply edit_command_clears_line.
-                    state.edit_command_clears_line = cfg.terminal.edit_command_clears_line;
-                    // Live-apply command-history picker settings.
-                    state.command_history_scope = cfg.terminal.command_history_scope;
-                    state.command_history_max_entries = cfg.terminal.command_history_max_entries;
-                    // Live-apply scrollback export settings.
-                    state.scrollback_export_format = cfg.terminal.scrollback_export_format;
-                    state
-                        .scrollback_export_dir
-                        .clone_from(&cfg.terminal.scrollback_export_dir);
-                    // Live-apply clipboard history settings.
-                    state.clipboard_history_enabled = cfg.clipboard_history.enabled;
-                    state.clipboard_history_size = cfg.clipboard_history.size;
-                    state.clipboard_history_capture_osc52 = cfg.clipboard_history.capture_osc52;
-                    // Trim the ring if the new cap is smaller.
-                    while state.clipboard_history_ring.len() > state.clipboard_history_size {
-                        state.clipboard_history_ring.pop_back();
-                    }
-                    // Live-apply directory-jump settings.
-                    state.dir_jump_enabled = cfg.directory_jump.enabled;
-                    state.dir_jump_max_tracked = cfg.directory_jump.max_tracked;
-                    state.dir_jump_persist = cfg.directory_jump.persist;
-                    // Live-apply paste safety settings.
-                    state.paste_confirm_multiline = cfg.terminal.paste_confirm_multiline;
-                    state.paste_confirm_when_unbracketed =
-                        cfg.terminal.paste_confirm_when_unbracketed;
-                    state.paste_strip_control_chars = cfg.terminal.paste_strip_control_chars;
-                    // Live-apply prompt-navigation highlight toggle.
-                    state.highlight_on_jump = cfg.terminal.highlight_on_jump;
-                    // Live-apply minimum contrast.
-                    state
-                        .renderer
-                        .set_minimum_contrast(cfg.appearance.minimum_contrast);
-                    // Live-apply builtin box-drawing toggle.
-                    state
-                        .renderer
-                        .set_builtin_box_drawing(cfg.appearance.builtin_box_drawing);
-                    // Live-apply tab-group-labels toggle and group colour palette.
-                    state.show_tab_group_labels = cfg.appearance.show_tab_group_labels;
-                    state
-                        .renderer
-                        .set_show_tab_group_labels(cfg.appearance.show_tab_group_labels);
-                    state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
-                    state.bundled_icons = cfg.appearance.bundled_icons;
-                    state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
-                    // Live-apply inactive-pane and unfocused-window dim.
-                    state
-                        .renderer
-                        .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
-                    state
-                        .renderer
-                        .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
-                    state.confirm_close = cfg.window.confirm_close;
-                    // Disarming any pending confirm if the user turned the
-                    // feature off keeps a stale armed deadline from acting.
-                    if !state.confirm_close {
-                        state.pending_close = None;
-                    }
-                    state.renderer.set_background_alpha(cfg.window.opacity);
-                    state.renderer.set_padding(cfg.window.padding as f32);
-                    state
-                        .renderer
-                        .set_tab_widths(cfg.appearance.tab_min_width, cfg.appearance.tab_max_width);
-                    state
-                        .renderer
-                        .set_tab_pinned_width(cfg.appearance.pinned_tab_width);
-                    if font_changed {
-                        state.renderer.set_font_family(&cfg.font.family);
-                        state.renderer.set_font_style_overrides(
-                            cfg.font.bold_family.as_deref(),
-                            cfg.font.italic_family.as_deref(),
-                            cfg.font.bold_italic_family.as_deref(),
+                        state
+                            .word_separators
+                            .clone_from(&cfg.terminal.word_separators);
+                        // Live-apply the link-underline mode: re-run autodetect so
+                        // switching to/from `Always` immediately adds/clears the
+                        // persistent URL underlines (hover sync handles `Hover`).
+                        if state.link_underline != cfg.terminal.link_underline {
+                            state.link_underline = cfg.terminal.link_underline;
+                            refresh_autodetect_links(state);
+                        }
+                        // Live-apply link hover tooltip toggle and delay.
+                        state.link_hover_tooltip = cfg.terminal.link_hover_tooltip;
+                        state.link_hover_delay_ms = cfg.terminal.link_hover_delay_ms;
+                        if !state.link_hover_tooltip {
+                            state.link_hover_start = None;
+                            state.renderer.set_tooltip(None);
+                        }
+                        // Live-apply clipboard read policy.
+                        state.clipboard_read_policy = cfg.terminal.clipboard_read;
+                        // Live-apply edit_command_clears_line.
+                        state.edit_command_clears_line = cfg.terminal.edit_command_clears_line;
+                        // Live-apply command-history picker settings.
+                        state.command_history_scope = cfg.terminal.command_history_scope;
+                        state.command_history_max_entries =
+                            cfg.terminal.command_history_max_entries;
+                        // Live-apply scrollback export settings.
+                        state.scrollback_export_format = cfg.terminal.scrollback_export_format;
+                        state
+                            .scrollback_export_dir
+                            .clone_from(&cfg.terminal.scrollback_export_dir);
+                        // Live-apply clipboard history settings.
+                        state.clipboard_history_enabled = cfg.clipboard_history.enabled;
+                        state.clipboard_history_size = cfg.clipboard_history.size;
+                        state.clipboard_history_capture_osc52 = cfg.clipboard_history.capture_osc52;
+                        // Trim the ring if the new cap is smaller.
+                        while state.clipboard_history_ring.len() > state.clipboard_history_size {
+                            state.clipboard_history_ring.pop_back();
+                        }
+                        // Live-apply directory-jump settings.
+                        state.dir_jump_enabled = cfg.directory_jump.enabled;
+                        state.dir_jump_max_tracked = cfg.directory_jump.max_tracked;
+                        state.dir_jump_persist = cfg.directory_jump.persist;
+                        // Live-apply paste safety settings.
+                        state.paste_confirm_multiline = cfg.terminal.paste_confirm_multiline;
+                        state.paste_confirm_when_unbracketed =
+                            cfg.terminal.paste_confirm_when_unbracketed;
+                        state.paste_strip_control_chars = cfg.terminal.paste_strip_control_chars;
+                        // Live-apply prompt-navigation highlight toggle.
+                        state.highlight_on_jump = cfg.terminal.highlight_on_jump;
+                        // Live-apply minimum contrast.
+                        state
+                            .renderer
+                            .set_minimum_contrast(cfg.appearance.minimum_contrast);
+                        // Live-apply builtin box-drawing toggle.
+                        state
+                            .renderer
+                            .set_builtin_box_drawing(cfg.appearance.builtin_box_drawing);
+                        // Live-apply tab-group-labels toggle and group colour palette.
+                        state.show_tab_group_labels = cfg.appearance.show_tab_group_labels;
+                        state
+                            .renderer
+                            .set_show_tab_group_labels(cfg.appearance.show_tab_group_labels);
+                        state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
+                        state.bundled_icons = cfg.appearance.bundled_icons;
+                        state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                        // Live-apply inactive-pane and unfocused-window dim.
+                        state
+                            .renderer
+                            .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
+                        state
+                            .renderer
+                            .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
+                        state.confirm_close = cfg.window.confirm_close;
+                        // Disarming any pending confirm if the user turned the
+                        // feature off keeps a stale armed deadline from acting.
+                        if !state.confirm_close {
+                            state.pending_close = None;
+                        }
+                        state.renderer.set_background_alpha(cfg.window.opacity);
+                        state.renderer.set_padding(cfg.window.padding as f32);
+                        state.renderer.set_tab_widths(
+                            cfg.appearance.tab_min_width,
+                            cfg.appearance.tab_max_width,
                         );
-                        state.renderer.set_line_height(cfg.font.line_height);
-                        state.renderer.set_ligatures(cfg.font.ligatures);
-                        state.renderer.set_font_size(cfg.font.size);
                         state
                             .renderer
-                            .set_underline_thickness(cfg.font.underline_thickness_px);
+                            .set_tab_pinned_width(cfg.appearance.pinned_tab_width);
+                        if font_changed {
+                            state.renderer.set_font_family(&cfg.font.family);
+                            state.renderer.set_font_style_overrides(
+                                cfg.font.bold_family.as_deref(),
+                                cfg.font.italic_family.as_deref(),
+                                cfg.font.bold_italic_family.as_deref(),
+                            );
+                            state.renderer.set_line_height(cfg.font.line_height);
+                            state.renderer.set_ligatures(cfg.font.ligatures);
+                            state.renderer.set_font_size(cfg.font.size);
+                            state
+                                .renderer
+                                .set_underline_thickness(cfg.font.underline_thickness_px);
+                        }
+                        if theme_changed {
+                            apply_theme(state, &cfg);
+                        }
+                        // Live-apply animated background FX.
+                        state
+                            .renderer
+                            .set_bg_fx_params(translate_bg_fx_params(&cfg.background_fx));
+                        // Live-apply background image.
+                        state
+                            .renderer
+                            .set_background_image(translate_bg_image_params(
+                                &cfg.appearance.background_image,
+                            ));
+                        // Live-apply quick-select config — recompile patterns and
+                        // update the cached alphabet so the next scan uses the new values.
+                        // Validate before applying so bad regexes produce a log line.
+                        if let Some(err) =
+                            quick_select::validate_patterns(&cfg.quick_select.patterns)
+                        {
+                            tracing::warn!("quick_select.patterns: {err}");
+                        }
+                        if let Some(err) =
+                            quick_select::validate_alphabet(&cfg.quick_select.alphabet)
+                        {
+                            tracing::warn!("quick_select.alphabet: {err}");
+                        }
+                        state.qs_alphabet.clone_from(&cfg.quick_select.alphabet);
+                        state.qs_compiled_patterns =
+                            quick_select::compile_patterns(&cfg.quick_select.patterns);
+                        state.qs_overlay_dim = cfg.quick_select.overlay_dim;
+                        // Live-apply context rules: re-evaluate all tabs so
+                        // rule add/edit/remove takes effect immediately.
+                        state.context_rules.clone_from(&cfg.context_rules);
+                        refresh_context_rules(state);
+                        // Live-apply status-bar enable/position/content.
+                        update_status_bar(state, &cfg);
+                        // Re-cell after padding / font change so the grid
+                        // matches the new usable area and cell metrics.
+                        let win_size = state.window.inner_size();
+                        resize_all_tabs(state, win_size.width, win_size.height);
+                        // Paint NOW — request_redraw is a no-op while settings
+                        // holds focus, so without this the change wouldn't show.
+                        render_main(state);
                     }
-                    if theme_changed {
-                        apply_theme(state, &cfg);
+                    // Live-apply AI config changes (e.g. render_markdown toggle)
+                    // to an already-open assistant window so the toggle takes
+                    // effect immediately without requiring a close/reopen.
+                    if let Some(ai_win) = self.ai_assistant.as_mut() {
+                        ai_win.set_config(self.config.ai.clone());
                     }
-                    // Live-apply animated background FX.
-                    state
-                        .renderer
-                        .set_bg_fx_params(translate_bg_fx_params(&cfg.background_fx));
-                    // Live-apply background image.
-                    state
-                        .renderer
-                        .set_background_image(translate_bg_image_params(
-                            &cfg.appearance.background_image,
-                        ));
-                    // Live-apply quick-select config — recompile patterns and
-                    // update the cached alphabet so the next scan uses the new values.
-                    // Validate before applying so bad regexes produce a log line.
-                    if let Some(err) = quick_select::validate_patterns(&cfg.quick_select.patterns) {
-                        tracing::warn!("quick_select.patterns: {err}");
-                    }
-                    if let Some(err) = quick_select::validate_alphabet(&cfg.quick_select.alphabet) {
-                        tracing::warn!("quick_select.alphabet: {err}");
-                    }
-                    state.qs_alphabet.clone_from(&cfg.quick_select.alphabet);
-                    state.qs_compiled_patterns =
-                        quick_select::compile_patterns(&cfg.quick_select.patterns);
-                    state.qs_overlay_dim = cfg.quick_select.overlay_dim;
-                    // Live-apply context rules: re-evaluate all tabs so
-                    // rule add/edit/remove takes effect immediately.
-                    state.context_rules.clone_from(&cfg.context_rules);
-                    refresh_context_rules(state);
-                    // Live-apply status-bar enable/position/content.
-                    update_status_bar(state, &cfg);
-                    // Re-cell after padding / font change so the grid
-                    // matches the new usable area and cell metrics.
-                    let win_size = state.window.inner_size();
-                    resize_all_tabs(state, win_size.width, win_size.height);
-                    // Paint NOW — request_redraw is a no-op while settings
-                    // holds focus, so without this the change wouldn't show.
-                    render_main(state);
-                }
-                // Live-apply AI config changes (e.g. render_markdown toggle)
-                // to an already-open assistant window so the toggle takes
-                // effect immediately without requiring a close/reopen.
-                if let Some(ai_win) = self.ai_assistant.as_mut() {
-                    ai_win.set_config(self.config.ai.clone());
-                }
-                // Live-apply the startup position to the focused window
-                // when the user picks a new edge in Settings — gives the
-                // dropdown a "snap current window now" semantic on top of
-                // its first-launch behaviour. None (default) leaves the
-                // current window alone.
-                if startup_position_changed {
-                    if let Some(edge) = new_startup_position {
-                        if let Some(state) = self.focused_window_mut() {
-                            snap_window(state, edge);
+                    // Live-apply the startup position to the focused window
+                    // when the user picks a new edge in Settings — gives the
+                    // dropdown a "snap current window now" semantic on top of
+                    // its first-launch behaviour. None (default) leaves the
+                    // current window alone.
+                    if startup_position_changed {
+                        if let Some(edge) = new_startup_position {
+                            if let Some(state) = self.focused_window_mut() {
+                                snap_window(state, edge);
+                            }
                         }
                     }
+                    // Restart the filesystem watcher when the auto_reload_config
+                    // toggle changes in Settings — live-applies the new preference.
+                    if auto_reload_changed {
+                        self.config_watcher = config_watch::start(
+                            self.config_path.clone(),
+                            self.proxy.clone(),
+                            new_auto_reload,
+                        );
+                    }
+                    // Debounce — coalesce bursts of slider drags into one
+                    // write after the user pauses for a moment.
+                    self.config_save_due =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(600));
                 }
-                // Restart the filesystem watcher when the auto_reload_config
-                // toggle changes in Settings — live-applies the new preference.
-                if auto_reload_changed {
-                    self.config_watcher = config_watch::start(
-                        self.config_path.clone(),
-                        self.proxy.clone(),
-                        new_auto_reload,
-                    );
-                }
-                // Debounce — coalesce bursts of slider drags into one
-                // write after the user pauses for a moment.
-                self.config_save_due =
-                    Some(std::time::Instant::now() + std::time::Duration::from_millis(600));
             }
         }
         if let Some(deadline) = self.config_save_due {

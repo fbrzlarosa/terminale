@@ -619,9 +619,29 @@ pub struct Renderer {
     /// strip visually overlays the top edge of each pane.
     pane_header_quads: Vec<Quad>,
     /// Glyphon text buffers for pane header labels and close-X glyphs.
-    /// Positions are in **physical** pixels. Drained alongside
-    /// `extra_pane_text_buffers`.
+    /// Positions are in **physical** pixels. Cleared after each frame's
+    /// text `prepare`, alongside `extra_pane_text_buffers`.
     pane_header_text_buffers: Vec<(Buffer, [f32; 2])>,
+    /// Frame-level cache of the focused pane's shaped row text. Rebuilding
+    /// (and re-shaping) every visible row on every redraw is the dominant
+    /// render cost, and most redraws (cursor blink, bg FX, bell, jump
+    /// highlight) don't change a single glyph — the cursor is a separate
+    /// quad, so a static screen is byte-identical frame over frame. The
+    /// cache is keyed by [`Self::focused_text_hash`]; on a hash hit the
+    /// shaped [`Buffer`]s are reused as-is.
+    cached_focused_text: Vec<(Buffer, [f32; 2])>,
+    /// Hash of every input the focused-pane text loop reads: per cell
+    /// `{hidden, ch, fg, bold, italic}` (fg is post `apply_sgr_attributes`
+    /// + `enforce_min_contrast`, so theme/dim/contrast changes miss) and
+    /// the globals `{font_size, line_height, the four family names,
+    /// ligatures, builtin_box_drawing, cols, cell sizes, body origins,
+    /// pad_px, ch_px}`. If the recomputed hash matches, the cached buffers
+    /// are provably identical to what a rebuild would produce.
+    focused_text_hash: u64,
+    /// Cached `"GPU <name> (<backend>)"` label for the resource strip. The
+    /// adapter is fixed for the renderer's lifetime; filled lazily on the
+    /// first `build_resource_bar` call.
+    gpu_label: Option<String>,
     /// When `true` and a tab has more than one pane, each pane gets a
     /// 22 px header strip. Driven by `config.appearance.show_pane_headers`.
     show_pane_headers: bool,
@@ -1877,6 +1897,9 @@ impl Renderer {
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
+            cached_focused_text: Vec::new(),
+            focused_text_hash: 0,
+            gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
             label_overlays: Vec::new(),
@@ -2063,6 +2086,9 @@ impl Renderer {
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
+            cached_focused_text: Vec::new(),
+            focused_text_hash: 0,
+            gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
             label_overlays: Vec::new(),
@@ -2260,6 +2286,9 @@ impl Renderer {
             broadcast_receiver_ids: Vec::new(),
             pane_header_quads: Vec::new(),
             pane_header_text_buffers: Vec::new(),
+            cached_focused_text: Vec::new(),
+            focused_text_hash: 0,
+            gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
             label_overlays: Vec::new(),
@@ -2839,10 +2868,15 @@ impl Renderer {
         }
 
         // GPU adapter label (no live meter — utilisation isn't cross-platform).
-        // Read straight from our own wgpu adapter.
+        // The adapter is fixed for the renderer's lifetime, so resolve the
+        // label once and cache it — `get_info()` + `format!` were running on
+        // every frame the strip is enabled, for a constant string.
         {
-            let info = self.adapter.get_info();
-            let gpu = format!("GPU {} ({:?})", info.name, info.backend);
+            if self.gpu_label.is_none() {
+                let info = self.adapter.get_info();
+                self.gpu_label = Some(format!("GPU {} ({:?})", info.name, info.backend));
+            }
+            let gpu = self.gpu_label.clone().unwrap_or_default();
             let mut buf = Buffer::new(&mut self.font_system, metrics);
             buf.set_wrap(&mut self.font_system, Wrap::None);
             buf.set_size(
@@ -7286,52 +7320,120 @@ impl Renderer {
             .placements_in_view(top_abs_line, rows);
 
         // ── Build one TextArea per visible row (no flow drift) ──
-        let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
-        let mut text_buffers: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
-        // Clone the family name(s) once per frame so the per-span Attrs can
-        // borrow locals (avoids a self borrow conflict with font_system).
-        let family_name = self.font_family.clone();
-        let bold_family_name = self.font_bold_family.clone();
-        let italic_family_name = self.font_italic_family.clone();
-        let bold_italic_family_name = self.font_bold_italic_family.clone();
-        // Ligatures ⇒ HarfBuzz-quality Advanced shaping; off ⇒ Basic
-        // per-glyph shaping that performs no ligature substitution.
-        let shaping = if self.ligatures {
-            Shaping::Advanced
-        } else {
-            Shaping::Basic
+        //
+        // Frame-level cache: hash every input the row-building loop below
+        // reads; when the hash matches the previous frame the shaped buffers
+        // in `self.cached_focused_text` are identical to what a rebuild
+        // would produce, so the rebuild (the dominant render cost — a full
+        // re-shape of every visible row) is skipped entirely. Hashing
+        // ~`cols × rows` cells is orders of magnitude cheaper than shaping.
+        // The cursor is a separate quad (not part of these buffers), so
+        // cursor-blink / bg-FX / bell redraws hit the cache by design.
+        let focused_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.font_size.to_bits().hash(&mut h);
+            self.line_height.to_bits().hash(&mut h);
+            self.font_family.hash(&mut h);
+            self.font_bold_family.hash(&mut h);
+            self.font_italic_family.hash(&mut h);
+            self.font_bold_italic_family.hash(&mut h);
+            self.ligatures.hash(&mut h);
+            self.builtin_box_drawing.hash(&mut h);
+            cols.hash(&mut h);
+            self.cell_width.to_bits().hash(&mut h);
+            self.cell_height.to_bits().hash(&mut h);
+            body_x_origin.to_bits().hash(&mut h);
+            body_y_origin.to_bits().hash(&mut h);
+            pad_px.to_bits().hash(&mut h);
+            ch_px.to_bits().hash(&mut h);
+            grid_cells.len().hash(&mut h);
+            for row_cells in &grid_cells {
+                row_cells.len().hash(&mut h);
+                for snap in row_cells {
+                    snap.hidden.hash(&mut h);
+                    snap.ch.hash(&mut h);
+                    snap.fg.hash(&mut h);
+                    snap.bold.hash(&mut h);
+                    snap.italic.hash(&mut h);
+                }
+            }
+            h.finish()
         };
 
-        // Snapshot the builtin_box_drawing flag for this frame so the hot-path
-        // borrow checker is happy (avoids a `self` borrow inside the loop).
-        let builtin_box_drawing = self.builtin_box_drawing;
+        // `cached non-empty` guards the post-constructor state (hash field
+        // defaults to 0); a genuinely blank grid re-runs the loop below but
+        // shapes nothing (every row is skipped as empty), so that's free.
+        let rebuild_focused_text =
+            focused_hash != self.focused_text_hash || self.cached_focused_text.is_empty();
 
-        for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-            let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
-            let mut last_attr: Option<([u8; 3], bool, bool)> = None;
-            let mut current = String::new();
-            for snap in row_cells {
-                // ── Procedural box-drawing / block-element path ───────────────
-                // The geometry for these cells is emitted as quads in the main
-                // layer above (before the bg-quad upload). Here we only
-                // substitute a space so the font glyph does not paint over
-                // those quads. Unmapped in-range chars fall through to the font.
-                let suppress_for_box = builtin_box_drawing
-                    && !snap.hidden
-                    && box_drawing::is_in_range(snap.ch)
-                    && box_drawing::box_rects(snap.ch).is_some();
-                let effective_ch = if suppress_for_box || snap.ch == '\0' {
-                    ' '
-                } else {
-                    snap.ch
-                };
+        if rebuild_focused_text {
+            let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
+            let mut text_buffers: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
+            // Clone the family name(s) once per frame so the per-span Attrs can
+            // borrow locals (avoids a self borrow conflict with font_system).
+            let family_name = self.font_family.clone();
+            let bold_family_name = self.font_bold_family.clone();
+            let italic_family_name = self.font_italic_family.clone();
+            let bold_italic_family_name = self.font_bold_italic_family.clone();
+            // Ligatures ⇒ HarfBuzz-quality Advanced shaping; off ⇒ Basic
+            // per-glyph shaping that performs no ligature substitution.
+            let shaping = if self.ligatures {
+                Shaping::Advanced
+            } else {
+                Shaping::Basic
+            };
 
-                let attr = (snap.fg, snap.bold, snap.italic);
-                if last_attr.is_none_or(|a| a == attr) {
-                    current.push(effective_ch);
-                    last_attr = Some(attr);
-                } else {
-                    if let Some((fg, bold, italic)) = last_attr {
+            // Snapshot the builtin_box_drawing flag for this frame so the hot-path
+            // borrow checker is happy (avoids a `self` borrow inside the loop).
+            let builtin_box_drawing = self.builtin_box_drawing;
+
+            for (row_idx, row_cells) in grid_cells.iter().enumerate() {
+                let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
+                let mut last_attr: Option<([u8; 3], bool, bool)> = None;
+                let mut current = String::new();
+                for snap in row_cells {
+                    // ── Procedural box-drawing / block-element path ───────────────
+                    // The geometry for these cells is emitted as quads in the main
+                    // layer above (before the bg-quad upload). Here we only
+                    // substitute a space so the font glyph does not paint over
+                    // those quads. Unmapped in-range chars fall through to the font.
+                    let suppress_for_box = builtin_box_drawing
+                        && !snap.hidden
+                        && box_drawing::is_in_range(snap.ch)
+                        && box_drawing::box_rects(snap.ch).is_some();
+                    let effective_ch = if suppress_for_box || snap.ch == '\0' {
+                        ' '
+                    } else {
+                        snap.ch
+                    };
+
+                    let attr = (snap.fg, snap.bold, snap.italic);
+                    if last_attr.is_none_or(|a| a == attr) {
+                        current.push(effective_ch);
+                        last_attr = Some(attr);
+                    } else {
+                        if let Some((fg, bold, italic)) = last_attr {
+                            owned.push((
+                                current,
+                                attr_for(
+                                    fg,
+                                    bold,
+                                    italic,
+                                    &family_name,
+                                    bold_family_name.as_deref(),
+                                    italic_family_name.as_deref(),
+                                    bold_italic_family_name.as_deref(),
+                                ),
+                            ));
+                        }
+                        current = String::new();
+                        current.push(effective_ch);
+                        last_attr = Some(attr);
+                    }
+                }
+                if let Some((fg, bold, italic)) = last_attr {
+                    if !current.is_empty() {
                         owned.push((
                             current,
                             attr_for(
@@ -7345,72 +7447,55 @@ impl Renderer {
                             ),
                         ));
                     }
-                    current = String::new();
-                    current.push(effective_ch);
-                    last_attr = Some(attr);
                 }
-            }
-            if let Some((fg, bold, italic)) = last_attr {
-                if !current.is_empty() {
-                    owned.push((
-                        current,
-                        attr_for(
-                            fg,
-                            bold,
-                            italic,
-                            &family_name,
-                            bold_family_name.as_deref(),
-                            italic_family_name.as_deref(),
-                            bold_italic_family_name.as_deref(),
-                        ),
-                    ));
+
+                if owned.is_empty() {
+                    continue;
                 }
-            }
 
-            if owned.is_empty() {
-                continue;
+                let mut buf = Buffer::new(&mut self.font_system, metrics);
+                buf.set_size(
+                    &mut self.font_system,
+                    Some(f32::from(cols) * self.cell_width),
+                    Some(self.cell_height),
+                );
+                let spans: Vec<(&str, Attrs<'_>)> =
+                    owned.iter().map(|(s, a)| (s.as_str(), *a)).collect();
+                let default_fam = if family_name.is_empty() {
+                    Family::Monospace
+                } else {
+                    Family::Name(&family_name)
+                };
+                buf.set_rich_text(
+                    &mut self.font_system,
+                    spans.into_iter(),
+                    Attrs::new().family(default_fam),
+                    shaping,
+                );
+                // Glyphon TextArea origins are PHYSICAL pixels. Background
+                // cells + cursor are placed at `pad_px + col*cw_px` (physical),
+                // so the text must use the same physical frame — otherwise on
+                // HiDPI the glyphs drift left of the cells by padding*(scale-1)
+                // and the cursor looks shifted to the right.
+                let y = body_y_origin + row_idx as f32 * ch_px;
+                text_buffers.push((buf, [body_x_origin + pad_px, y]));
             }
-
-            let mut buf = Buffer::new(&mut self.font_system, metrics);
-            buf.set_size(
-                &mut self.font_system,
-                Some(f32::from(cols) * self.cell_width),
-                Some(self.cell_height),
-            );
-            let spans: Vec<(&str, Attrs<'_>)> =
-                owned.iter().map(|(s, a)| (s.as_str(), *a)).collect();
-            let default_fam = if family_name.is_empty() {
-                Family::Monospace
-            } else {
-                Family::Name(&family_name)
-            };
-            buf.set_rich_text(
-                &mut self.font_system,
-                spans.into_iter(),
-                Attrs::new().family(default_fam),
-                shaping,
-            );
-            // Glyphon TextArea origins are PHYSICAL pixels. Background
-            // cells + cursor are placed at `pad_px + col*cw_px` (physical),
-            // so the text must use the same physical frame — otherwise on
-            // HiDPI the glyphs drift left of the cells by padding*(scale-1)
-            // and the cursor looks shifted to the right.
-            let y = body_y_origin + row_idx as f32 * ch_px;
-            text_buffers.push((buf, [body_x_origin + pad_px, y]));
+            self.cached_focused_text = text_buffers;
+            self.focused_text_hash = focused_hash;
         }
 
-        // Append non-focused panes' text buffers (set up by
-        // `render_panes`). They were built with rect-px-offset
-        // positions so they slot directly into the same text pass.
-        text_buffers.append(&mut self.extra_pane_text_buffers);
-        // Append pane header title + close-X text buffers. These are
-        // also positioned in physical px (the header quads use physical
-        // rects from walk_pane_tree) so they chain into the same pass.
-        text_buffers.append(&mut self.pane_header_text_buffers);
-
         // ── Prepare glyphon ──
-        let text_areas_iter = text_buffers
+        // The focused pane's (possibly cached) rows chain with the
+        // non-focused panes' text buffers and the pane header titles —
+        // both set up per-frame by `render_panes` with rect-px-offset /
+        // physical positions, so they slot into the same text pass. They
+        // are NOT folded into the cache (they'd go stale across frames);
+        // they are cleared after `prepare` consumes them.
+        let text_areas_iter = self
+            .cached_focused_text
             .iter()
+            .chain(self.extra_pane_text_buffers.iter())
+            .chain(self.pane_header_text_buffers.iter())
             .map(|(buf, pos)| TextArea {
                 buffer: buf,
                 left: pos[0],
@@ -7509,6 +7594,14 @@ impl Renderer {
             text_areas_iter,
             &mut self.swash_cache,
         )?;
+
+        // Drain the per-frame pane buffers now that `prepare` consumed
+        // them — `render_panes` rebuilds both on the next frame. (They
+        // were previously drained by `append`ing into the focused pane's
+        // text vec; the cache keeps that vec across frames, so the drain
+        // is explicit now.)
+        self.extra_pane_text_buffers.clear();
+        self.pane_header_text_buffers.clear();
 
         // Overlay text (command palette) — its own prepared batch so it
         // renders in a second pass on top of the modal panel. Positions
