@@ -6960,8 +6960,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         }
                         // Stamp the keystroke so the busy-spinner fallback can
                         // tell prompt echo apart from real command output.
-                        tab.focused_pane_mut().last_input_at =
-                            Some(std::time::Instant::now());
+                        tab.focused_pane_mut().last_input_at = Some(std::time::Instant::now());
                     }
                     // Broadcast: when broadcast-input is active, fan the same
                     // raw bytes out to every other live pane in the configured
