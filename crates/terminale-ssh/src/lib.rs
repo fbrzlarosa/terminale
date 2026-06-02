@@ -20,11 +20,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(missing_docs)]
 
-use async_trait::async_trait;
 use bytes::Bytes;
-use russh::client::{self, Handler};
+use russh::client::{self, AuthResult, Handler};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::{key, load_secret_key, PublicKeyBase64};
+use russh::keys::{load_secret_key, Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey};
 use russh::ChannelMsg;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,10 +35,10 @@ pub use terminale_config::{HostKeyPolicy, SshConfig};
 /// What credentials to present to the server.
 #[derive(Debug, Clone)]
 pub enum AuthMethod {
-    /// Use the running SSH agent (`ssh-agent` / `gpg-agent`). Preferred —
-    /// no key material is handled by terminale. Not supported on Windows
-    /// with the current `russh-keys` (no Pageant/named-pipe backend); use
-    /// [`AuthMethod::Key`] there.
+    /// Use the running SSH agent. Preferred — no key material is handled
+    /// by terminale. On Unix this is the agent at `SSH_AUTH_SOCK`
+    /// (`ssh-agent` / `gpg-agent`); on Windows the OpenSSH agent service
+    /// named pipe, with Pageant as fallback.
     Agent,
     /// Plain password.
     Password(String),
@@ -174,17 +173,24 @@ impl SshSession {
         };
         let mut session = client::connect(cfg, (opts.host.as_str(), opts.port), handler).await?;
 
-        let ok = match opts.auth {
+        let auth = match opts.auth {
             AuthMethod::Agent => authenticate_with_agent(&mut session, &opts.user).await?,
             AuthMethod::Password(pw) => session.authenticate_password(&opts.user, pw).await?,
             AuthMethod::Key { path, passphrase } => {
                 let key = load_secret_key(&path, passphrase.as_deref())?;
+                // RSA keys must sign with the strongest hash the server
+                // advertises (SHA-2 — plain ssh-rsa/SHA-1 is widely refused);
+                // other algorithms take no hash override.
+                let hash_alg = rsa_hash_for(&mut session, key.algorithm()).await?;
                 session
-                    .authenticate_publickey(&opts.user, Arc::new(key))
+                    .authenticate_publickey(
+                        &opts.user,
+                        PrivateKeyWithHashAlg::new(Arc::new(key), hash_alg),
+                    )
                     .await?
             }
         };
-        if !ok {
+        if !auth.success() {
             return Err(SshError::AuthRejected);
         }
 
@@ -305,18 +311,67 @@ impl SshSession {
     }
 }
 
-/// Try every identity the SSH agent holds, returning `Ok(true)` on the
-/// first one the server accepts. Errors when the agent can't be reached
-/// (e.g. Windows, where `russh-keys` has no agent backend, or a missing
-/// `SSH_AUTH_SOCK` on Unix). `Ok(false)` means the agent was reachable
-/// but no key was accepted — surfaced to the caller as `AuthRejected`.
+/// The hash to sign with for RSA keys: the strongest SHA-2 variant the
+/// server advertises via ext-info (plain ssh-rsa/SHA-1 is widely refused
+/// by modern servers). Non-RSA algorithms take no hash override (`None`).
+async fn rsa_hash_for(
+    session: &mut client::Handle<KnownHostsHandler>,
+    algorithm: Algorithm,
+) -> Result<Option<HashAlg>, SshError> {
+    Ok(match algorithm {
+        Algorithm::Rsa { .. } => session.best_supported_rsa_hash().await?.flatten(),
+        _ => None,
+    })
+}
+
+/// Connect to the platform's SSH agent and try every identity it holds,
+/// returning the first [`AuthResult`] the server accepts.
+///
+/// - Unix: the agent at `SSH_AUTH_SOCK`.
+/// - Windows: the OpenSSH agent service named pipe, falling back to Pageant.
+///
+/// Errors when no agent is reachable; an agent that holds keys but has
+/// none accepted yields [`SshError::AuthRejected`].
 async fn authenticate_with_agent(
     session: &mut client::Handle<KnownHostsHandler>,
     user: &str,
-) -> Result<bool, SshError> {
-    let mut agent = AgentClient::connect_env()
-        .await
-        .map_err(|e| SshError::Agent(format!("could not connect to ssh-agent: {e}")))?;
+) -> Result<AuthResult, SshError> {
+    #[cfg(unix)]
+    {
+        let agent = AgentClient::connect_env()
+            .await
+            .map_err(|e| SshError::Agent(format!("could not connect to ssh-agent: {e}")))?;
+        try_agent_identities(session, user, agent).await
+    }
+    #[cfg(windows)]
+    {
+        // The OpenSSH agent service exposes this fixed pipe name.
+        const OPENSSH_AGENT_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
+        match AgentClient::connect_named_pipe(OPENSSH_AGENT_PIPE).await {
+            Ok(agent) => try_agent_identities(session, user, agent).await,
+            Err(pipe_err) => match AgentClient::connect_pageant().await {
+                Ok(agent) => try_agent_identities(session, user, agent).await,
+                Err(pageant_err) => Err(SshError::Agent(format!(
+                    "could not connect to ssh-agent \
+                     (OpenSSH pipe: {pipe_err}; Pageant: {pageant_err})"
+                ))),
+            },
+        }
+    }
+}
+
+/// Offer every identity `agent` holds to the server in turn, letting the
+/// agent sign each attempt. Returns the first accepted [`AuthResult`], or
+/// [`SshError::AuthRejected`] when the agent was reachable but no identity
+/// was accepted.
+async fn try_agent_identities<S>(
+    session: &mut client::Handle<KnownHostsHandler>,
+    user: &str,
+    mut agent: AgentClient<S>,
+) -> Result<AuthResult, SshError>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
     let identities = agent
         .request_identities()
         .await
@@ -324,18 +379,19 @@ async fn authenticate_with_agent(
     if identities.is_empty() {
         return Err(SshError::Agent("ssh-agent holds no keys".into()));
     }
-    for key in identities {
-        // `authenticate_future` consumes + returns the agent so it can sign
-        // again for the next key if this one is rejected.
-        let (returned, result) = session.authenticate_future(user, key, agent).await;
-        agent = returned;
-        match result {
-            Ok(true) => return Ok(true),
-            Ok(false) => {}
+    for identity in identities {
+        let key = identity.public_key().into_owned();
+        let hash_alg = rsa_hash_for(session, key.algorithm()).await?;
+        match session
+            .authenticate_publickey_with(user, key, hash_alg, &mut agent)
+            .await
+        {
+            Ok(result) if result.success() => return Ok(result),
+            Ok(_) => {}
             Err(e) => return Err(SshError::Agent(format!("agent sign failed: {e}"))),
         }
     }
-    Ok(false)
+    Err(SshError::AuthRejected)
 }
 
 /// Host-key verification handler backed by a `known_hosts` store.
@@ -354,15 +410,14 @@ struct KnownHostsHandler {
     known_hosts: PathBuf,
 }
 
-#[async_trait]
 impl Handler for KnownHostsHandler {
     type Error = SshError;
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &key::PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        let fingerprint = server_public_key.public_key_base64();
+        let fingerprint = server_public_key.fingerprint(Default::default());
 
         // `off` — accept everything without consulting the store.
         if self.policy == HostKeyPolicy::Off {
@@ -394,7 +449,7 @@ impl Handler for KnownHostsHandler {
                     HostKeyPolicy::AcceptNew => {
                         // Pin the key: append it to the known-hosts file so
                         // future connections can detect a key change.
-                        if let Err(e) = russh::keys::learn_known_hosts_path(
+                        if let Err(e) = russh::keys::known_hosts::learn_known_hosts_path(
                             &self.host,
                             self.port,
                             server_public_key,
@@ -479,7 +534,7 @@ pub fn check_host_key_verdict(
     path: &std::path::Path,
     host: &str,
     port: u16,
-    server_key: &key::PublicKey,
+    server_key: &PublicKey,
 ) -> Result<HostKeyVerdict, SshError> {
     use russh::keys::{check_known_hosts_path, Error as KErr};
     match check_known_hosts_path(host, port, server_key, path) {
@@ -504,9 +559,10 @@ pub fn add_host_key(
     path: &std::path::Path,
     host: &str,
     port: u16,
-    server_key: &key::PublicKey,
+    server_key: &PublicKey,
 ) -> Result<(), SshError> {
-    russh::keys::learn_known_hosts_path(host, port, server_key, path).map_err(SshError::Key)
+    russh::keys::known_hosts::learn_known_hosts_path(host, port, server_key, path)
+        .map_err(SshError::Key)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -524,11 +580,11 @@ mod tests {
     const ED25519_KEY_B: &str =
         "AAAAC3NzaC1lZDI1NTE5AAAAIA6rWI3G1sz07DnfFlrouTcysQlj2P+jpNSOEWD9OJ3X";
 
-    fn key_a() -> key::PublicKey {
+    fn key_a() -> PublicKey {
         parse_public_key_base64(ED25519_KEY_A).expect("key A must parse")
     }
 
-    fn key_b() -> key::PublicKey {
+    fn key_b() -> PublicKey {
         parse_public_key_base64(ED25519_KEY_B).expect("key B must parse")
     }
 
@@ -640,10 +696,7 @@ mod tests {
 
     /// Drive `KnownHostsHandler::check_server_key` synchronously (Tokio
     /// single-thread runtime) to verify policy gating without a live server.
-    fn run_handler(
-        handler: &mut KnownHostsHandler,
-        key: &key::PublicKey,
-    ) -> Result<bool, SshError> {
+    fn run_handler(handler: &mut KnownHostsHandler, key: &PublicKey) -> Result<bool, SshError> {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()

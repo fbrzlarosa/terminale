@@ -12,7 +12,6 @@ categories.workspace = true
 
 [dependencies]
 russh.workspace = true
-russh-keys.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 bytes.workspace = true
