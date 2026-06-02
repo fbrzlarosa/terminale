@@ -1,0 +1,37 @@
+# One-off: dump the failed v0.1.10 host-job log and rerun the failed jobs.
+# Self-triggers on push (paths filter below); delete this file once it has run.
+name: Recover v0.1.10 release (one-off)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/recover-v0110-once.yml"
+
+permissions:
+  actions: write
+  contents: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dump host log tail and rerun failed jobs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          RUN_ID=26841280346
+          JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50" \
+            --jq '.jobs[] | select(.name=="host") | .id')
+          echo "host job: $JOB_ID"
+          gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > host-v0110.log || true
+          mkdir -p ci-logs
+          tail -n 250 host-v0110.log > ci-logs/host-v0110-tail.log
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ci-logs/host-v0110-tail.log
+          git commit -m "ci: dump v0.1.10 host job log tail (one-off)"
+          git push
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs"
