@@ -7,15 +7,15 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-# Each entry is transitive (not our direct dep) and either unfixable upstream
-# or confined to a not-yet-shipped crate. Re-audited 2026-05-29; revisit on the
-# noted upstream bumps. Keep this list tight — only suppress what's unactionable.
+# Each entry is transitive (not our direct dep) and unfixable upstream today.
+# Re-audited 2026-06-02; revisit on the noted upstream bumps. Keep this list
+# tight — only suppress what's unactionable.
 ignore = [
-    # rsa "Marvin" timing side-channel. Reached ONLY through `terminale-ssh`
-    # (russh → ssh-key → rsa), which is standalone scaffolding NOT linked by
-    # the shipped `terminale` binary yet. No fixed `rsa` release exists.
-    # Revisit when SSH is wired — prefer ed25519 keys / a fixed russh.
-    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack: only in unwired terminale-ssh; no upstream fix" },
+    # rsa "Marvin" timing side-channel. Reached through `terminale-ssh`
+    # (russh → ssh-key → rsa) — SSH tabs ARE shipped now, but no fixed `rsa`
+    # release exists. Mitigation: prefer ed25519 keys; revisit on the russh
+    # 0.61+ bump (tracked: russh 0.45 carries its own advisories).
+    { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack: no upstream fix; prefer ed25519 keys; revisit on russh bump" },
     # `paste` unmaintained — transitive via wgpu-hal's macOS `metal` backend.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained: transitive via wgpu metal; revisit on wgpu bump" },
     # `serial` unmaintained — transitive via portable-pty.
@@ -23,6 +23,10 @@ ignore = [
     # `lru` unsound IterMut — transitive via glyphon; the unsound path isn't
     # reachable from our usage.
     { id = "RUSTSEC-2026-0002", reason = "lru unsound IterMut: transitive via glyphon; revisit on bump" },
+    # `number_prefix` unmaintained — transitive via self_update → indicatif 0.17
+    # (entered the tree with the 0.1.7 self-update feature). Cosmetic byte-size
+    # formatting only; indicatif 0.18 drops it — revisit when self_update bumps.
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained: transitive via self_update/indicatif; revisit on bump" },
 ]
 
 [licenses]
