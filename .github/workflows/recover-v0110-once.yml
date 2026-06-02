@@ -1,8 +1,17 @@
-# One-off v3: dump the failed v0.1.10 host-job log and rerun the failed jobs.
-# Self-triggers on push (paths filter below); delete this file once it has run.
-# v3 fixes: the diagnostics file is .txt (the repo .gitignore ignores *.log,
-# which made v2's `git add` fail), added `git add -f` + `git push HEAD:main`
-# for safety, and the run's CURRENT status/attempt is dumped too.
+# One-off v4: manually publish the v0.1.10 release (its pipeline's `host`
+# job 403s on POST /releases — twice, deterministically) and retro-curate
+# the v0.1.8 / v0.1.9 Download tables. Self-triggers on push (paths filter
+# below); delete this file once it has run.
+#
+# What it does:
+#   1. create-release: deletes any stale v0.1.10 DRAFT, then creates the
+#      release from the failed run's own artifacts (notes come from the
+#      dist-manifest.json announcement body, macOS tar.gz rows stripped).
+#   2. dmg: rebuilds the two macOS .dmg installers from the v0.1.10 tag
+#      (same steps as the release pipeline's macos-app-dmg job) and uploads.
+#   3. patch-notes-v0110: inserts the .dmg rows into the Download table.
+#   4. patch-old-releases: v0.1.8 + v0.1.9 — insert .dmg rows when missing
+#      and drop the macOS .tar.gz rows (assets stay: Homebrew/installer.sh).
 name: Recover v0.1.10 release (one-off)
 
 on:
@@ -12,54 +21,135 @@ on:
       - ".github/workflows/recover-v0110-once.yml"
 
 permissions:
-  actions: write
+  actions: read
   contents: write
 
 jobs:
-  recover:
+  create-release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Drop any stale v0.1.10 draft
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=30" \
+            --jq '.[] | select(.draft and .tag_name=="v0.1.10") | .id' \
+            | xargs -r -I{} gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/{}"
+      - name: Download the failed run's artifacts
+        run: |
+          gh run download 26841280346 -R "$GITHUB_REPOSITORY" -D dist-artifacts
+          find dist-artifacts -type f | sort
+      - name: Create release with curated notes + upload assets
+        run: |
+          manifest=$(find dist-artifacts -name dist-manifest.json | head -1)
+          jq -r '.announcement_github_body' "$manifest" > body.md
+          # Drop the macOS tar.gz rows now; the dmg rows land after the dmg
+          # job has actually built and uploaded the files.
+          awk '/^\|/ && /apple-darwin\.tar\.gz/ { next } { print }' body.md > body-new.md
+          gh release create v0.1.10 -R "$GITHUB_REPOSITORY" \
+            --title "v0.1.10" --notes-file body-new.md
+          find dist-artifacts -type f ! -name body.md -print0 \
+            | xargs -0 gh release upload v0.1.10 -R "$GITHUB_REPOSITORY" --clobber
+
+  dmg:
+    needs: create-release
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
-      - name: Gather diagnostics
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          ref: v0.1.10
+          submodules: recursive
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Build optimized binary
+        run: cargo build --profile dist --target ${{ matrix.target }}
+      - name: Assemble terminale.app and wrap it in a .dmg
         run: |
-          RUN_ID=26841280346
-          mkdir -p ci-logs
-          {
-            echo "== one-off v3 diagnostics for run $RUN_ID =="
-            echo "-- run status --"
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
-              --jq '"status=\(.status) conclusion=\(.conclusion) attempt=\(.run_attempt)"' 2>&1 \
-              || echo "RUN QUERY FAILED"
-            echo "-- jobs (latest attempt) --"
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50" \
-              --jq '.jobs[] | "\(.id) \(.name) \(.conclusion)"' 2>&1 || echo "JOBS QUERY FAILED"
-          } > ci-logs/host-v0110-tail.txt
-          JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50" \
-            --jq '.jobs[] | select(.name=="host") | .id' 2>/dev/null || true)
-          echo "host job id: ${JOB_ID:-NOT FOUND}" >> ci-logs/host-v0110-tail.txt
-          if [ -n "$JOB_ID" ]; then
-            if gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > /tmp/host.log 2>/tmp/host.err; then
-              echo "-- last 250 lines of host log --" >> ci-logs/host-v0110-tail.txt
-              tail -n 250 /tmp/host.log >> ci-logs/host-v0110-tail.txt
-            else
-              echo "-- log fetch FAILED --" >> ci-logs/host-v0110-tail.txt
-              cat /tmp/host.err >> ci-logs/host-v0110-tail.txt || true
-            fi
+          cargo run -p xtask -- dmg-macos \
+            --bin target/${{ matrix.target }}/dist/terminale \
+            --target ${{ matrix.target }}
+      - name: Upload .dmg (+ checksum) to the Release
+        run: |
+          pkg=$(ls target/terminale-v*-${{ matrix.target }}.dmg)
+          ( cd "$(dirname "$pkg")" && shasum -a 256 "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
+          gh release upload v0.1.10 "$pkg" "$pkg.sha256" --clobber
+
+  patch-notes-v0110:
+    needs: dmg
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Insert .dmg rows into the Download table
+        run: |
+          tag="v0.1.10"
+          repo="$GITHUB_REPOSITORY"
+          base="https://github.com/$repo/releases/download/$tag"
+          gh release view "$tag" --repo "$repo" --json body -q .body > body.md
+          rows=""
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            file="terminale-$tag-$target.dmg"
+            case "$target" in
+              aarch64-*) platform="Apple Silicon macOS (GUI app)";;
+              *)         platform="Intel macOS (GUI app)";;
+            esac
+            rows="$rows| [$file]($base/$file) | $platform | [checksum]($base/$file.sha256) |"$'\n'
+          done
+          if grep -q "apple-darwin\.dmg" body.md; then
+            rows=""
           fi
-      - name: Commit diagnostics
-        if: always()
+          awk -v rows="$rows" '
+            /^\|/ && /apple-darwin\.tar\.gz/ { next }
+            { print }
+            /^## Download terminale/ { in_dl=1 }
+            in_dl && /^\|-+\|/ { printf "%s", rows; in_dl=0 }
+          ' body.md > body-new.md
+          if ! cmp -s body.md body-new.md; then
+            gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+          fi
+
+  patch-old-releases:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Curate v0.1.8 + v0.1.9 Download tables
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add -f ci-logs/host-v0110-tail.txt || echo "add failed"
-          git commit -m "ci: dump v0.1.10 host job diagnostics (one-off)" || echo "nothing to commit"
-          git push origin HEAD:main || echo "push failed"
-      - name: Rerun failed jobs
-        if: always()
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/26841280346/rerun-failed-jobs" \
-            || echo "rerun-failed-jobs API call failed (maybe already rerun and completed)"
+          repo="$GITHUB_REPOSITORY"
+          for tag in v0.1.8 v0.1.9; do
+            base="https://github.com/$repo/releases/download/$tag"
+            gh release view "$tag" --repo "$repo" --json body -q .body > body.md
+            rows=""
+            for target in aarch64-apple-darwin x86_64-apple-darwin; do
+              file="terminale-$tag-$target.dmg"
+              case "$target" in
+                aarch64-*) platform="Apple Silicon macOS (GUI app)";;
+                *)         platform="Intel macOS (GUI app)";;
+              esac
+              rows="$rows| [$file]($base/$file) | $platform | [checksum]($base/$file.sha256) |"$'\n'
+            done
+            if grep -q "apple-darwin\.dmg" body.md; then
+              rows=""
+              echo "$tag: dmg rows already present; only filtering tarball rows"
+            fi
+            awk -v rows="$rows" '
+              /^\|/ && /apple-darwin\.tar\.gz/ { next }
+              { print }
+              /^## Download terminale/ { in_dl=1 }
+              in_dl && /^\|-+\|/ { printf "%s", rows; in_dl=0 }
+            ' body.md > body-new.md
+            if ! cmp -s body.md body-new.md; then
+              gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+              echo "$tag: notes updated"
+            else
+              echo "$tag: nothing to change"
+            fi
+          done
