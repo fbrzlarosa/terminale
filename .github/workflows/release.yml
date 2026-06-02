@@ -323,6 +323,52 @@ jobs:
           ( cd "$(dirname "$pkg")" && shasum -a 256 "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
           gh release upload "${{ needs.plan.outputs.tag }}" "$pkg" "$pkg.sha256" --clobber
 
+  # `host` writes the release notes before `macos-app-dmg` uploads its
+  # assets, so cargo-dist's "Download" table never mentions the .dmg files.
+  # Patch the notes in place: insert the two .dmg rows right under the table
+  # header so the GUI app download is the first thing macOS users see.
+  patch-release-notes:
+    needs:
+      - plan
+      - host
+      - macos-app-dmg
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' && needs.macos-app-dmg.result == 'success' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Insert .dmg rows into the Download table
+        run: |
+          tag="${{ needs.plan.outputs.tag }}"
+          repo="${{ github.repository }}"
+          base="https://github.com/$repo/releases/download/$tag"
+          gh release view "$tag" --repo "$repo" --json body -q .body > body.md
+
+          rows=""
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            file="terminale-$tag-$target.dmg"
+            case "$target" in
+              aarch64-*) platform="Apple Silicon macOS (GUI app)";;
+              *)         platform="Intel macOS (GUI app)";;
+            esac
+            rows="$rows| [$file]($base/$file) | $platform | [checksum]($base/$file.sha256) |"$'\n'
+          done
+
+          # Insert right after the table header separator that follows the
+          # "## Download terminale" heading. Idempotent: skip when the body
+          # already mentions a .dmg row (e.g. a re-run).
+          if grep -q "apple-darwin\.dmg" body.md; then
+            echo "dmg rows already present; nothing to do"
+            exit 0
+          fi
+          awk -v rows="$rows" '
+            { print }
+            /^## Download terminale/ { in_dl=1 }
+            in_dl && /^\|-+\|/ { printf "%s", rows; in_dl=0 }
+          ' body.md > body-new.md
+
+          gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+
   publish-homebrew-formula:
     needs:
       - plan
