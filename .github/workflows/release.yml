@@ -326,7 +326,10 @@ jobs:
   # `host` writes the release notes before `macos-app-dmg` uploads its
   # assets, so cargo-dist's "Download" table never mentions the .dmg files.
   # Patch the notes in place: insert the two .dmg rows right under the table
-  # header so the GUI app download is the first thing macOS users see.
+  # header so the GUI app download is the first thing macOS users see, and
+  # DROP the macOS .tar.gz rows from the table — the bare-binary tarballs
+  # stay attached as assets (Homebrew and terminale-installer.sh download
+  # them) but are not a download we want humans to pick over the .dmg.
   patch-release-notes:
     needs:
       - plan
@@ -337,7 +340,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: Insert .dmg rows into the Download table
+      - name: Curate the Download table (.dmg in, mac tarballs out)
         run: |
           tag="${{ needs.plan.outputs.tag }}"
           repo="${{ github.repository }}"
@@ -354,20 +357,27 @@ jobs:
             rows="$rows| [$file]($base/$file) | $platform | [checksum]($base/$file.sha256) |"$'\n'
           done
 
-          # Insert right after the table header separator that follows the
-          # "## Download terminale" heading. Idempotent: skip when the body
-          # already mentions a .dmg row (e.g. a re-run).
+          # Insert the .dmg rows right after the table header separator that
+          # follows the "## Download terminale" heading (idempotent: skipped
+          # when already present, e.g. a re-run), then drop the macOS
+          # .tar.gz rows. Both transforms touch only the Download table.
           if grep -q "apple-darwin\.dmg" body.md; then
-            echo "dmg rows already present; nothing to do"
-            exit 0
+            rows=""
+            echo "dmg rows already present; only filtering tarball rows"
           fi
           awk -v rows="$rows" '
+            /^\|/ && /apple-darwin\.tar\.gz/ { next }
             { print }
             /^## Download terminale/ { in_dl=1 }
             in_dl && /^\|-+\|/ { printf "%s", rows; in_dl=0 }
           ' body.md > body-new.md
 
-          gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+          if ! cmp -s body.md body-new.md; then
+            gh release edit "$tag" --repo "$repo" --notes-file body-new.md
+            echo "release notes updated"
+          else
+            echo "nothing to change"
+          fi
 
   publish-homebrew-formula:
     needs:
