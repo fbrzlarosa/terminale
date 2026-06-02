@@ -1,7 +1,8 @@
-# One-off v2: dump the failed v0.1.10 host-job log and rerun the failed jobs.
+# One-off v3: dump the failed v0.1.10 host-job log and rerun the failed jobs.
 # Self-triggers on push (paths filter below); delete this file once it has run.
-# v2: every step is fault-tolerant and commits whatever diagnostics it gathered,
-# so a partial failure still leaves evidence in ci-logs/.
+# v3 fixes: the diagnostics file is .txt (the repo .gitignore ignores *.log,
+# which made v2's `git add` fail), added `git add -f` + `git push HEAD:main`
+# for safety, and the run's CURRENT status/attempt is dumped too.
 name: Recover v0.1.10 release (one-off)
 
 on:
@@ -26,21 +27,25 @@ jobs:
           RUN_ID=26841280346
           mkdir -p ci-logs
           {
-            echo "== one-off v2 diagnostics for run $RUN_ID =="
-            echo "-- jobs --"
+            echo "== one-off v3 diagnostics for run $RUN_ID =="
+            echo "-- run status --"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+              --jq '"status=\(.status) conclusion=\(.conclusion) attempt=\(.run_attempt)"' 2>&1 \
+              || echo "RUN QUERY FAILED"
+            echo "-- jobs (latest attempt) --"
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50" \
               --jq '.jobs[] | "\(.id) \(.name) \(.conclusion)"' 2>&1 || echo "JOBS QUERY FAILED"
-          } > ci-logs/host-v0110-tail.log
+          } > ci-logs/host-v0110-tail.txt
           JOB_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/jobs?per_page=50" \
             --jq '.jobs[] | select(.name=="host") | .id' 2>/dev/null || true)
-          echo "host job id: ${JOB_ID:-NOT FOUND}" >> ci-logs/host-v0110-tail.log
+          echo "host job id: ${JOB_ID:-NOT FOUND}" >> ci-logs/host-v0110-tail.txt
           if [ -n "$JOB_ID" ]; then
             if gh api "repos/$GITHUB_REPOSITORY/actions/jobs/$JOB_ID/logs" > /tmp/host.log 2>/tmp/host.err; then
-              echo "-- last 250 lines of host log --" >> ci-logs/host-v0110-tail.log
-              tail -n 250 /tmp/host.log >> ci-logs/host-v0110-tail.log
+              echo "-- last 250 lines of host log --" >> ci-logs/host-v0110-tail.txt
+              tail -n 250 /tmp/host.log >> ci-logs/host-v0110-tail.txt
             else
-              echo "-- log fetch FAILED --" >> ci-logs/host-v0110-tail.log
-              cat /tmp/host.err >> ci-logs/host-v0110-tail.log || true
+              echo "-- log fetch FAILED --" >> ci-logs/host-v0110-tail.txt
+              cat /tmp/host.err >> ci-logs/host-v0110-tail.txt || true
             fi
           fi
       - name: Commit diagnostics
@@ -48,13 +53,13 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add ci-logs/host-v0110-tail.log
+          git add -f ci-logs/host-v0110-tail.txt || echo "add failed"
           git commit -m "ci: dump v0.1.10 host job diagnostics (one-off)" || echo "nothing to commit"
-          git push || echo "push failed"
+          git push origin HEAD:main || echo "push failed"
       - name: Rerun failed jobs
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/26841280346/rerun-failed-jobs" \
-            || echo "rerun-failed-jobs API call failed"
+            || echo "rerun-failed-jobs API call failed (maybe already rerun and completed)"
