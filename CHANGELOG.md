@@ -21,6 +21,42 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.10]
+
+### Added
+- "Restart session" in the right-click menu (and Ctrl+Shift+R, upgraded
+  from the old crashed-tab-only restart): kills and respawns the focused
+  pane's session in place — split layout preserved, profile command
+  honoured, current directory inherited. Disabled for SSH panes
+- Dragging a docked Quake window (top/bottom/left/right) by its title bar
+  now un-docks it Chrome-style: the window shrinks back to the floating
+  size it had before docking, and keeps that geometry across hide/show
+
+### Fixed
+- Empty band at the bottom of the terminal after resizing: the resize
+  path double-counted the tab/status-bar chrome and sized the grid a few
+  rows short (opening a new tab "fixed" it; the next resize broke it
+  again). The grid now always fills down to the bottom padding
+- Fresh-launch glitch where the first prompt rendered one row lower: the
+  shell booted at a pre-tab-bar grid size and was shrunk after it had
+  already printed, displacing the prompt via a ConPTY reflow. The PTY now
+  gets its final size before the window is revealed
+- Status bar: the right-aligned text (e.g. the clock) was clipped at the
+  window edge — its position came from a width estimate ~30% too small;
+  it now uses the real measured text width at any DPI
+- Quake position memory: toggling hide while the show animation was
+  still in flight saved the mid-slide position (and treated it as a user
+  adjustment), so the window reappeared half-way. The resting geometry
+  is saved instead; rapid toggles also animate from the live position
+  rather than teleporting off-screen
+
+### Changed
+- Rendering: the focused pane's shaped text is cached across frames and
+  rebuilt only when content or font/geometry actually change — cursor
+  blink, background FX and bell redraws no longer re-shape every visible
+  row (the dominant render cost). The GPU label in the resource strip
+  and the Settings live-apply diff are similarly gated
+
 ## [0.1.9]
 
 ### Security
