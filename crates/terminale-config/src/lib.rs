@@ -42,6 +42,7 @@ pub mod resource_indicators;
 pub mod snippets;
 pub mod status_bar;
 pub mod terminal;
+pub mod updates;
 pub mod window;
 
 // ── Re-exports: pre-existing modules ─────────────────────────────────────────
@@ -89,6 +90,7 @@ pub use terminal::{
     EditorConfig, ExitBehavior, HyperlinkRule, ImageProtocolsConfig, KeyboardEncoding,
     LinkUnderline, ScrollbackExportFormat, TerminalConfig,
 };
+pub use updates::UpdatesConfig;
 pub use window::{
     snap_window_rect, MonitorRect, RestoreSession, SnapEdge, WindowConfig, WindowRect,
     ZenHideElement,
@@ -210,6 +212,8 @@ pub struct Config {
     pub integration: IntegrationConfig,
     /// Bottom resource-indicator strip (CPU/RAM/GPU, pixel-art).
     pub resource_indicators: ResourceIndicatorsConfig,
+    /// Built-in self-updater (check GitHub releases, stage updates safely).
+    pub updates: UpdatesConfig,
 }
 
 impl Config {
@@ -241,6 +245,7 @@ impl Config {
         self.ai.validate()?;
         self.integration.validate()?;
         self.resource_indicators.validate()?;
+        self.updates.validate()?;
         Ok(())
     }
 

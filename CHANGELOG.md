@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.7]
+
+### Added
+- Built-in self-update from GitHub releases. `--check-update` / `--update` CLI
+  flags, an `[updates]` config (`check_on_startup`, `auto_install`) and a
+  Settings → About panel. Downloads are HTTPS-only from the official release and
+  the archive is verified against its published SHA-256; the on-disk binary is
+  then replaced atomically. The running session is never interrupted and the new
+  version applies on the next launch — never a forced restart.
+
 ### Fixed
 - macOS: the Settings window no longer pegs a CPU core while open. The custom
   title bar called `is_maximized()` every frame (which on macOS rebuilds the
@@ -128,7 +138,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/fbrzlarosa/terminale/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/fbrzlarosa/terminale/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/fbrzlarosa/terminale/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/fbrzlarosa/terminale/compare/v0.1.3...v0.1.4

@@ -37,6 +37,7 @@ mod status_bar;
 mod suggestions;
 mod tab_groups;
 mod tabs;
+mod update;
 mod window_anim;
 mod workspace;
 
@@ -322,6 +323,16 @@ struct Cli {
     #[arg(long)]
     schema: bool,
 
+    /// Check GitHub for a newer release and report, without installing. Exits.
+    #[arg(long)]
+    check_update: bool,
+
+    /// Download the latest release (verified via SHA-256) and replace the
+    /// on-disk binary, then exit. The new version applies the next time you
+    /// launch terminale — a running session is never interrupted.
+    #[arg(long)]
+    update: bool,
+
     /// Register the Linux desktop entry (application-menu launcher + icon)
     /// under `$XDG_DATA_HOME` and exit. Done automatically on launch unless
     /// `integration.desktop_entry = false`; this flag forces it explicitly.
@@ -475,6 +486,33 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if cli.check_update {
+        match update::check_for_update() {
+            Ok(Some(v)) => println!(
+                "terminale {} is installed; {v} is available. Run `terminale --update`.",
+                update::current_version()
+            ),
+            Ok(None) => println!("terminale {} is up to date.", update::current_version()),
+            Err(e) => eprintln!("update check failed: {e:#}"),
+        }
+        return Ok(());
+    }
+
+    if cli.update {
+        println!("Checking for updates…");
+        match update::download_and_stage() {
+            Ok(Some(v)) => {
+                println!("Updated to terminale {v}. Restart terminale to use the new version.");
+            }
+            Ok(None) => println!(
+                "Already on the latest version ({}).",
+                update::current_version()
+            ),
+            Err(e) => eprintln!("update failed: {e:#}"),
+        }
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     {
         if cli.install_desktop_entry {
@@ -508,6 +546,34 @@ fn main() -> Result<()> {
             (Config::with_auto_profiles(), PathBuf::from("config.toml"))
         }
     };
+
+    // Background self-update check (never blocks the UI, never restarts the
+    // running session). With `auto_install` it downloads + verifies + stages the
+    // update so it applies on the next launch; otherwise it only logs that one
+    // is available. Disable via `updates.check_on_startup = false`.
+    if config.updates.check_on_startup {
+        let auto = config.updates.auto_install;
+        std::thread::spawn(move || {
+            if auto {
+                match update::download_and_stage() {
+                    Ok(Some(v)) => {
+                        tracing::info!(version = %v, "update staged; restart terminale to apply");
+                    }
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(?e, "background auto-update failed"),
+                }
+            } else {
+                match update::check_for_update() {
+                    Ok(Some(v)) => tracing::info!(
+                        version = %v,
+                        "a newer terminale is available — run `terminale --update` or use Settings"
+                    ),
+                    Ok(None) => {}
+                    Err(e) => tracing::warn!(?e, "background update check failed"),
+                }
+            }
+        });
+    }
 
     // On Linux, register the application-menu entry so terminale is launchable
     // from the desktop and searchable — the tarball/Homebrew installs have no
