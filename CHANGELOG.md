@@ -21,6 +21,29 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
 - Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
+## [0.1.8]
+
+### Fixed
+- Tab busy spinner no longer lights up while you type. Output that closely
+  follows a keystroke or paste (echo / prompt repaint — syntax-highlighting
+  shells redraw the whole line on every key) no longer counts as command
+  activity; real commands (OSC 133 or sustained output) still drive the
+  spinner, even mid-typing
+- egui sub-windows (Settings, AI assistant, context menu, paste guard,
+  password prompt) no longer peg a CPU core while idle — a self-sustaining
+  `RedrawRequested` repaint loop is broken (~42% → ~0% CPU at idle);
+  hover fades, combo animations and AI streaming still repaint on demand
+
+### Changed
+- Idle CPU and per-frame disk I/O cut across the board: the Settings window
+  caches its theme and saved-workspace lists instead of re-scanning the disk
+  on every repaint; background FX, spinner, bell and jump-highlight redraws
+  are skipped while the window is minimized or fully covered; the tab
+  activity spinner only animates while the window is focused and visible;
+  background FX pause while unfocused (new
+  `background_fx.pause_when_unfocused` toggle, default on); CPU / memory are
+  only sampled while the resource strip is enabled
+
 ## [0.1.7]
 
 ### Added
