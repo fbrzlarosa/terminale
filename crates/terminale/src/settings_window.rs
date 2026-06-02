@@ -186,6 +186,34 @@ pub struct SettingsWindow {
     /// Used by the font pickers to append a "(bundled)" label to those
     /// entries so users know they are always available on any machine.
     pub bundled_fonts: Vec<String>,
+    /// Cached theme list for the Appearance section. The render closure runs
+    /// every frame (and egui repaints continuously while the scroll area has
+    /// momentum), so resolving the theme list there used to re-scan the
+    /// themes directory from disk — `read_dir` + `read_to_string` + TOML parse
+    /// per file — dozens of times a second while scrolling, pegging CPU/IO.
+    /// We scan once and cache here; rebuilt only when `theme_cache_dirty` is
+    /// set (themes-dir change, theme import, or full config reload).
+    cached_all_themes: Vec<terminale_config::Theme>,
+    /// Names of the drop-in `*.toml` themes found in the themes directory,
+    /// for the read-only list under "Theme import". Part of the same cache.
+    cached_dropin_names: Vec<String>,
+    /// When set, the next `section_appearance` frame rebuilds the theme cache.
+    /// Starts `true` so the cache is populated on first paint.
+    theme_cache_dirty: bool,
+    /// Cached saved-workspace list `(name, path)` for the Workspaces section.
+    /// Same rationale as `cached_all_themes`: the section body runs every
+    /// frame, so scanning the workspaces directory there (`read_dir` + sort)
+    /// was disk I/O on every repaint while the tab was open. Rebuilt when
+    /// `workspace_cache_dirty` is set (section entry or a delete).
+    cached_workspaces: Vec<(String, std::path::PathBuf)>,
+    /// When set, the next `section_workspaces` frame rebuilds the workspace
+    /// cache. Starts `true`; also set on section entry (so an externally-saved
+    /// workspace shows up when you navigate to the tab) and after a delete.
+    workspace_cache_dirty: bool,
+    /// The section rendered last frame, used to detect navigation into a
+    /// section so per-visit caches (the workspace list) can refresh once on
+    /// entry rather than every frame.
+    last_section: Section,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -342,6 +370,12 @@ impl SettingsWindow {
             loaded_plugin_names: Vec::new(),
             available_fonts: Vec::new(),
             bundled_fonts: Vec::new(),
+            cached_all_themes: Vec::new(),
+            cached_dropin_names: Vec::new(),
+            theme_cache_dirty: true,
+            cached_workspaces: Vec::new(),
+            workspace_cache_dirty: true,
+            last_section: Section::Profiles,
         };
 
         // Pre-render one frame into the swap chain while the window is still
@@ -451,6 +485,71 @@ impl SettingsWindow {
         // If the user had unsaved in-progress edits, they've been superseded
         // by the reload. Mark not dirty so we don't auto-save stale values.
         self.dirty = false;
+        // A reload can change themes_dir or the inline theme list, so the
+        // cached theme picker contents must be rebuilt.
+        self.theme_cache_dirty = true;
+    }
+
+    /// Mark the cached theme list stale so the Appearance section rebuilds it
+    /// (re-scans the themes directory) on its next frame. Called by the host
+    /// after importing a theme — the import copies a `*.toml` into the themes
+    /// directory and may append an inline theme, neither of which the panel
+    /// would otherwise notice without a disk re-scan.
+    pub fn invalidate_theme_cache(&mut self) {
+        self.theme_cache_dirty = true;
+    }
+
+    /// Rebuild the cached theme list if it's been marked stale. Cheap no-op on
+    /// every clean frame; does the disk scan only when `theme_cache_dirty` is
+    /// set. Keeps the per-frame `section_appearance` render closure free of
+    /// disk I/O (see `cached_all_themes`).
+    pub(super) fn ensure_theme_cache(&mut self) {
+        if !self.theme_cache_dirty {
+            return;
+        }
+        self.cached_all_themes = self.config.appearance.all_themes();
+        self.cached_dropin_names = self
+            .config
+            .appearance
+            .effective_themes_dir()
+            .map(|dir| {
+                terminale_config::scan_themes_dir(&dir)
+                    .into_iter()
+                    .map(|t| t.name)
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.theme_cache_dirty = false;
+    }
+
+    /// Rebuild the cached saved-workspace list if it's been marked stale.
+    /// Cheap no-op on clean frames; scans the workspaces directory only when
+    /// `workspace_cache_dirty` is set. Keeps the per-frame `section_workspaces`
+    /// render closure free of disk I/O (see `cached_workspaces`).
+    pub(super) fn ensure_workspace_cache(&mut self) {
+        if !self.workspace_cache_dirty {
+            return;
+        }
+        self.cached_workspaces = terminale_config::paths::workspaces_dir()
+            .and_then(|d| std::fs::read_dir(&d).ok())
+            .map(|rd| {
+                let mut list: Vec<(String, std::path::PathBuf)> = rd
+                    .flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        if p.extension()? == "toml" {
+                            let name = p.file_stem()?.to_string_lossy().into_owned();
+                            Some((name, p))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                list.sort_by(|a, b| a.0.cmp(&b.0));
+                list
+            })
+            .unwrap_or_default();
+        self.workspace_cache_dirty = false;
     }
 
     /// If egui asked for a delayed repaint, this is the deadline. The
@@ -914,6 +1013,13 @@ impl SettingsWindow {
                         // and cards span edge-to-edge and the scrollbar pins to
                         // the right border instead of hugging narrow content.
                         ui.set_width(ui.available_width());
+                        // Detect navigation into a different section so
+                        // per-visit caches (the workspace list) refresh once on
+                        // entry rather than scanning the disk every frame.
+                        if self.section != self.last_section {
+                            self.last_section = self.section;
+                            self.workspace_cache_dirty = true;
+                        }
                         match self.section {
                             Section::Profiles => self.section_profiles(ui),
                             Section::Appearance => self.section_appearance(ui),

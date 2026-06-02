@@ -11,6 +11,11 @@ impl SettingsWindow {
             "Save and restore named layouts. Only the tab structure and working directories are restored — running processes are not.",
         );
 
+        // Refresh the cached workspace list (only scans disk when stale). The
+        // body runs every frame while this tab is open, so it must not touch
+        // the disk per-frame — see `cached_workspaces`.
+        self.ensure_workspace_cache();
+
         let mut dirty = false;
 
         // ── Session restore ───────────────────────────────────────────────────
@@ -90,30 +95,6 @@ impl SettingsWindow {
         );
         ui.add_space(4.0);
 
-        let workspaces = terminale_config::paths::workspaces_dir()
-            .map(|d| {
-                std::fs::read_dir(&d)
-                    .ok()
-                    .map(|rd| {
-                        let mut list: Vec<(String, std::path::PathBuf)> = rd
-                            .flatten()
-                            .filter_map(|e| {
-                                let p = e.path();
-                                if p.extension()? == "toml" {
-                                    let name = p.file_stem()?.to_string_lossy().into_owned();
-                                    Some((name, p))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        list.sort_by(|a, b| a.0.cmp(&b.0));
-                        list
-                    })
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
-
         let hr_list = ui.horizontal(|ui| {
             field_label(ui, "Workspaces list");
         });
@@ -124,7 +105,7 @@ impl SettingsWindow {
             "Workspaces list",
         );
 
-        if workspaces.is_empty() {
+        if self.cached_workspaces.is_empty() {
             card(ui, |ui| {
                 ui.label(
                     egui::RichText::new("No saved workspaces yet.")
@@ -137,7 +118,10 @@ impl SettingsWindow {
                 );
             });
         } else {
-            for (name, path) in &workspaces {
+            // Track a delete during iteration and invalidate the cache after
+            // the loop — we can't mutate `self` while borrowing the list.
+            let mut deleted = false;
+            for (name, path) in &self.cached_workspaces {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(name)
@@ -154,10 +138,14 @@ impl SettingsWindow {
                             .clicked()
                         {
                             let _ = std::fs::remove_file(path);
+                            deleted = true;
                         }
                     });
                 });
                 ui.add_space(2.0);
+            }
+            if deleted {
+                self.workspace_cache_dirty = true;
             }
         }
 

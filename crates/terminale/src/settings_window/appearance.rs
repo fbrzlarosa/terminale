@@ -7,6 +7,11 @@ impl SettingsWindow {
     pub(super) fn section_appearance(&mut self, ui: &mut egui::Ui) {
         page_header(ui, "Appearance", "Colour theme and tab sizing.");
 
+        // Refresh the cached theme list (only does disk work when stale). The
+        // body below runs every frame and egui repaints continuously while the
+        // scroll area has momentum, so it must not touch the disk.
+        self.ensure_theme_cache();
+
         let mut dirty = false;
 
         // ── Theme picker ──
@@ -19,7 +24,7 @@ impl SettingsWindow {
                     .selected_text(current.clone())
                     .width(280.0)
                     .show_ui(ui, |ui| {
-                        for t in self.config.appearance.all_themes() {
+                        for t in &self.cached_all_themes {
                             if ui.selectable_label(t.name == current, &t.name).clicked() {
                                 chosen = Some(t.name.clone());
                             }
@@ -38,9 +43,18 @@ impl SettingsWindow {
                 "Background, cursor, selection and 16-color ANSI palette.",
             );
 
-            // Mini swatches preview.
+            // Mini swatches preview. Resolve from the cached list rather than
+            // `self.config.appearance.resolved()`, which re-scans the themes
+            // directory from disk on every call.
             ui.add_space(8.0);
-            let resolved = self.config.appearance.resolved();
+            let resolved = self
+                .cached_all_themes
+                .iter()
+                .find(|t| t.name == self.config.appearance.theme)
+                .map_or_else(
+                    || terminale_config::builtin_themes()[0].resolved(),
+                    terminale_config::Theme::resolved,
+                );
             ui.horizontal(|ui| {
                 color_swatch(ui, resolved.background, "BG");
                 color_swatch(ui, resolved.foreground, "FG");
@@ -94,11 +108,13 @@ impl SettingsWindow {
                             Some(PathBuf::from(&dir_edit))
                         };
                         dirty = true;
+                        self.theme_cache_dirty = true;
                     }
                     if ui.button("\u{1f4c2}").on_hover_text("Browse…").clicked() {
                         if let Some(picked) = rfd::FileDialog::new().pick_folder() {
                             self.config.appearance.themes_dir = Some(picked);
                             dirty = true;
+                            self.theme_cache_dirty = true;
                         }
                     }
                     if self.config.appearance.themes_dir.is_some()
@@ -106,6 +122,7 @@ impl SettingsWindow {
                     {
                         self.config.appearance.themes_dir = None;
                         dirty = true;
+                        self.theme_cache_dirty = true;
                     }
                 });
                 self.highlight_row(
@@ -134,23 +151,19 @@ impl SettingsWindow {
                     "Open a file picker to choose a .toml theme file. The file is copied into the themes directory so it persists across launches, then selected as the active theme.",
                 );
 
-                // Drop-in themes list (live re-scan)
-                let drop_ins: Vec<String> =
-                    if let Some(dir) = self.config.appearance.effective_themes_dir() {
-                        terminale_config::scan_themes_dir(&dir)
-                            .into_iter()
-                            .map(|t| t.name)
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                if !drop_ins.is_empty() {
+                // Drop-in themes list. Served from the cache (rebuilt on import
+                // or themes-dir change) instead of re-scanning the directory
+                // from disk on every frame.
+                if !self.cached_dropin_names.is_empty() {
                     ui.add_space(6.0);
                     sublabel(
                         ui,
-                        &format!("Drop-in themes loaded from directory ({}):", drop_ins.len()),
+                        &format!(
+                            "Drop-in themes loaded from directory ({}):",
+                            self.cached_dropin_names.len()
+                        ),
                     );
-                    for name in &drop_ins {
+                    for name in &self.cached_dropin_names {
                         ui.label(format!("  \u{2022} {name}"));
                     }
                 }
@@ -462,6 +475,26 @@ impl SettingsWindow {
                     sublabel(
                         ui,
                         "Each keypress spawns an independent animated band that travels and decays — multiple keystrokes layer.",
+                    );
+                    ui.add_space(4.0);
+
+                    let hr = ui.horizontal(|ui| {
+                        field_label(ui, "Pause when unfocused");
+                        let on = self.config.background_fx.pause_when_unfocused;
+                        if toggle_switch(ui, on).clicked() {
+                            self.config.background_fx.pause_when_unfocused = !on;
+                            dirty = true;
+                        }
+                    });
+                    self.highlight_row(
+                        ui,
+                        hr.response.rect,
+                        Section::Appearance,
+                        "Pause when unfocused",
+                    );
+                    sublabel(
+                        ui,
+                        "Stop animating the background while the window is not focused, so a background terminal costs no GPU. On by default. (A minimized or fully-covered window never animates regardless.)",
                     );
                     ui.add_space(4.0);
 

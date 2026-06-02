@@ -1926,6 +1926,13 @@ struct TermWindow {
     /// the `WindowEvent::Focused` handler. Used to suppress desktop
     /// notifications when the user is actively looking at the window.
     window_focused: bool,
+    /// Set from `WindowEvent::Occluded`: `true` when the window is fully
+    /// covered by other windows or minimized. While occluded we skip
+    /// scheduling animation redraws (background FX, activity spinner, bell,
+    /// jump-highlight) — the compositor would just throw those frames away —
+    /// so a hidden window costs no GPU/CPU. PTY output still drains and wakes
+    /// the loop, and we repaint once when the window becomes visible again.
+    occluded: bool,
     /// Mirror of `config.terminal.os_notifications`. When `true`, OSC 9 /
     /// OSC 777 notifications are forwarded to the OS notification centre
     /// (but only while the window is not focused).
@@ -2573,6 +2580,7 @@ impl TerminaleApp {
             show_pane_headers: self.config.appearance.show_pane_headers,
             show_prompt_marks: self.config.terminal.show_prompt_marks,
             window_focused: true,
+            occluded: false,
             os_notifications: self.config.terminal.os_notifications,
             pane_header_close_hover: None,
             last_header_click: None,
@@ -6336,6 +6344,17 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 state.window.request_redraw();
             }
             WindowEvent::ModifiersChanged(mods) => state.modifiers = mods.state(),
+            WindowEvent::Occluded(occluded) => {
+                // Fully covered or minimized: stop scheduling animation
+                // redraws (background FX, activity spinner, bell, jump
+                // highlight) so we don't render frames the compositor just
+                // discards. PTY output still drains and wakes the loop.
+                state.occluded = occluded;
+                if !occluded {
+                    // Newly visible again — repaint once to catch up.
+                    state.window.request_redraw();
+                }
+            }
             WindowEvent::Focused(focused) => {
                 state.renderer.set_focused(focused);
                 state.window_focused = focused;
@@ -7930,7 +7949,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // Sample CPU/memory once per wake (cheap, 1s-throttled internally);
         // applied to each window's resource strip in the loop below.
         let res_enabled = self.config.resource_indicators.enabled;
-        let res_changed = self.resource_sampler.tick(std::time::Instant::now());
+        // Only sample the system while the strip is actually shown. `tick` is
+        // internally 1 s-throttled and cheap, but there's no reason to refresh
+        // CPU/memory at all when the indicator is disabled.
+        let res_changed = res_enabled && self.resource_sampler.tick(std::time::Instant::now());
         let res_sample = self.resource_sampler.sample();
 
         for state in &mut self.windows {
@@ -8413,6 +8435,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             if drain_pty_output(state) {
                 state.window.request_redraw();
             }
+            // While the window is fully covered or minimized, skip scheduling
+            // animation redraws below — the compositor would discard them, so
+            // a hidden window must cost no GPU/CPU. The PTY drain above still
+            // runs (and requests a redraw on new output), so content is never
+            // starved; we just don't animate what nobody can see.
+            let visible = !state.occluded;
             // Drive any in-flight Quake open/close slide.
             if let Some(d) = pump_quake_anim(state) {
                 next_wake = Some(match next_wake {
@@ -8425,7 +8453,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             state
                 .renderer
                 .prune_bg_fx_emitters(self.config.background_fx.band_lifetime_secs);
-            if state.renderer.bg_fx_active() {
+            // Animated background: only repaint while actually visible, and
+            // (unless the user opts out) only while focused — an unfocused or
+            // hidden window should not keep the GPU at 60 fps drawing a
+            // wallpaper nobody is looking at. Mirrors the cursor-blink gate.
+            let bg_fx_animates = visible
+                && (state.window_focused || !self.config.background_fx.pause_when_unfocused);
+            if state.renderer.bg_fx_active() && bg_fx_animates {
                 state.window.request_redraw();
                 let d = std::time::Duration::from_millis(16);
                 next_wake = Some(match next_wake {
@@ -8433,7 +8467,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     None => d,
                 });
             }
-            if state.renderer.cursor_blinking() {
+            if state.renderer.cursor_blinking() && visible {
                 let half = std::time::Duration::from_millis(u64::from(
                     state.renderer.cursor().blink_rate_ms.max(60),
                 ));
@@ -8446,7 +8480,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // redraw here the timer fires but the cursor never toggles.
                 state.window.request_redraw();
             }
-            if state.renderer.bell_active() {
+            if state.renderer.bell_active() && visible {
                 // ~16 ms = one 60 Hz frame; the bell tint decays smoothly.
                 let frame = std::time::Duration::from_millis(16);
                 next_wake = Some(match next_wake {
@@ -8455,7 +8489,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 });
                 state.window.request_redraw();
             }
-            if state.renderer.jump_highlight_active() {
+            if state.renderer.jump_highlight_active() && visible {
                 // ~16 ms = one 60 Hz frame; the highlight band fades smoothly.
                 let frame = std::time::Duration::from_millis(16);
                 next_wake = Some(match next_wake {
@@ -8518,7 +8552,15 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // Advance the spinner frame at a ~90 ms cadence and request a
             // redraw while any pane in this window is busy. When nothing is
             // busy, skip scheduling the 90 ms wakeup so we don't spin the CPU.
-            if state.tab_activity_spinner {
+            //
+            // Gated on focus + visibility: a busy command (anything OSC-133
+            // reports as "running" — an editor, pager, REPL, dev server, ssh)
+            // keeps `pane_is_busy` true for its whole lifetime, so without this
+            // gate the spinner repainted the whole window ~11×/s forever even
+            // while the window sat unfocused in the background — the single
+            // biggest idle cost, and on by default. The spinner is invisible
+            // unless the window is focused and visible, so only animate then.
+            if state.tab_activity_spinner && state.window_focused && visible {
                 let any_busy = state
                     .tabs
                     .iter()
@@ -8588,10 +8630,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             if !sg_enabled || sg_trigger == terminale_config::SuggestionTrigger::Off {
                 state.suggestions.state = suggestions::SuggestionState::Hidden;
             }
-            if matches!(
-                state.suggestions.state,
-                suggestions::SuggestionState::Loading
-            ) {
+            if visible
+                && matches!(
+                    state.suggestions.state,
+                    suggestions::SuggestionState::Loading
+                )
+            {
                 state.suggestions.loading_frame = state.suggestions.loading_frame.wrapping_add(1);
                 state.window.request_redraw();
                 let anim = std::time::Duration::from_millis(150);
@@ -11542,7 +11586,8 @@ fn configs_identical(a: &Config, b: &Config) -> bool {
         && a.background_fx.matrix_band_width == b.background_fx.matrix_band_width
         && (a.background_fx.matrix_fall_speed - b.background_fx.matrix_fall_speed).abs()
             < f32::EPSILON
-        && a.background_fx.max_emitters == b.background_fx.max_emitters;
+        && a.background_fx.max_emitters == b.background_fx.max_emitters
+        && a.background_fx.pause_when_unfocused == b.background_fx.pause_when_unfocused;
     let bg_img_eq = a.appearance.background_image.path == b.appearance.background_image.path
         && (a.appearance.background_image.opacity - b.appearance.background_image.opacity).abs()
             < f32::EPSILON
@@ -11837,6 +11882,10 @@ fn import_theme_from_picker(
             s.sync_add_theme(theme.clone());
         }
         s.sync_theme_active(&theme.name);
+        // The import copied a *.toml into themes_dir (and may have appended an
+        // inline theme); the Appearance section caches the scanned theme list,
+        // so force it to rebuild on its next frame.
+        s.invalidate_theme_cache();
     }
 
     tracing::info!(name = %theme.name, "theme import complete");

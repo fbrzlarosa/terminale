@@ -106,6 +106,12 @@ pub struct BackgroundFxConfig {
     /// Maximum number of concurrently alive emitter bands. Oldest bands are
     /// evicted when the cap is reached. `1..=64`; default `48`.
     pub max_emitters: u32,
+    /// Pause the animation while the window is not focused. When `true`
+    /// (default) an unfocused window stops repainting the effect, so a
+    /// background terminal costs no GPU. Set `false` to keep the wallpaper
+    /// animating even when the window is in the background. (A fully
+    /// covered / minimized window never animates regardless of this setting.)
+    pub pause_when_unfocused: bool,
 }
 
 impl Default for BackgroundFxConfig {
@@ -122,6 +128,7 @@ impl Default for BackgroundFxConfig {
             matrix_band_width: 3,
             matrix_fall_speed: 14.0,
             max_emitters: 48,
+            pause_when_unfocused: true,
         }
     }
 }
