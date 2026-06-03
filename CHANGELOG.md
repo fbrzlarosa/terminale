@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.16] — 2026-06-03
+
+Supersedes v0.1.15, whose release pipeline failed mid-publish and left a
+partial release (no Windows/Linux downloads). All v0.1.15 changes below are
+included.
+
+### Fixed
+- In-app updates no longer fail with `403` once GitHub's unauthenticated API
+  rate limit (60 requests/hour per IP) is exhausted: the archive and its
+  `.sha256` sidecar now download from the un-metered
+  `github.com/<owner>/<repo>/releases/download/` CDN path instead of the
+  `api.github.com` asset endpoint. Only the small release-metadata lookup
+  still touches the API
+- The release pipeline now publishes a release only after **every** asset is
+  attached (created as a draft, flipped public at the very end): an update
+  check that fired while assets were still uploading used to download a
+  partial archive and fail checksum verification — or see a release with no
+  matching asset at all
+
 ## [0.1.15] — 2026-06-03
 
 ### Fixed
@@ -351,7 +370,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/fbrzlarosa/terminale/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/fbrzlarosa/terminale/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/fbrzlarosa/terminale/compare/v0.1.12...v0.1.13
