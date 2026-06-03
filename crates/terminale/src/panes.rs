@@ -1077,6 +1077,113 @@ pub(crate) fn active_tab_pane_rects(state: &RunningState) -> Vec<(PaneId, (f32, 
     specs.into_iter().map(|s| (s.pane_id, s.rect_px)).collect()
 }
 
+// ── pane-aware mouse hit-testing ──────────────────────────────────────────────
+
+/// Pure inverse of the renderer's per-pane cell placement. The renderer puts
+/// a pane's cell `(col, row)` at `(rect.x + pad_px + col·cw, rect.y + row·ch)`
+/// (see `render_panes` / `queue_extra_pane` in `terminale-render`), so this
+/// maps a physical-pixel position back to the cell, given the pane's grid
+/// origin and cell metrics — all in physical px.
+///
+/// `clamp_leading = false` (strict): positions above/left of the first cell
+/// return `None` — used for hit-testing "is the pointer on the grid?".
+/// `clamp_leading = true`: those positions clamp to col/row 0 — used for
+/// selection drags that stray outside the pane. Trailing overflow always
+/// clamps to the last cell (xterm-style: clicks in the right/bottom padding
+/// hit the nearest edge cell).
+#[must_use]
+pub(crate) fn cell_from_pane_origin(
+    pos_px: (f32, f32),
+    origin_px: (f32, f32),
+    pad_px: f32,
+    cell_w_px: f32,
+    cell_h_px: f32,
+    cols: u16,
+    rows: u16,
+    clamp_leading: bool,
+) -> Option<(u16, u16)> {
+    if cols == 0 || rows == 0 || cell_w_px <= 0.0 || cell_h_px <= 0.0 {
+        return None;
+    }
+    let ux = pos_px.0 - origin_px.0 - pad_px;
+    let uy = pos_px.1 - origin_px.1;
+    if !clamp_leading && (ux < 0.0 || uy < 0.0) {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let col = (ux.max(0.0) / cell_w_px).floor() as i64;
+    #[allow(clippy::cast_possible_truncation)]
+    let row = (uy.max(0.0) / cell_h_px).floor() as i64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    Some((
+        col.clamp(0, i64::from(cols) - 1) as u16,
+        row.clamp(0, i64::from(rows) - 1) as u16,
+    ))
+}
+
+/// Map a **physical-pixel** window position to the pane whose grid rect
+/// contains it, returning the pane id and the **pane-local** cell.
+///
+/// This is the pane-aware replacement for the renderer's window-global
+/// `cell_at_pixel`, which knows nothing about split layouts: with two or
+/// more panes the window-global cell index matches no pane's grid, which
+/// silently broke selection, link hover/click, and mouse reporting inside
+/// splits. Positions over a pane header, the tab bar, a divider, or outside
+/// every pane return `None`.
+pub(crate) fn pane_cell_at_pixel(
+    state: &RunningState,
+    pos_px: (f32, f32),
+) -> Option<(PaneId, u16, u16)> {
+    let tab = state.tabs.get(state.active_tab)?;
+    let scale = state.window.scale_factor() as f32;
+    let cw = state.renderer.cell_width() * scale;
+    let ch = state.renderer.cell_height() * scale;
+    let pad = state.renderer.padding() * scale;
+    for (id, (rx, ry, rw, rh)) in active_tab_pane_rects(state) {
+        if pos_px.0 < rx || pos_px.1 < ry || pos_px.0 >= rx + rw || pos_px.1 >= ry + rh {
+            continue;
+        }
+        let pane = tab.panes.get(&id)?;
+        return cell_from_pane_origin(pos_px, (rx, ry), pad, cw, ch, pane.cols, pane.rows, false)
+            .map(|(c, r)| (id, c, r));
+    }
+    None
+}
+
+/// `true` when the pointer is over the **focused** pane's grid. Used to gate
+/// chrome that the renderer can only draw in the focused pane's frame (e.g.
+/// hover link underlines).
+pub(crate) fn pointer_over_focused_pane(state: &RunningState, pos_px: (f32, f32)) -> bool {
+    let focused = state
+        .tabs
+        .get(state.active_tab)
+        .map(|t| t.focused)
+        .unwrap_or_default();
+    pane_cell_at_pixel(state, pos_px).is_some_and(|(id, _, _)| id == focused)
+}
+
+/// Like [`pane_cell_at_pixel`] but pinned to the **focused** pane and clamped
+/// into its grid: positions outside the pane rect map to the nearest edge
+/// cell. Selection drags and SGR mouse-drag reporting always target the
+/// focused pane, even while the pointer strays over a neighbour pane or the
+/// window chrome — same semantics as dragging outside a single-pane window.
+pub(crate) fn focused_pane_cell_clamped(
+    state: &RunningState,
+    pos_px: (f32, f32),
+) -> Option<(u16, u16)> {
+    let tab = state.tabs.get(state.active_tab)?;
+    let focused = tab.focused;
+    let (_, (rx, ry, _, _)) = active_tab_pane_rects(state)
+        .into_iter()
+        .find(|(id, _)| *id == focused)?;
+    let pane = tab.panes.get(&focused)?;
+    let scale = state.window.scale_factor() as f32;
+    let cw = state.renderer.cell_width() * scale;
+    let ch = state.renderer.cell_height() * scale;
+    let pad = state.renderer.padding() * scale;
+    cell_from_pane_origin(pos_px, (rx, ry), pad, cw, ch, pane.cols, pane.rows, true)
+}
+
 /// Geometry helper for directional pane focus. Given the focused pane's rect
 /// and a direction, pick the nearest other pane in that direction.
 #[must_use]
@@ -1598,6 +1705,73 @@ pub(crate) fn find_resize_split_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── cell_from_pane_origin ─────────────────────────────────────────────────
+
+    /// 10×20 px cells, 4 px padding, pane origin at (100, 50), 80×24 grid.
+    fn map(pos: (f32, f32), clamp: bool) -> Option<(u16, u16)> {
+        cell_from_pane_origin(pos, (100.0, 50.0), 4.0, 10.0, 20.0, 80, 24, clamp)
+    }
+
+    #[test]
+    fn cell_mapping_first_cell_at_pane_origin() {
+        // First cell starts at origin.x + pad: (104, 50).
+        assert_eq!(map((104.0, 50.0), false), Some((0, 0)));
+        // Just inside cell (1, 1).
+        assert_eq!(map((114.5, 70.5), false), Some((1, 1)));
+    }
+
+    #[test]
+    fn cell_mapping_strict_rejects_leading_positions() {
+        // Left of the first cell (inside padding) and above the pane.
+        assert_eq!(map((101.0, 60.0), false), None);
+        assert_eq!(map((110.0, 49.0), false), None);
+    }
+
+    #[test]
+    fn cell_mapping_clamped_pins_leading_positions_to_zero() {
+        assert_eq!(map((0.0, 0.0), true), Some((0, 0)));
+        assert_eq!(map((101.0, 60.0), true), Some((0, 0)));
+    }
+
+    #[test]
+    fn cell_mapping_trailing_overflow_clamps_to_last_cell() {
+        // Way past the grid's right/bottom edge → last cell, both modes.
+        assert_eq!(map((10_000.0, 10_000.0), false), Some((79, 23)));
+        assert_eq!(map((10_000.0, 10_000.0), true), Some((79, 23)));
+    }
+
+    #[test]
+    fn cell_mapping_rejects_degenerate_grids() {
+        assert_eq!(
+            cell_from_pane_origin((104.0, 50.0), (100.0, 50.0), 4.0, 10.0, 20.0, 0, 24, true),
+            None
+        );
+        assert_eq!(
+            cell_from_pane_origin((104.0, 50.0), (100.0, 50.0), 4.0, 0.0, 20.0, 80, 24, true),
+            None
+        );
+    }
+
+    /// Regression for split-view hit testing: a position inside a RIGHT-half
+    /// pane must map to that pane's local columns, not the window-global
+    /// ones. With a 200 px-wide left pane, the right pane's origin is at
+    /// x=200 — a click at x=210 is its column 0 (was ~column 20 of a
+    /// window-global grid before the fix, hitting nothing).
+    #[test]
+    fn cell_mapping_right_pane_is_pane_local() {
+        let cell = cell_from_pane_origin(
+            (210.0, 55.0),
+            (200.0, 50.0), // right pane's rect origin
+            4.0,
+            10.0,
+            20.0,
+            20,
+            24,
+            false,
+        );
+        assert_eq!(cell, Some((0, 0)));
+    }
 
     // ── helpers ───────────────────────────────────────────────────────────────
 

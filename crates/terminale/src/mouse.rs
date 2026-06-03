@@ -69,6 +69,12 @@ pub(crate) fn maybe_report_mouse(
     button: MouseButton,
     pressed: bool,
 ) -> bool {
+    // xterm convention: holding Shift overrides app mouse reporting and
+    // forces local handling. Without this escape hatch, selecting text is
+    // impossible inside any app that enables mouse mode (vim, htop, …).
+    if state.modifiers.shift_key() {
+        return false;
+    }
     let active = state.active_tab;
     let Some(tab) = state.tabs.get(active) else {
         return false;
@@ -77,11 +83,21 @@ pub(crate) fn maybe_report_mouse(
     if !mode.enabled() {
         return false;
     }
-    // Tab-bar area is *not* inside the terminal grid — don't smuggle
-    // clicks on our own UI through to the app.
-    let Some((col, row)) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1) else {
+    // Tab-bar / header / divider areas are *not* inside the terminal grid —
+    // don't smuggle clicks on our own UI through to the app. The hit test is
+    // pane-aware: the cell is pane-local, and only presses on the focused
+    // pane forward (click-to-focus has already run for presses, so a click
+    // on another pane re-targets focus before we get here).
+    let Some((pane_id, col, row)) = crate::panes::pane_cell_at_pixel(state, pos_px) else {
         return false;
     };
+    if state
+        .tabs
+        .get(active)
+        .is_none_or(|t| t.focused != pane_id)
+    {
+        return false;
+    }
     let base = match button {
         MouseButton::Left => 0u32,
         MouseButton::Middle => 1,
@@ -108,6 +124,11 @@ pub(crate) fn maybe_report_mouse(
 /// Returns `true` when the app owns this motion (caller skips local
 /// selection / hover).
 pub(crate) fn report_mouse_motion(state: &mut RunningState, pos_px: (f32, f32)) -> bool {
+    // Shift = local override, mirroring `maybe_report_mouse` — a
+    // Shift+drag selection must not leak motion events to the app.
+    if state.modifiers.shift_key() {
+        return false;
+    }
     let active = state.active_tab;
     let mode = match state.tabs.get(active) {
         Some(tab) => tab.emulator.lock().mouse_mode(),
@@ -116,8 +137,20 @@ pub(crate) fn report_mouse_motion(state: &mut RunningState, pos_px: (f32, f32)) 
     if !mode.drag && !mode.motion {
         return false;
     }
-    let Some((col, row)) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1) else {
-        // Off the grid (tab bar / padding) — reset so re-entry reports.
+    // Pane-aware cell mapping. A drag (button held) clamps into the focused
+    // pane's grid — same semantics as dragging outside a single-pane window.
+    // Buttonless any-motion (1003) only reports while the pointer is
+    // actually over the focused pane's grid.
+    let cell = if state.held_button.is_some() {
+        crate::panes::focused_pane_cell_clamped(state, pos_px)
+    } else {
+        crate::panes::pane_cell_at_pixel(state, pos_px).and_then(|(id, c, r)| {
+            let focused = state.tabs.get(active)?.focused;
+            (id == focused).then_some((c, r))
+        })
+    };
+    let Some((col, row)) = cell else {
+        // Off the grid (tab bar / header / padding) — reset so re-entry reports.
         state.last_motion_cell = None;
         return false;
     };
@@ -543,11 +576,18 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
             state.last_click = Some((now, pos_px, count));
 
             // Double-click → word, triple-click → line. Any further
-            // click cycles back to "start a fresh selection".
+            // click cycles back to "start a fresh selection". Pane-aware:
+            // the cell is local to the pane under the cursor (the press has
+            // already focused it), so word/line lookup hits the right grid.
             if count >= 2 {
-                if let Some((col, row)) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1) {
-                    let scroll = state.renderer.scroll_lines();
+                if let Some((col, row)) = crate::panes::pane_cell_at_pixel(state, pos_px)
+                    .and_then(|(id, c, r)| {
+                        let focused = state.tabs.get(state.active_tab)?.focused;
+                        (id == focused).then_some((c, r))
+                    })
+                {
                     let tab = &state.tabs[state.active_tab];
+                    let scroll = tab.scroll_lines;
                     let emu = tab.emulator.lock();
                     let (a, c) = if count == 2 {
                         emu.word_at(col, row, scroll, &state.word_separators)
@@ -583,7 +623,14 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                 state.pane_select = None;
             }
             state.renderer.set_selection(None);
-            if let Some(anchor) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1) {
+            // Pane-aware anchor: cell local to the (now-focused) pane under
+            // the press, so the drag-selection grid matches what is drawn.
+            if let Some(anchor) = crate::panes::pane_cell_at_pixel(state, pos_px)
+                .and_then(|(id, c, r)| {
+                    let focused = state.tabs.get(state.active_tab)?.focused;
+                    (id == focused).then_some((c, r))
+                })
+            {
                 state.selection_anchor = Some(anchor);
                 state.selection_press_px = Some(pos_px);
                 state.selecting = false; // not yet — wait for drag

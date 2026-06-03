@@ -1969,7 +1969,9 @@ pub(crate) fn handle_scroll(state: &mut RunningState, delta: winit::event::Mouse
         (emu.is_alt_screen(), emu.mouse_mode())
     };
     // App-requested mouse wheel reporting → SGR encoded as button 64/65.
-    if mouse_mode.enabled() {
+    // Shift held = xterm-style local override: the wheel drives our own
+    // scrollback even while the app has mouse mode on.
+    if mouse_mode.enabled() && !state.modifiers.shift_key() {
         let ppr = state.touchpad_pixels_per_row;
         let dy = delta_to_raw(delta, ppr);
         if dy.abs() < 0.001 {
@@ -1980,7 +1982,9 @@ pub(crate) fn handle_scroll(state: &mut RunningState, delta: winit::event::Mouse
             state.pointer_logical.0 * scale,
             state.pointer_logical.1 * scale,
         );
-        if let Some((col, row)) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1) {
+        // Pane-aware: the wheel always drives the focused pane's app, so
+        // clamp the pointer into that pane's grid for the reported cell.
+        if let Some((col, row)) = crate::panes::focused_pane_cell_clamped(state, pos_px) {
             let base: u32 = if dy > 0.0 { 64 } else { 65 };
             let modifiers = crate::mouse_modifier_bits(state);
             // Wheel "press" events with no matching release — standard.

@@ -696,23 +696,65 @@ pub(crate) fn refresh_context_rules(state: &mut RunningState) -> bool {
 
 // ── refresh_autodetect_links ──────────────────────────────────────────────────
 
-/// Walk every visible row of the active tab, run the URL scanner, and
-/// push the resulting cell ranges into the renderer's "extra underline"
-/// list. Also stashes them in the tab so click handling can resolve a
-/// click position back to a URL.
+/// Walk every visible row of **each pane** in the active tab, run the URL
+/// scanner, and stash the resulting cell ranges per pane so hover / click
+/// handling can resolve a pointer position back to a URL in any pane of a
+/// split — not just the focused one. The focused pane's URL ranges also
+/// feed the renderer's "extra underline" list (`Always` mode), since that
+/// list is drawn in the focused pane's frame.
 pub(crate) fn refresh_autodetect_links(state: &mut RunningState) {
     let active = state.active_tab;
     let Some(tab) = state.tabs.get_mut(active) else {
         return;
     };
-    let (cols, rows) = (tab.cols, tab.rows);
-    if cols == 0 || rows == 0 {
-        tab.autodetect_links.clear();
-        state.renderer.set_extra_underlines(Vec::new());
-        return;
+    for pane in tab.panes.values_mut() {
+        let (cols, rows) = (pane.cols, pane.rows);
+        if cols == 0 || rows == 0 {
+            pane.autodetect_links.clear();
+            continue;
+        }
+        let emu = pane.emulator.lock();
+        let detected = scan_pane_links(&emu, cols, rows);
+        drop(emu);
+        pane.autodetect_links = detected;
     }
+    // Underline behaviour is controlled by `terminal.link_underline`:
+    //   * `Always` → every detected URL gets a persistent accent underline
+    //     (paths are excluded — they'd clutter `ls` output / prompts; they
+    //     rely on the hover tooltip + pointer cursor instead).
+    //   * `Hover`  → no persistent underlines here; the hover handler
+    //     underlines just the link under the pointer.
+    //   * `Never`  → no underlines at all.
+    // `Hover` is the default and avoids leaving a stray accent line under
+    // banner URLs printed before any output scrolls.
+    match state.link_underline {
+        terminale_config::LinkUnderline::Always => {
+            let ranges: Vec<(u16, u16, u16)> = state
+                .tabs
+                .get(active)
+                .map(|t| {
+                    // Deref: the focused pane's links (the underline layer is
+                    // drawn in the focused pane's frame).
+                    t.autodetect_links
+                        .iter()
+                        .filter(|d| !d.is_path)
+                        .map(|d| (d.col_start, d.col_end, d.row))
+                        .collect()
+                })
+                .unwrap_or_default();
+            state.renderer.set_extra_underlines(ranges);
+        }
+        terminale_config::LinkUnderline::Hover | terminale_config::LinkUnderline::Never => {
+            state.renderer.set_extra_underlines(Vec::new());
+        }
+    }
+}
+
+/// Scan one pane's visible viewport for URLs (built-in scanner + user
+/// hyperlink rules) and existing-on-disk file paths. Returns the detected
+/// links in pane-local viewport coordinates.
+fn scan_pane_links(emu: &terminale_term::Emulator, cols: u16, rows: u16) -> Vec<DetectedLink> {
     let mut detected: Vec<DetectedLink> = Vec::new();
-    let emu = tab.emulator.lock();
     // The shell's announced working directory (OSC 7 / OSC 9;9), used to
     // resolve relative file paths in command output. `None` when the shell
     // hasn't announced one — absolute paths still resolve without it.
@@ -786,36 +828,7 @@ pub(crate) fn refresh_autodetect_links(state: &mut RunningState) {
             });
         }
     }
-    drop(emu);
-    tab.autodetect_links = detected;
-    // Underline behaviour is controlled by `terminal.link_underline`:
-    //   * `Always` → every detected URL gets a persistent accent underline
-    //     (paths are excluded — they'd clutter `ls` output / prompts; they
-    //     rely on the hover tooltip + pointer cursor instead).
-    //   * `Hover`  → no persistent underlines here; the hover handler
-    //     underlines just the link under the pointer.
-    //   * `Never`  → no underlines at all.
-    // `Hover` is the default and avoids leaving a stray accent line under
-    // banner URLs printed before any output scrolls.
-    match state.link_underline {
-        terminale_config::LinkUnderline::Always => {
-            let ranges: Vec<(u16, u16, u16)> = state
-                .tabs
-                .get(active)
-                .map(|t| {
-                    t.autodetect_links
-                        .iter()
-                        .filter(|d| !d.is_path)
-                        .map(|d| (d.col_start, d.col_end, d.row))
-                        .collect()
-                })
-                .unwrap_or_default();
-            state.renderer.set_extra_underlines(ranges);
-        }
-        terminale_config::LinkUnderline::Hover | terminale_config::LinkUnderline::Never => {
-            state.renderer.set_extra_underlines(Vec::new());
-        }
-    }
+    detected
 }
 
 // ── update_status_bar ────────────────────────────────────────────────────────
@@ -912,11 +925,16 @@ pub(crate) fn update_status_bar(state: &mut RunningState, config: &terminale_con
 /// Resolve a clickable URL underneath physical pixel `pos_px`. Tries
 /// OSC 8 hyperlinks first (authoritative) then falls back to the
 /// autodetected URL ranges scanned from the visible buffer.
+///
+/// Pane-aware: the position maps to the pane actually under the pointer
+/// (not just the focused one), with that pane's own scroll offset — so
+/// links work in every pane of a split.
 pub(crate) fn hyperlink_under(state: &RunningState, pos_px: (f32, f32)) -> Option<String> {
-    let (col, row) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1)?;
-    let scroll = state.renderer.scroll_lines();
+    let (pane_id, col, row) = crate::panes::pane_cell_at_pixel(state, pos_px)?;
     let tab = state.tabs.get(state.active_tab)?;
-    if let Some(uri) = tab.emulator.lock().cell_hyperlink(col, row, scroll) {
+    let pane = tab.panes.get(&pane_id)?;
+    let scroll = pane.scroll_lines;
+    if let Some(uri) = pane.emulator.lock().cell_hyperlink(col, row, scroll) {
         return Some(uri);
     }
     // Autodetect ranges are stored in viewport-coords with `scroll=0`. If
@@ -925,7 +943,7 @@ pub(crate) fn hyperlink_under(state: &RunningState, pos_px: (f32, f32)) -> Optio
     if scroll != 0 {
         return None;
     }
-    tab.autodetect_links
+    pane.autodetect_links
         .iter()
         .find(|d| d.row == row && col >= d.col_start && col <= d.col_end)
         .map(|d| d.url.clone())
@@ -934,10 +952,12 @@ pub(crate) fn hyperlink_under(state: &RunningState, pos_px: (f32, f32)) -> Optio
 /// OSC 8 hyperlink under the pointer (authoritative, app-declared). `None`
 /// when there isn't one — callers then fall back to autodetected links.
 pub(crate) fn osc8_under(state: &RunningState, pos_px: (f32, f32)) -> Option<String> {
-    let (col, row) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1)?;
-    let scroll = state.renderer.scroll_lines();
+    let (pane_id, col, row) = crate::panes::pane_cell_at_pixel(state, pos_px)?;
     let tab = state.tabs.get(state.active_tab)?;
-    tab.emulator.lock().cell_hyperlink(col, row, scroll)
+    let pane = tab.panes.get(&pane_id)?;
+    pane.emulator
+        .lock()
+        .cell_hyperlink(col, row, pane.scroll_lines)
 }
 
 /// The autodetected link (URL or file path) under the pointer, cloned so
@@ -946,12 +966,13 @@ pub(crate) fn autodetect_link_under(
     state: &RunningState,
     pos_px: (f32, f32),
 ) -> Option<DetectedLink> {
-    let (col, row) = state.renderer.cell_at_pixel(pos_px.0, pos_px.1)?;
-    if state.renderer.scroll_lines() != 0 {
+    let (pane_id, col, row) = crate::panes::pane_cell_at_pixel(state, pos_px)?;
+    let tab = state.tabs.get(state.active_tab)?;
+    let pane = tab.panes.get(&pane_id)?;
+    if pane.scroll_lines != 0 {
         return None;
     }
-    let tab = state.tabs.get(state.active_tab)?;
-    tab.autodetect_links
+    pane.autodetect_links
         .iter()
         .find(|d| d.row == row && col >= d.col_start && col <= d.col_end)
         .cloned()

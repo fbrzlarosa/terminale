@@ -417,6 +417,18 @@ mod tests {
         assert_eq!(m[1].url, "http://b.io/path?q=1");
     }
 
+    /// Dev-server URLs have no dot in the host — they must still match.
+    #[test]
+    fn finds_localhost_with_and_without_port() {
+        let m = scan("dev server at http://localhost ready");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].url, "http://localhost");
+
+        let m = scan("listening on http://localhost:5173/app?hmr=1");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].url, "http://localhost:5173/app?hmr=1");
+    }
+
     #[test]
     fn matches_mailto() {
         let m = scan("write to mailto:foo@bar.io");

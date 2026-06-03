@@ -573,7 +573,12 @@ fn main() -> Result<()> {
                     tracing_appender::rolling::daily(&logs, "terminale.log"),
                 );
                 let _ = LOG_FILE_GUARD.set(guard);
-                let file_filter = EnvFilter::try_new(&cfg.logging.file_level)
+                // Cap chatty third-party crates: wgpu logs `Device::maintain`
+                // at INFO on every poll, which once filled a log file with
+                // 388 MB of noise in a single day and buried the lines that
+                // actually mattered when diagnosing a crash.
+                let directives = quiet_noisy_crates(&cfg.logging.file_level);
+                let file_filter = EnvFilter::try_new(&directives)
                     .unwrap_or_else(|_| EnvFilter::new("info"));
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
@@ -777,6 +782,25 @@ fn main() -> Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Append `=warn` caps for known-chatty third-party crates to a user
+/// `EnvFilter` directive string, unless the user already mentions that crate
+/// explicitly (their directive must win). `wgpu_core` alone logs
+/// `Device::maintain` at INFO on every device poll — millions of lines per
+/// session — which both bloats the rolling file and buries real diagnostics.
+fn quiet_noisy_crates(base: &str) -> String {
+    const NOISY: &[&str] = &["wgpu_core", "wgpu_hal", "naga"];
+    let mut out = base.trim().to_string();
+    if out.is_empty() {
+        out.push_str("info");
+    }
+    for krate in NOISY {
+        if !out.contains(krate) {
+            out.push_str(&format!(",{krate}=warn"));
+        }
+    }
+    out
 }
 
 /// Delete `terminale.log*` files in `dir` older than `retention_days`.
@@ -6821,6 +6845,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         None => {
                             if state.modifiers.control_key() && url_under.is_some() {
                                 winit::window::CursorIcon::Pointer
+                            } else if crate::panes::pane_cell_at_pixel(state, pos_px).is_some() {
+                                // Over a pane's text grid → I-beam, the
+                                // standard affordance for selectable text.
+                                winit::window::CursorIcon::Text
                             } else {
                                 winit::window::CursorIcon::Default
                             }
@@ -6881,8 +6909,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // URL underlined via `refresh_autodetect_links`, and `Never`
                 // never underlines — so this hover sync only runs in `Hover`.
                 if state.link_underline == terminale_config::LinkUnderline::Hover {
+                    // The extra-underline list is drawn in the FOCUSED pane's
+                    // frame, so only underline links hovered in that pane —
+                    // links in other panes still get tooltip + Ctrl+click.
                     let hovered_url_range = autodetect_link_under(state, pos_px)
                         .filter(|d| !d.is_path)
+                        .filter(|_| crate::panes::pointer_over_focused_pane(state, pos_px))
                         .map(|d| (d.col_start, d.col_end, d.row));
                     state.renderer.set_extra_underlines(
                         hovered_url_range.map(|r| vec![r]).unwrap_or_default(),
@@ -6979,9 +7011,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 if state.selecting && left_held {
                     if let (Some(anchor), Some(end)) = (
                         state.selection_anchor,
-                        state
-                            .renderer
-                            .cell_at_pixel(position.x as f32, position.y as f32),
+                        // Clamp into the focused pane's grid so dragging past
+                        // a divider / pane edge keeps selecting edge cells.
+                        crate::panes::focused_pane_cell_clamped(
+                            state,
+                            (position.x as f32, position.y as f32),
+                        ),
                     ) {
                         // Alt held → rectangular block selection (xterm
                         // Alt+drag). Else flowing row-major.
@@ -14834,6 +14869,36 @@ mod tests {
         assert!(foreign.exists(), "non-log files must never be touched");
         // A missing directory is a silent no-op.
         cleanup_old_logs(&dir.path().join("does-not-exist"), 7);
+    }
+
+    // ── quiet_noisy_crates ────────────────────────────────────────────────────
+
+    #[test]
+    fn quiet_noisy_crates_appends_warn_caps() {
+        let d = quiet_noisy_crates("info");
+        assert!(d.starts_with("info,"));
+        for krate in ["wgpu_core=warn", "wgpu_hal=warn", "naga=warn"] {
+            assert!(d.contains(krate), "missing cap: {krate} in {d}");
+        }
+        // The result must still parse as a valid EnvFilter.
+        assert!(EnvFilter::try_new(&d).is_ok(), "invalid directives: {d}");
+    }
+
+    #[test]
+    fn quiet_noisy_crates_respects_explicit_user_directive() {
+        let d = quiet_noisy_crates("info,wgpu_core=trace");
+        // The user's explicit choice survives and no conflicting cap is added.
+        assert!(d.contains("wgpu_core=trace"));
+        assert!(!d.contains("wgpu_core=warn"));
+        // Crates the user did NOT mention still get capped.
+        assert!(d.contains("wgpu_hal=warn"));
+    }
+
+    #[test]
+    fn quiet_noisy_crates_defaults_empty_base_to_info() {
+        let d = quiet_noisy_crates("  ");
+        assert!(d.starts_with("info,"), "blank base must default to info: {d}");
+        assert!(EnvFilter::try_new(&d).is_ok());
     }
 
     // ── configs_identical: new-field coverage ─────────────────────────────────
