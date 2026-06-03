@@ -104,7 +104,7 @@ glyphon = "0.6"
 # Pinned to egui's version so the bundled symbol fonts (NotoEmoji,
 # emoji-icon-font) we feed into glyphon match exactly what the egui
 # sub-windows already render — icons look identical in chrome and panels.
-epaint_default_fonts = "=0.29.1"
+epaint_default_fonts = "=0.34.3"
 bytemuck = { version = "1", features = ["derive"] }
 raw-window-handle = "0.6"
 pollster = "0.4"
