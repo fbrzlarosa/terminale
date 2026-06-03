@@ -145,7 +145,7 @@ rfd = { version = "0.16", default-features = false, features = [
 ] }
 
 # OS integration
-global-hotkey = "0.5"
+global-hotkey = "0.8"
 arboard = "3"
 open = "5"
 # System resource sampling (CPU + memory) for the bottom resource-indicator strip.
@@ -180,7 +180,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # touching the running process (the update applies on the next launch).
 self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 # SHA-256 verification of the downloaded asset against its published .sha256.
-sha2 = "0.10"
+sha2 = "0.11"
 # Atomically replace the currently-running executable on disk (handles the
 # Windows running-exe rename dance and the Unix unlink-and-replace). The live
 # process keeps running; the new binary applies on the next launch.

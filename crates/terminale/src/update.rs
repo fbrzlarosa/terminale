@@ -19,6 +19,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
+use std::io::Read as _;
 use std::path::Path;
 
 const OWNER: &str = "fbrzlarosa";
@@ -141,8 +143,23 @@ fn parse_sha256(s: &str) -> String {
 fn sha256_of(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher)?;
-    Ok(format!("{:x}", hasher.finalize()))
+    // sha2 0.11 (digest 0.11) no longer implements `io::Write` on the hasher
+    // and `finalize()` returns a hybrid-array `Array` with no `LowerHex` impl,
+    // so we feed it in chunks and hex-encode the digest bytes by hand.
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        write!(hex, "{b:02x}").expect("writing to a String never fails");
+    }
+    Ok(hex)
 }
 
 #[cfg(test)]
@@ -159,5 +176,18 @@ mod tests {
     #[test]
     fn current_version_is_set() {
         assert!(!current_version().is_empty());
+    }
+
+    #[test]
+    fn sha256_of_matches_known_vector() {
+        use std::io::Write as _;
+        // The canonical SHA-256 test vector: sha256("abc").
+        let mut f = tempfile::NamedTempFile::new().expect("temp file");
+        f.write_all(b"abc").expect("write");
+        f.flush().expect("flush");
+        assert_eq!(
+            sha256_of(f.path()).expect("hash"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        );
     }
 }
