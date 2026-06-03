@@ -660,6 +660,10 @@ fn main() -> Result<()> {
         }
     };
 
+    // Snapshot the binding we just registered so `about_to_wait` can detect a
+    // runtime change (Settings save / config reload) and re-register live.
+    let quake_binding_registered = config.keybinds.quake.clone();
+
     let plugins = if config.plugins.enabled {
         install_plugins(&config)
     } else {
@@ -711,6 +715,7 @@ fn main() -> Result<()> {
         proxy: event_loop.create_proxy(),
         hotkeys,
         quake_hotkey_id,
+        quake_binding_registered,
         plugins,
         config_save_due: None,
         sgr_demo_reseed_at: if std::env::var_os("TERMINALE_DEMO_PALETTE")
@@ -1046,6 +1051,10 @@ struct TerminaleApp {
     /// `id()` of the Quake-toggle hotkey, set when registration
     /// succeeded so `about_to_wait` knows which event to react to.
     quake_hotkey_id: Option<u32>,
+    /// The Quake hotkey binding currently registered with the OS. Compared to
+    /// `config.keybinds.quake` every tick so a Settings change or config-file
+    /// reload re-registers the hotkey live instead of needing a restart.
+    quake_binding_registered: String,
     /// Lua plugin host. `None` when disabled in config or when no Lua
     /// runtime could be initialised (rare).
     plugins: Option<terminale_plugin::PluginHost>,
@@ -2369,6 +2378,32 @@ impl TermWindow {
 }
 
 impl TerminaleApp {
+    /// Re-register the Quake global hotkey with a new binding at runtime.
+    ///
+    /// Dropping the old `GlobalHotKeyManager` unregisters its hotkey; a fresh
+    /// manager claims the new binding. The forwarder thread reads the
+    /// process-global hotkey channel, so it keeps delivering events for the new
+    /// manager without a restart. (If Quake was disabled at startup there is no
+    /// forwarder thread, so enabling it from scratch live still needs a
+    /// restart — changing an already-active binding works live.)
+    fn reregister_quake_hotkey(&mut self, binding: &str) {
+        self.quake_binding_registered = binding.to_string();
+        // Drop the old manager first so its hotkey is released before we try
+        // to claim the (possibly identical) new one.
+        self.hotkeys = None;
+        self.quake_hotkey_id = None;
+        match install_quake_hotkey(binding) {
+            Ok((mgr, id)) => {
+                self.hotkeys = mgr;
+                self.quake_hotkey_id = id;
+                tracing::info!(binding, id = ?id, "Quake hotkey re-registered live");
+            }
+            Err(e) => {
+                tracing::warn!(?e, binding, "live re-register of Quake hotkey failed");
+            }
+        }
+    }
+
     /// Index of the terminal window whose OS `WindowId` is `id`, if any.
     /// Used to route window events; an index (rather than a borrow) lets the
     /// caller re-borrow `self.windows[idx]` alongside disjoint `self` fields
@@ -9232,6 +9267,14 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 Some(d) => d.min(remaining),
                 None => remaining,
             });
+        }
+        // Re-register the Quake global hotkey when its binding changed at
+        // runtime (Settings save or config-file reload). It was hooked only at
+        // startup, so a changed binding did nothing until restart — this makes
+        // it apply live.
+        if self.config.keybinds.quake != self.quake_binding_registered {
+            let binding = self.config.keybinds.quake.clone();
+            self.reregister_quake_hotkey(&binding);
         }
         if let Some(d) = next_wake {
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + d));
