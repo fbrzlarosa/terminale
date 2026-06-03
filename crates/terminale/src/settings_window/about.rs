@@ -79,7 +79,10 @@ impl SettingsWindow {
             } else {
                 "Check for updates now"
             };
-            if ui.add_enabled(!checking, egui::Button::new(label)).clicked() {
+            if ui
+                .add_enabled(!checking, egui::Button::new(label))
+                .clicked()
+            {
                 // Runs in the background so the UI never blocks; the result is
                 // sent back over a channel and surfaced as a visible status
                 // line by `build_ui` (in addition to being logged).

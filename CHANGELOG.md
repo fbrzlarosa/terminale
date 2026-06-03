@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.13]
+
 ### Added
 - Bottom-right SSH quick-connect button: appears whenever at least one SSH host is configured;
   clicking it opens a searchable dropdown scoped to your hosts and connects the chosen one in a new tab
@@ -14,12 +16,28 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   + a default-checked "don't ask again"); saved hosts (metadata only — the secret stays in the OS
   keychain) show up in the quick-connect dropdown and Settings → SSH hosts. New
   `terminal.offer_save_ssh_hosts` config toggle (default `true`) controls the prompt
-- Initial workspace scaffold (Cargo workspace, 6 starter crates, CI/release/audit GitHub Actions workflows)
-- Community standards (README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, dual MIT/Apache license)
-- `cargo-deny` policy banning webview wrappers (`tao`, `wry`) — project is native-only by design
-- Production release pipeline via `cargo-dist`: `.msi` (Windows), `.dmg` (macOS), tarballs (Linux),
-  Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
-- Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
+
+### Fixed
+- No more double cursor under full-screen TUIs: an app that hides the real
+  cursor with `ESC[?25l` (DECTCEM) and paints its own — vim, fzf, AI CLIs —
+  used to get terminale's cursor drawn on top of it. The hide request is now
+  honoured
+- Settings → About → "Check for updates now" reports its outcome in the
+  status bar ("up to date", "downloaded — restart to apply", or the error)
+  and disables itself while the check runs; before, it only wrote to the log
+  and read as a dead button
+
+### Performance
+- Scrolling the Settings window no longer deep-clones the entire configuration
+  on every repaint frame; the live-apply diff now runs against a borrow and
+  clones only when a control actually changed something
+
+### Changed
+- Dependency refresh (all suites green): portable-pty 0.9, rfd 0.16,
+  global-hotkey 0.8, sha2 0.11, self_update 0.44, resvg/usvg 0.47,
+  tiny-skia 0.12, schemars 1.2, CodeQL action v4
+- `terminale --schema` now emits JSON Schema 2020-12 (was draft-07), following
+  the schemars 1.x upgrade
 
 ## [0.1.12]
 
@@ -266,6 +284,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   `integration.desktop_entry` setting (Settings → Desktop integration) plus
   `--install-desktop-entry` / `--uninstall-desktop-entry` CLI flags
 - `xtask gen-icons` regenerates the `.ico`/`.icns` from the source `icon.svg`
+- Initial workspace scaffold (Cargo workspace, 6 starter crates, CI/release/audit GitHub Actions workflows)
+- Community standards (README, CONTRIBUTING, CODE_OF_CONDUCT, SECURITY, dual MIT/Apache license)
+- `cargo-deny` policy banning webview wrappers (`tao`, `wry`) — project is native-only by design
+- Production release pipeline via `cargo-dist`: `.msi` (Windows), `.dmg` (macOS), tarballs (Linux),
+  Homebrew formula, `install.sh` / `install.ps1` one-liner installers (unsigned binaries)
+- Plan for tmux compatibility (Tier 1 in v0.5.0, full tmux Control Mode in v1.5.0)
 
 ### Changed
 - Slimmer release pipeline: dropped artifact code-signing/notarization and build
@@ -284,7 +308,13 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/fbrzlarosa/terminale/compare/v0.1.12...v0.1.13
+[0.1.12]: https://github.com/fbrzlarosa/terminale/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/fbrzlarosa/terminale/compare/v0.1.10...v0.1.11
+[0.1.10]: https://github.com/fbrzlarosa/terminale/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/fbrzlarosa/terminale/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/fbrzlarosa/terminale/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/fbrzlarosa/terminale/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/fbrzlarosa/terminale/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/fbrzlarosa/terminale/compare/v0.1.4...v0.1.5

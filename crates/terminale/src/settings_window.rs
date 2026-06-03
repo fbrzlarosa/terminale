@@ -822,9 +822,7 @@ impl SettingsWindow {
                             StatusKind::Success,
                             format!("Update {v} downloaded — restart terminale to apply."),
                         ),
-                        Ok(None) => {
-                            (StatusKind::Success, "terminale is up to date.".to_owned())
-                        }
+                        Ok(None) => (StatusKind::Success, "terminale is up to date.".to_owned()),
                         Err(e) => (StatusKind::Error, format!("Update failed: {e}")),
                     });
                     self.update_rx = None;

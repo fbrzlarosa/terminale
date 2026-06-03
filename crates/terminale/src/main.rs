@@ -8257,8 +8257,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // ~150-field `configs_identical` diff run once per settings repaint
         // instead of on every `about_to_wait` tick while the panel is open.
         if let Some(s) = self.settings.as_mut() {
-            if s.take_config_maybe_changed()
-                && !configs_identical(&self.config, s.current_config())
+            if s.take_config_maybe_changed() && !configs_identical(&self.config, s.current_config())
             {
                 // Only now, when something actually differs, do we pay for the
                 // full `Config` clone (every Vec — profiles, ssh hosts,
