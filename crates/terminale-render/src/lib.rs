@@ -1210,9 +1210,10 @@ pub struct CommandPalette {
 /// Where the tab bar is rendered relative to the terminal body. Mirrors the
 /// `TabBarPosition` enum in `terminale-config` but lives here so this crate
 /// stays config-agnostic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TabBarPlacement {
     /// Tab bar is drawn above the terminal grid (default).
+    #[default]
     Top,
     /// Tab bar is drawn below the terminal grid.
     Bottom,
@@ -1220,12 +1221,6 @@ pub enum TabBarPlacement {
     Left,
     /// Vertical tab strip on the right side of the window.
     Right,
-}
-
-impl Default for TabBarPlacement {
-    fn default() -> Self {
-        Self::Top
-    }
 }
 
 impl TabBarPlacement {
@@ -6000,7 +5995,7 @@ impl Renderer {
             };
             buf.set_rich_text(
                 &mut self.font_system,
-                spans.into_iter(),
+                spans,
                 Attrs::new().family(default_fam),
                 shaping,
             );
@@ -7672,7 +7667,7 @@ impl Renderer {
                 };
                 buf.set_rich_text(
                     &mut self.font_system,
-                    spans.into_iter(),
+                    spans,
                     Attrs::new().family(default_fam),
                     shaping,
                 );

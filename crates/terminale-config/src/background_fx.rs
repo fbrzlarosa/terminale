@@ -10,11 +10,13 @@ use serde::{Deserialize, Serialize};
 /// text. Off by default; purely cosmetic but very visible — the "wow" layer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BackgroundFxStyle {
     /// No animated background (style-level no-op, distinct from the master
     /// `enabled` toggle so the user keeps their selection).
     None,
     /// Flowing aurora / plasma gradient — layered sine fields, slow drift.
+    #[default]
     AuroraPlasma,
     /// Parallax starfield with twinkle.
     Starfield,
@@ -22,12 +24,6 @@ pub enum BackgroundFxStyle {
     Matrix,
     /// Retro pixelated plasma with CRT scanlines.
     PixelCrt,
-}
-
-impl Default for BackgroundFxStyle {
-    fn default() -> Self {
-        Self::AuroraPlasma
-    }
 }
 
 impl BackgroundFxStyle {

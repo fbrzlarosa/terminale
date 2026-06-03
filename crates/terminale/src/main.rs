@@ -3679,10 +3679,8 @@ impl TerminaleApp {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } => {
-                if self.tab_drag.is_some() {
-                    self.resolve_tab_drag(event_loop);
-                }
+            } if self.tab_drag.is_some() => {
+                self.resolve_tab_drag(event_loop);
             }
             _ => {}
         }
@@ -9389,7 +9387,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         if let Some(t) = state.suggestions.last_output_at {
                             let elapsed = now.saturating_duration_since(t);
                             if elapsed < sg_idle {
-                                let remaining = sg_idle - elapsed;
+                                let remaining = sg_idle.checked_sub(elapsed).unwrap();
                                 next_wake = Some(match next_wake {
                                     Some(d) => d.min(remaining),
                                     None => remaining,
@@ -15343,7 +15341,7 @@ mod tests {
     #[test]
     fn key_table_timed_out_returns_true_at_exact_boundary() {
         let base = std::time::Instant::now();
-        let now = base + std::time::Duration::from_millis(1000);
+        let now = base + std::time::Duration::from_secs(1);
         assert!(
             key_table_timed_out(base, now, 1000),
             "exact timeout boundary must be considered timed-out"

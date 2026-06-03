@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 /// in-content shader effects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum QuakeAnimation {
     /// Show/hide instantly, no animation.
     None,
@@ -28,6 +29,7 @@ pub enum QuakeAnimation {
         alias = "glitch",
         alias = "scanline_wipe"
     )]
+    #[default]
     Slide,
     /// Bounce — like Slide but with a springy, sin-damped growth curve.
     Bounce,
@@ -38,12 +40,6 @@ pub enum QuakeAnimation {
     /// opacity animates (Windows layered-window alpha). On macOS/Linux this
     /// currently degrades to an instant show/hide.
     Fade,
-}
-
-impl Default for QuakeAnimation {
-    fn default() -> Self {
-        Self::Slide
-    }
 }
 
 impl QuakeAnimation {
@@ -79,9 +75,11 @@ impl QuakeAnimation {
 /// `size_percent` + `margin_px` + the chosen [`QuakeDisplay`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum QuakeEdge {
     /// No docking — Quake is a free-floating window with exact-geometry
     /// restore on show/hide (the previous default behaviour).
+    #[default]
     Off,
     /// Dock to the top edge — full width minus margin, height =
     /// `size_percent` of the monitor's height.
@@ -93,12 +91,6 @@ pub enum QuakeEdge {
     Left,
     /// Dock to the right edge.
     Right,
-}
-
-impl Default for QuakeEdge {
-    fn default() -> Self {
-        Self::Off
-    }
 }
 
 impl QuakeEdge {
@@ -130,21 +122,17 @@ impl QuakeEdge {
 /// monitor (the order winit returns from `available_monitors()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum QuakeDisplay {
     /// Use the monitor the Quake window is currently sitting on (or, if
     /// it's hidden, the one it was last visible on). Drag the window to a
     /// different monitor to re-anchor the toggle there.
+    #[default]
     Current,
     /// Always use the OS primary monitor.
     Primary,
     /// Pin to a specific 0-based monitor index.
     Index(u8),
-}
-
-impl Default for QuakeDisplay {
-    fn default() -> Self {
-        Self::Current
-    }
 }
 
 /// Quake-mode behaviour. Quake can either be:

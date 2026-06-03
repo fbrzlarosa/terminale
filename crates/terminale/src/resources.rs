@@ -10,7 +10,7 @@ use sysinfo::System;
 
 /// Refresh cadence. CPU% needs a non-trivial gap between refreshes to be
 /// meaningful; 1s keeps the sampling cost negligible.
-const SAMPLE_INTERVAL: Duration = Duration::from_millis(1000);
+const SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// A point-in-time snapshot of system resource usage.
 #[derive(Debug, Clone, Copy)]

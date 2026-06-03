@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 /// without opting in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum RestoreSession {
     /// Do not restore the previous session (default).
+    #[default]
     Off,
     /// Silently restore the last session on launch.
     LastSession,
@@ -33,12 +35,6 @@ impl RestoreSession {
             Self::Off => "Off",
             Self::LastSession => "Restore last session",
         }
-    }
-}
-
-impl Default for RestoreSession {
-    fn default() -> Self {
-        Self::Off
     }
 }
 

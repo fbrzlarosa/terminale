@@ -78,6 +78,7 @@ impl Default for OllamaAiConfig {
 /// When the proactive command-suggestion bar proposes a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SuggestionTrigger {
     /// Never propose anything (the bar stays hidden even when enabled).
     Off,
@@ -87,13 +88,8 @@ pub enum SuggestionTrigger {
     /// Propose automatically once the terminal has been idle at a prompt
     /// for [`AiSuggestionsConfig::idle_secs`] seconds. One proposal per
     /// prompt — it does not re-fire until new output arrives.
+    #[default]
     Auto,
-}
-
-impl Default for SuggestionTrigger {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl SuggestionTrigger {

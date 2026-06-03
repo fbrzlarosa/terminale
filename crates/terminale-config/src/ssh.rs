@@ -468,9 +468,11 @@ impl SshConfig {
 /// How to authenticate to an [`SshHost`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SshAuthMethod {
     /// Use the running SSH agent (`ssh-agent` / Pageant / `gpg-agent`).
     /// Preferred — no key material touches the config file.
+    #[default]
     Agent,
     /// Use the private key at `key_path` (OpenSSH or PEM). Prefer ed25519
     /// keys: RSA keys pull in the `rsa` crate, which is subject to
@@ -478,12 +480,6 @@ pub enum SshAuthMethod {
     Key,
     /// Interactive password — prompted on connect (never stored in config).
     Password,
-}
-
-impl Default for SshAuthMethod {
-    fn default() -> Self {
-        Self::Agent
-    }
 }
 
 impl SshAuthMethod {
@@ -580,8 +576,7 @@ impl SshHost {
         static COUNTER: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
         format!("{nanos:x}-{seq:x}")
     }

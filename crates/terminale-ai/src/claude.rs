@@ -148,7 +148,7 @@ impl AiProvider for ClaudeProvider {
                         while let Some(end) = find_double_newline(&buffer) {
                             let frame: Vec<u8> = buffer.drain(..end).collect();
                             // Skip the trailing \n\n.
-                            buffer.drain(..frame.len().min(buffer.len()).min(0));
+                            buffer.drain(..0);
                             // Actually consume the separator now.
                             // (frame's `end` points to the start of the
                             // double-newline, but we already drained

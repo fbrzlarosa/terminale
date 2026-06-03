@@ -9,9 +9,11 @@ use std::path::PathBuf;
 /// How a background image is scaled to fill the window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BgImageFit {
     /// Uniformly scale the image up (never down) so it covers the full
     /// window — the same as CSS `object-fit: cover`. May crop edges.
+    #[default]
     Fill,
     /// Uniformly scale the image so it fits entirely inside the window —
     /// the same as CSS `object-fit: contain`. May show letterboxing.
@@ -22,12 +24,6 @@ pub enum BgImageFit {
     Center,
     /// Tile the image repeatedly across the window.
     Tile,
-}
-
-impl Default for BgImageFit {
-    fn default() -> Self {
-        Self::Fill
-    }
 }
 
 impl BgImageFit {
@@ -126,17 +122,13 @@ impl BackgroundImageConfig {
 /// obvious. `Bare` draws only the X strokes with no background chip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CloseButtonStyle {
     /// A small filled square chip drawn behind the X strokes (default).
+    #[default]
     Chip,
     /// Only the vector X strokes — no chip background.
     Bare,
-}
-
-impl Default for CloseButtonStyle {
-    fn default() -> Self {
-        Self::Chip
-    }
 }
 
 impl CloseButtonStyle {
@@ -159,8 +151,10 @@ impl CloseButtonStyle {
 /// Where the tab bar is rendered relative to the terminal body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TabBarPosition {
     /// Tab bar drawn above the terminal grid (default).
+    #[default]
     Top,
     /// Tab bar drawn below the terminal grid.
     Bottom,
@@ -168,12 +162,6 @@ pub enum TabBarPosition {
     Left,
     /// Vertical tab strip on the right side of the window.
     Right,
-}
-
-impl Default for TabBarPosition {
-    fn default() -> Self {
-        Self::Top
-    }
 }
 
 impl TabBarPosition {

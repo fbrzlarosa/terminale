@@ -7,21 +7,17 @@ use serde::{Deserialize, Serialize};
 /// Cursor shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CursorStyle {
     /// Solid filled rectangle covering the whole cell (classic DOS-style).
     Block,
     /// Hollow rectangle outline — an unfilled (non-solid) block cursor.
     OutlineBlock,
     /// Thin horizontal bar along the bottom of the cell.
+    #[default]
     Underline,
     /// Thin vertical bar on the left of the cell (I-beam).
     Beam,
-}
-
-impl Default for CursorStyle {
-    fn default() -> Self {
-        Self::Underline
-    }
 }
 
 impl CursorStyle {

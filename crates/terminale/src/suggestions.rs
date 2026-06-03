@@ -143,7 +143,7 @@ pub fn inflight_remote_shell(recent_commands: &[(String, Option<i32>)]) -> bool 
     if exit.is_some() {
         return false; // finished — we're back at the local prompt
     }
-    let first_word = cmd.trim().split_whitespace().next().unwrap_or("");
+    let first_word = cmd.split_whitespace().next().unwrap_or("");
     // Strip a path prefix (`/usr/bin/ssh`) and a Windows extension.
     let bare = first_word
         .rsplit(['/', '\\'])

@@ -7,17 +7,13 @@ use serde::{Deserialize, Serialize};
 /// Which edge the status bar is drawn on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum StatusBarPosition {
     /// Draw the status bar at the top of the terminal body (below the tab bar).
     Top,
     /// Draw the status bar at the bottom of the terminal body (default).
+    #[default]
     Bottom,
-}
-
-impl Default for StatusBarPosition {
-    fn default() -> Self {
-        Self::Bottom
-    }
 }
 
 impl StatusBarPosition {

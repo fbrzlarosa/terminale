@@ -6,8 +6,10 @@ use serde::{Deserialize, Serialize};
 /// Audible / visual feedback when an app emits `BEL` (`\x07`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BellMode {
     /// In-window flash overlay only (default).
+    #[default]
     Visual,
     /// System beep / taskbar attention only.
     Audio,
@@ -15,12 +17,6 @@ pub enum BellMode {
     Both,
     /// Bell is fully silenced.
     None,
-}
-
-impl Default for BellMode {
-    fn default() -> Self {
-        Self::Visual
-    }
 }
 
 impl BellMode {

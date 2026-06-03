@@ -73,9 +73,11 @@ pub fn default_hyperlink_rules() -> Vec<HyperlinkRule> {
 /// What terminale does when the program running in a pane exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ExitBehavior {
     /// Close the pane (and the tab if it was the only pane) as soon as the
     /// process exits. This is the default and matches most terminal emulators.
+    #[default]
     Close,
     /// Keep the pane open regardless of the exit status. A dim status line
     /// `[process exited — close this pane to dismiss]` is appended to the
@@ -85,14 +87,6 @@ pub enum ExitBehavior {
     /// status 0. For any non-zero exit (or when the exit status cannot be
     /// determined) the behaviour is the same as `Hold`.
     CloseOnCleanExit,
-}
-
-impl Default for ExitBehavior {
-    fn default() -> Self {
-        // Default to Close — matches every other terminal emulator and
-        // preserves the behaviour that users had before this feature was added.
-        Self::Close
-    }
 }
 
 impl ExitBehavior {
@@ -133,22 +127,18 @@ impl ExitBehavior {
 /// When detected URLs get an accent underline drawn beneath them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum LinkUnderline {
     /// Underline every detected URL permanently, the moment it appears.
     Always,
     /// Underline only the link currently under the Ctrl-hover pointer
     /// (default). Keeps links discoverable without leaving a persistent
     /// accent line under banner URLs on startup.
+    #[default]
     Hover,
     /// Never draw the autodetect underline; links stay discoverable via the
     /// hover tooltip + pointer cursor only.
     Never,
-}
-
-impl Default for LinkUnderline {
-    fn default() -> Self {
-        Self::Hover
-    }
 }
 
 impl LinkUnderline {
@@ -182,17 +172,13 @@ impl LinkUnderline {
 ///   shells or remote sessions that set DECCKM unintentionally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum KeyboardEncoding {
     /// Honour DECCKM: use SS3 in application cursor-key mode, CSI otherwise.
+    #[default]
     Auto,
     /// Always emit CSI for arrows and Home/End, ignoring DECCKM.
     AlwaysCsi,
-}
-
-impl Default for KeyboardEncoding {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl KeyboardEncoding {
@@ -244,19 +230,15 @@ impl Default for ImageProtocolsConfig {
 /// collect history entries from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum CommandHistoryScope {
     /// Gather commands from the focused pane only. Fastest; most targeted.
     CurrentPane,
     /// Gather commands from every pane in the active tab (default).
+    #[default]
     CurrentTab,
     /// Gather commands from every pane in every tab of the window.
     Window,
-}
-
-impl Default for CommandHistoryScope {
-    fn default() -> Self {
-        Self::CurrentTab
-    }
 }
 
 impl CommandHistoryScope {
@@ -280,17 +262,13 @@ impl CommandHistoryScope {
 /// Which panes receive mirrored input while broadcast mode is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum BroadcastScope {
     /// Mirror to every other pane in the same tab. Default.
+    #[default]
     AllPanesInTab,
     /// Mirror to every pane in every tab of the window.
     AllPanesInWindow,
-}
-
-impl Default for BroadcastScope {
-    fn default() -> Self {
-        Self::AllPanesInTab
-    }
 }
 
 impl BroadcastScope {
@@ -328,17 +306,13 @@ impl BroadcastScope {
 ///   when you run programs you trust entirely in every pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ClipboardReadPolicy {
     /// Never reply to OSC 52 clipboard queries. Default — safe.
+    #[default]
     Deny,
     /// Reply with the clipboard contents encoded as base64.
     Allow,
-}
-
-impl Default for ClipboardReadPolicy {
-    fn default() -> Self {
-        Self::Deny
-    }
 }
 
 impl ClipboardReadPolicy {
@@ -366,15 +340,11 @@ impl ClipboardReadPolicy {
 /// documented follow-up that can be added without a breaking config change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ScrollbackExportFormat {
     /// Plain text — ANSI escape sequences stripped. Default.
+    #[default]
     Plain,
-}
-
-impl Default for ScrollbackExportFormat {
-    fn default() -> Self {
-        Self::Plain
-    }
 }
 
 impl ScrollbackExportFormat {

@@ -9,8 +9,10 @@ use serde::{Deserialize, Serialize};
 /// users disable hardware GPU acceleration entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GpuBackend {
     /// Let wgpu choose the best backend for this platform (default).
+    #[default]
     Auto,
     /// Force the Vulkan backend (Linux / Windows / Android).
     Vulkan,
@@ -22,12 +24,6 @@ pub enum GpuBackend {
     Gl,
     /// Disable hardware acceleration: request a CPU fallback adapter.
     Software,
-}
-
-impl Default for GpuBackend {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl GpuBackend {
@@ -61,19 +57,15 @@ impl GpuBackend {
 /// Adapter power-preference hint passed to wgpu's adapter selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum GpuPowerPreference {
     /// No preference — wgpu decides (default).
+    #[default]
     Auto,
     /// Prefer the lowest-power adapter (typically an integrated GPU).
     Low,
     /// Prefer the highest-performance adapter (typically a discrete GPU).
     High,
-}
-
-impl Default for GpuPowerPreference {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl GpuPowerPreference {
