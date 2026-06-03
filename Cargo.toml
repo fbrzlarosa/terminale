@@ -90,7 +90,7 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 
 # Terminal layer
-portable-pty = "0.8"
+portable-pty = "0.9"
 alacritty_terminal = "0.25"
 unicode-width = "0.1"
 bytes = { version = "1", features = ["serde"] }
@@ -138,7 +138,7 @@ argon2 = "0.5"
 # Native file open/save dialogs for the Settings import/export. Sync API. On
 # Linux the XDG desktop portal backend avoids a GTK link; on Windows it's the
 # OS common-controls dialog (windows-sys, already in our tree).
-rfd = { version = "0.15", default-features = false, features = [
+rfd = { version = "0.16", default-features = false, features = [
     "xdg-portal",
     "tokio",
     "common-controls-v6",
