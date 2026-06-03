@@ -90,7 +90,7 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 
 # Terminal layer
-portable-pty = "0.8"
+portable-pty = "0.9"
 alacritty_terminal = "0.25"
 unicode-width = "0.1"
 bytes = { version = "1", features = ["serde"] }
