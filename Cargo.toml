@@ -169,16 +169,16 @@ serde_json = "1"
 # needs CMake/NASM toolchains that the Windows dev/CI boxes don't carry.
 russh = { version = "0.61.1", default-features = false, features = ["flate2", "ring", "rsa"] }
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
-resvg = { version = "0.43", default-features = false }
-usvg = { version = "0.43", default-features = false }
-tiny-skia = "0.11"
+resvg = { version = "0.47", default-features = false }
+usvg = { version = "0.47", default-features = false }
+tiny-skia = "0.12"
 # Image decoding for background-image feature (PNG, JPEG, WebP, GIF first frame).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 
 # Self-update from GitHub releases. rustls (no OpenSSL); handles .tar.gz (Unix)
 # and .zip (Windows) assets and atomically replaces the on-disk binary without
 # touching the running process (the update applies on the next launch).
-self_update = { version = "0.41", default-features = false, features = ["rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
+self_update = { version = "0.44", default-features = false, features = ["reqwest", "rustls", "archive-tar", "archive-zip", "compression-flate2", "compression-zip-deflate"] }
 # SHA-256 verification of the downloaded asset against its published .sha256.
 sha2 = "0.11"
 # Atomically replace the currently-running executable on disk (handles the
