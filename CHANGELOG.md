@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.19]
+
 ### Fixed
+- **Restored split panes no longer come up permanently blank.** Terminal
+  protocol replies (cursor-position reports for `CSI 6n`, device attributes,
+  colour queries) were only ever sent for the focused pane; every other
+  pane's replies were silently discarded. The Windows console host sends a
+  cursor-position query during startup and blocks on the answer — so when a
+  restored split moved focus to the second pane before the first one's query
+  was answered, the first shell stalled in its handshake forever and its pane
+  stayed empty. Non-focused panes (and shells in background tabs, which could
+  stall the same way) now get their protocol queries answered
 - **Starting a drag-selection just left of the text now works.** Pressing in
   the thin padding strip before a pane's first column — right next to the
   divider in a split, exactly where drags naturally start — silently failed
@@ -495,7 +506,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/fbrzlarosa/terminale/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/fbrzlarosa/terminale/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/fbrzlarosa/terminale/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...v0.1.16
