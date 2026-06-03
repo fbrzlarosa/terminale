@@ -58,12 +58,12 @@ jobs:
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb1-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libfontconfig1-dev libssl-dev libdbus-1-dev
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with:
           languages: rust
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --workspace --all-features
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
 
   unsafe-review:
     name: cargo-geiger (unsafe code report)
