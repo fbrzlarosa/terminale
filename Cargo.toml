@@ -119,7 +119,7 @@ egui-winit = { version = "0.29", default-features = false, features = ["links"] 
 toml = "0.8"
 figment = { version = "0.10", features = ["toml", "env"] }
 schemars = "1"
-directories = "5"
+directories = "6"
 # OS-keychain credential storage (Windows Credential Manager / macOS Keychain /
 # Linux Secret Service). Pinned to keyring 3.x — the stable, widely-vetted
 # Entry API (the 4.x line is a brand-new keyring-core rewrite). Per-platform
