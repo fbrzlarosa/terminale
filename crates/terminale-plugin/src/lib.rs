@@ -10,7 +10,19 @@
 //! * A `terminale` global table is injected with the full capability surface:
 //!   `log()`, `notify(title, body)`, `register_hook(event, fn)`,
 //!   `set_tab_title(text)`, `open_tab()`, `send_text(text)`,
-//!   `register_command(name, fn)`.
+//!   `register_command(name, fn)`, `register_keybinding(combo, fn)`,
+//!   `get_selection()`, `get_scrollback(n)`, `get_visible_text()`.
+//!
+//! ## Reading terminal state
+//!
+//! The host is one-way for writes (the capability queue below), but reads
+//! are synchronous: the app publishes a [`PaneSnapshot`] of the focused
+//! pane once per tick via [`PluginHost::set_pane_snapshot`] *before* any
+//! hook fires, and `get_selection` / `get_scrollback` / `get_visible_text`
+//! return copies from that snapshot. Content reads are gated behind the
+//! user's `plugins.allow_scrollback_read` setting (default off — terminal
+//! output can contain secrets) and capped at `plugins.scrollback_read_cap`
+//! lines.
 //!
 //! ## Hooks
 //!
@@ -39,6 +51,7 @@
 use mlua::{Function, Lua, MultiValue, RegistryKey, Result as LuaResult, Table, Value};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 
@@ -96,6 +109,42 @@ pub struct RegisteredCommand {
     pub key: RegistryKey,
 }
 
+/// One keyboard shortcut contributed by a plugin via
+/// `terminale.register_keybinding(combo, fn)`.
+#[derive(Debug)]
+pub struct RegisteredKeybind {
+    /// The key combo in the config grammar (e.g. `"Ctrl+Shift+X"`).
+    /// Parsed and matched by the app's shortcut resolver; the host
+    /// stores it verbatim.
+    pub combo: String,
+    /// The mlua registry key holding the Lua `function` to call.
+    pub key: RegistryKey,
+}
+
+/// Read-only snapshot of the focused pane, published by the app once per
+/// tick (BEFORE hooks fire) via [`PluginHost::set_pane_snapshot`]. The Lua
+/// read APIs (`get_selection`, `get_scrollback`, `get_visible_text`)
+/// return copies from here — plugins never hold references into live
+/// terminal state.
+#[derive(Debug, Clone, Default)]
+pub struct PaneSnapshot {
+    /// Current selection text. `None` = no active selection.
+    pub selection: Option<String>,
+    /// Scrollback + visible lines, oldest-first, already capped by the app
+    /// to `plugins.scrollback_read_cap`. Empty when content reads are
+    /// disabled.
+    pub scrollback: Vec<String>,
+    /// The visible screen joined with `\n`. Empty when content reads are
+    /// disabled.
+    pub visible: String,
+    /// Mirror of `plugins.allow_scrollback_read` — lets the Lua closures
+    /// distinguish "denied" from "genuinely empty" for logging.
+    pub allow_scrollback_read: bool,
+}
+
+/// Shared snapshot cell — written by the app, read by the Lua closures.
+type SnapshotCell = Arc<Mutex<PaneSnapshot>>;
+
 /// Shared registry of hook handlers. Wrapped in an [`Arc<Mutex>`] so the
 /// Lua-side `register_hook` can append handlers from arbitrary code.
 type HookKey = Arc<Mutex<Vec<(String, RegistryKey)>>>;
@@ -111,6 +160,15 @@ pub struct PluginHost {
     commands: CommandQueue,
     /// Commands registered by plugins for the command palette.
     pub registered_commands: Vec<RegisteredCommand>,
+    /// Keyboard shortcuts registered by plugins. The app syncs the combo
+    /// strings into each window (filtering out any that would shadow a
+    /// user binding) and calls [`Self::invoke_keybind`] on a match.
+    pub registered_keybinds: Vec<RegisteredKeybind>,
+    /// Focused-pane snapshot served to the Lua read APIs.
+    snapshot: SnapshotCell,
+    /// Mirror of `plugins.allow_keybindings` — when false,
+    /// `register_keybinding` is a logged no-op so plugins cannot grab keys.
+    allow_keybindings: Arc<AtomicBool>,
     loaded: Vec<PluginInfo>,
 }
 
@@ -125,15 +183,35 @@ impl PluginHost {
         let lua = Lua::new();
         let hooks: HookKey = Arc::new(Mutex::new(Vec::new()));
         let commands: CommandQueue = Arc::new(Mutex::new(Vec::new()));
+        let snapshot: SnapshotCell = Arc::new(Mutex::new(PaneSnapshot::default()));
+        let allow_keybindings = Arc::new(AtomicBool::new(true));
         sandbox(&lua)?;
-        install_api(&lua, &hooks, &commands)?;
+        install_api(&lua, &hooks, &commands, &snapshot, &allow_keybindings)?;
         Ok(Self {
             lua,
             hooks,
             commands,
             registered_commands: Vec::new(),
+            registered_keybinds: Vec::new(),
+            snapshot,
+            allow_keybindings,
             loaded: Vec::new(),
         })
+    }
+
+    /// Publish a fresh focused-pane snapshot for the Lua read APIs.
+    ///
+    /// Call once per tick BEFORE firing hooks, so a `tick` handler that
+    /// reads the selection sees current data.
+    pub fn set_pane_snapshot(&self, snap: PaneSnapshot) {
+        *self.snapshot.lock() = snap;
+    }
+
+    /// Live-apply the `plugins.allow_keybindings` setting. When `false`,
+    /// `register_keybinding` becomes a logged no-op (already-registered
+    /// keybinds are disabled at the app's dispatch layer).
+    pub fn set_allow_keybindings(&self, allowed: bool) {
+        self.allow_keybindings.store(allowed, Ordering::Relaxed);
     }
 
     /// Load every `*.lua` file in `dir`. Skips entries that fail to
@@ -357,7 +435,19 @@ struct PendingReg {
     key: RegistryKey,
 }
 
-fn install_api(lua: &Lua, hooks: &HookKey, commands: &CommandQueue) -> LuaResult<()> {
+/// Pending keybinding-registration record (same lifecycle as [`PendingReg`]).
+struct PendingKeybind {
+    combo: String,
+    key: RegistryKey,
+}
+
+fn install_api(
+    lua: &Lua,
+    hooks: &HookKey,
+    commands: &CommandQueue,
+    snapshot: &SnapshotCell,
+    allow_keybindings: &Arc<AtomicBool>,
+) -> LuaResult<()> {
     let api = lua.create_table()?;
 
     // ── terminale.log(msg) ────────────────────────────────────────────────────
@@ -432,6 +522,79 @@ fn install_api(lua: &Lua, hooks: &HookKey, commands: &CommandQueue) -> LuaResult
         })?;
     api.set("register_hook", register_fn)?;
 
+    // ── terminale.get_selection() ─────────────────────────────────────────────
+    // Returns the focused pane's selection text, "" when nothing is
+    // selected. Always allowed: a selection is content the user actively
+    // marked, not ambient scrollback.
+    let snap = Arc::clone(snapshot);
+    let get_selection_fn: Function =
+        lua.create_function(move |_, ()| Ok(snap.lock().selection.clone().unwrap_or_default()))?;
+    api.set("get_selection", get_selection_fn)?;
+
+    // ── terminale.get_scrollback(n) ───────────────────────────────────────────
+    // Returns the last `n` lines (history + visible, oldest-first) of the
+    // focused pane as an array. `n` omitted or 0 = everything the snapshot
+    // carries (already capped by the app at `plugins.scrollback_read_cap`).
+    // Gated: with `plugins.allow_scrollback_read = false` the snapshot is
+    // empty and this returns an empty table.
+    let snap = Arc::clone(snapshot);
+    let get_scrollback_fn: Function = lua.create_function(move |_, n: Option<usize>| {
+        let guard = snap.lock();
+        if !guard.allow_scrollback_read {
+            tracing::debug!("plugin scrollback read denied by plugins.allow_scrollback_read");
+            return Ok(Vec::new());
+        }
+        let lines = &guard.scrollback;
+        let take = match n {
+            Some(n) if n > 0 => n.min(lines.len()),
+            _ => lines.len(),
+        };
+        Ok(lines[lines.len() - take..].to_vec())
+    })?;
+    api.set("get_scrollback", get_scrollback_fn)?;
+
+    // ── terminale.get_visible_text() ──────────────────────────────────────────
+    // The visible screen of the focused pane joined with `\n`. Gated like
+    // get_scrollback (it is the same content, just the on-screen slice).
+    let snap = Arc::clone(snapshot);
+    let get_visible_fn: Function = lua.create_function(move |_, ()| {
+        let guard = snap.lock();
+        if !guard.allow_scrollback_read {
+            tracing::debug!("plugin visible-text read denied by plugins.allow_scrollback_read");
+            return Ok(String::new());
+        }
+        Ok(guard.visible.clone())
+    })?;
+    api.set("get_visible_text", get_visible_fn)?;
+
+    // ── terminale.register_keybinding(combo, fn) ──────────────────────────────
+    // Same pending-queue mechanism as register_command. The combo uses the
+    // config keybind grammar ("Ctrl+Shift+X"); the app validates it and
+    // refuses combos that would shadow a user binding. Disabled entirely
+    // (logged no-op) when `plugins.allow_keybindings = false`.
+    let pending_keybinds: Arc<Mutex<Vec<PendingKeybind>>> = Arc::new(Mutex::new(Vec::new()));
+    lua.set_named_registry_value(
+        "__pending_keybinds",
+        lua.create_userdata(PendingKeybindHolder {
+            binds: Arc::clone(&pending_keybinds),
+        })?,
+    )?;
+    let allow_kb = Arc::clone(allow_keybindings);
+    let reg_keybind_fn: Function =
+        lua.create_function(move |lua, (combo, func): (String, Function)| {
+            if !allow_kb.load(Ordering::Relaxed) {
+                tracing::info!(
+                    %combo,
+                    "plugin keybinding ignored: plugins.allow_keybindings is off"
+                );
+                return Ok(());
+            }
+            let key = lua.create_registry_value(func)?;
+            pending_keybinds.lock().push(PendingKeybind { combo, key });
+            Ok(())
+        })?;
+    api.set("register_keybinding", reg_keybind_fn)?;
+
     lua.globals().set("terminale", api)?;
     Ok(())
 }
@@ -443,6 +606,12 @@ struct PendingRegHolder {
 }
 
 impl mlua::UserData for PendingRegHolder {}
+
+struct PendingKeybindHolder {
+    binds: Arc<Mutex<Vec<PendingKeybind>>>,
+}
+
+impl mlua::UserData for PendingKeybindHolder {}
 
 impl PluginHost {
     /// Promote any pending `register_command` calls that arrived during the
@@ -468,6 +637,47 @@ impl PluginHost {
         }
         let end = self.registered_commands.len();
         start..end
+    }
+
+    /// Promote any pending `register_keybinding` calls into
+    /// `self.registered_keybinds`. Returns the number of newly-added
+    /// entries. Call alongside [`Self::flush_pending_registrations`].
+    pub fn flush_pending_keybinds(&mut self) -> usize {
+        let holder_val = self
+            .lua
+            .named_registry_value::<mlua::AnyUserData>("__pending_keybinds");
+        let Ok(holder) = holder_val else {
+            return 0;
+        };
+        let Ok(inner) = holder.borrow::<PendingKeybindHolder>() else {
+            return 0;
+        };
+        let mut binds = inner.binds.lock();
+        let added = binds.len();
+        for b in binds.drain(..) {
+            self.registered_keybinds.push(RegisteredKeybind {
+                combo: b.combo,
+                key: b.key,
+            });
+        }
+        added
+    }
+
+    /// Invoke the registered keybinding at `idx` inside the Lua state.
+    ///
+    /// Errors from the handler are logged; the keybinding stays registered
+    /// (a flaky handler shouldn't unbind the key).
+    pub fn invoke_keybind(&self, idx: usize) {
+        let Some(bind) = self.registered_keybinds.get(idx) else {
+            return;
+        };
+        let Ok(value) = self.lua.registry_value::<Value>(&bind.key) else {
+            return;
+        };
+        let Value::Function(f) = value else { return };
+        if let Err(e) = f.call::<()>(()) {
+            tracing::warn!(combo = %bind.combo, error = %e, "plugin keybinding invocation failed");
+        }
     }
 
     /// Invoke the registered command at `idx` inside the Lua state.
@@ -603,6 +813,163 @@ mod tests {
         // Host is still usable after the error.
         let cmds = host.drain_commands();
         assert!(cmds.is_empty(), "no commands after erroring handler");
+    }
+
+    // ── Pane snapshot read APIs ───────────────────────────────────────────────
+
+    fn snapshot_with(selection: Option<&str>, lines: &[&str], allow: bool) -> PaneSnapshot {
+        PaneSnapshot {
+            selection: selection.map(str::to_string),
+            scrollback: lines.iter().map(|s| (*s).to_string()).collect(),
+            visible: lines.join("\n"),
+            allow_scrollback_read: allow,
+        }
+    }
+
+    #[test]
+    fn get_selection_returns_snapshot_text() {
+        let host = PluginHost::new().expect("host init");
+        host.set_pane_snapshot(snapshot_with(Some("hello world"), &[], true));
+        let s: String = host
+            .lua
+            .load("return terminale.get_selection()")
+            .eval()
+            .expect("get_selection must work");
+        assert_eq!(s, "hello world");
+    }
+
+    #[test]
+    fn get_selection_empty_when_none() {
+        let host = PluginHost::new().expect("host init");
+        host.set_pane_snapshot(snapshot_with(None, &[], true));
+        let s: String = host
+            .lua
+            .load("return terminale.get_selection()")
+            .eval()
+            .expect("get_selection must work");
+        assert_eq!(s, "", "no selection must read as empty string, not nil");
+    }
+
+    #[test]
+    fn get_scrollback_returns_capped_lines() {
+        let host = PluginHost::new().expect("host init");
+        host.set_pane_snapshot(snapshot_with(None, &["a", "b", "c", "d", "e"], true));
+        let lines: Vec<String> = host
+            .lua
+            .load("return terminale.get_scrollback(3)")
+            .eval()
+            .expect("get_scrollback must work");
+        assert_eq!(lines, vec!["c", "d", "e"], "must return the LAST n lines");
+        // n omitted = everything in the snapshot.
+        let all: Vec<String> = host
+            .lua
+            .load("return terminale.get_scrollback()")
+            .eval()
+            .expect("get_scrollback() must work");
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
+    fn get_scrollback_denied_returns_empty() {
+        let host = PluginHost::new().expect("host init");
+        // allow=false: the gate must win even if lines are present.
+        host.set_pane_snapshot(snapshot_with(None, &["secret"], false));
+        let lines: Vec<String> = host
+            .lua
+            .load("return terminale.get_scrollback(10)")
+            .eval()
+            .expect("get_scrollback must not error when denied");
+        assert!(lines.is_empty(), "denied read must return an empty table");
+    }
+
+    #[test]
+    fn get_visible_text_denied_when_gated() {
+        let host = PluginHost::new().expect("host init");
+        host.set_pane_snapshot(snapshot_with(None, &["top", "bottom"], false));
+        let s: String = host
+            .lua
+            .load("return terminale.get_visible_text()")
+            .eval()
+            .expect("get_visible_text must not error when denied");
+        assert_eq!(s, "", "denied read must return an empty string");
+        // And allowed → joined lines.
+        host.set_pane_snapshot(snapshot_with(None, &["top", "bottom"], true));
+        let s: String = host
+            .lua
+            .load("return terminale.get_visible_text()")
+            .eval()
+            .expect("get_visible_text must work");
+        assert_eq!(s, "top\nbottom");
+    }
+
+    // ── register_keybinding ───────────────────────────────────────────────────
+
+    #[test]
+    fn register_keybinding_stores_entry() {
+        let mut host = PluginHost::new().expect("host init");
+        host.load_inline(
+            "test_kb",
+            r#"terminale.register_keybinding("Ctrl+Shift+Y", function() end)"#,
+        )
+        .expect("load inline plugin");
+        let added = host.flush_pending_keybinds();
+        assert_eq!(added, 1);
+        assert_eq!(host.registered_keybinds.len(), 1);
+        assert_eq!(host.registered_keybinds[0].combo, "Ctrl+Shift+Y");
+    }
+
+    #[test]
+    fn register_keybinding_noop_when_disabled() {
+        let mut host = PluginHost::new().expect("host init");
+        host.set_allow_keybindings(false);
+        host.load_inline(
+            "test_kb_off",
+            r#"terminale.register_keybinding("Ctrl+Shift+Y", function() end)"#,
+        )
+        .expect("load inline plugin");
+        assert_eq!(
+            host.flush_pending_keybinds(),
+            0,
+            "registration must be a no-op while allow_keybindings is off"
+        );
+    }
+
+    #[test]
+    fn invoke_keybind_runs_lua_fn() {
+        let mut host = PluginHost::new().expect("host init");
+        host.load_inline(
+            "test_kb_invoke",
+            r#"terminale.register_keybinding("Ctrl+Shift+Y", function()
+                terminale.send_text("from-keybind")
+            end)"#,
+        )
+        .expect("load inline plugin");
+        host.flush_pending_keybinds();
+        host.invoke_keybind(0);
+        let cmds = host.drain_commands();
+        assert_eq!(cmds.len(), 1);
+        match &cmds[0] {
+            PluginCommand::SendText(s) => assert_eq!(s, "from-keybind"),
+            other => panic!("expected SendText, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invoke_keybind_error_is_caught() {
+        let mut host = PluginHost::new().expect("host init");
+        host.load_inline(
+            "test_kb_err",
+            r#"terminale.register_keybinding("Ctrl+Shift+Y", function()
+                error("deliberate keybind error")
+            end)"#,
+        )
+        .expect("load inline plugin");
+        host.flush_pending_keybinds();
+        // Must not panic; the keybinding stays registered.
+        host.invoke_keybind(0);
+        assert_eq!(host.registered_keybinds.len(), 1);
+        // Out-of-range index is a silent no-op.
+        host.invoke_keybind(99);
     }
 
     // ── config roundtrip for PluginsConfig ───────────────────────────────────

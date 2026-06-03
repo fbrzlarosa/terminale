@@ -65,6 +65,31 @@ pub(crate) fn resolve_custom(
     None
 }
 
+/// Match `mods` + `physical` + `logical` against the plugin-registered
+/// keybinding combos (already shadow-filtered by the sync in
+/// `about_to_wait`), returning the index of the **first** match.
+///
+/// The index is into the host's `registered_keybinds` — the app stores it
+/// in `pending_plugin_keybind_invoke` and calls
+/// `PluginHost::invoke_keybind(idx)` on the next tick.
+pub(crate) fn resolve_plugin_keybind(
+    mods: &ModifiersState,
+    physical: PhysicalKey,
+    logical: &winit::keyboard::Key,
+    combos: &[String],
+) -> Option<usize> {
+    let key = pressed_key_name(physical, logical)?;
+    let pressed = crate::shortcuts::ModFlags {
+        ctrl: mods.control_key(),
+        shift: mods.shift_key(),
+        alt: mods.alt_key(),
+        meta: mods.super_key(),
+    };
+    combos.iter().position(|combo| {
+        parse_binding(combo).is_some_and(|(bm, bk)| bm == pressed && bk.eq_ignore_ascii_case(&key))
+    })
+}
+
 /// Resolve a single [`KeyActionSpec`] into a [`ResolvedAction`].
 /// Returns `None` for unknown action names (so they are silently skipped).
 fn resolve_action_spec(spec: &KeyActionSpec) -> Option<ResolvedAction> {
@@ -201,6 +226,39 @@ pub(crate) fn action_from_name(name: &str) -> Option<ShortcutAction> {
 mod tests {
     use super::*;
     use terminale_config::{CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig};
+
+    // ── resolve_plugin_keybind ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_plugin_keybind_matches_combo() {
+        use winit::keyboard::KeyCode;
+        let mods = ModifiersState::CONTROL | ModifiersState::SHIFT;
+        // Index 0 is a blanked (shadow-filtered) slot: must never match.
+        let combos = vec![String::new(), "Ctrl+Shift+Y".to_string()];
+        let idx = resolve_plugin_keybind(
+            &mods,
+            PhysicalKey::Code(KeyCode::KeyY),
+            &winit::keyboard::Key::Character("Y".into()),
+            &combos,
+        );
+        assert_eq!(idx, Some(1), "must match the second combo by index");
+        // A non-matching key resolves to None.
+        let none = resolve_plugin_keybind(
+            &mods,
+            PhysicalKey::Code(KeyCode::KeyZ),
+            &winit::keyboard::Key::Character("Z".into()),
+            &combos,
+        );
+        assert_eq!(none, None);
+        // Same key without the right modifiers resolves to None.
+        let none = resolve_plugin_keybind(
+            &ModifiersState::CONTROL,
+            PhysicalKey::Code(KeyCode::KeyY),
+            &winit::keyboard::Key::Character("y".into()),
+            &combos,
+        );
+        assert_eq!(none, None);
+    }
 
     // ── action_from_name ──────────────────────────────────────────────────────
 

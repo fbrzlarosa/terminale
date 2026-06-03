@@ -246,6 +246,7 @@ impl Config {
         self.integration.validate()?;
         self.resource_indicators.validate()?;
         self.updates.validate()?;
+        self.plugins.validate()?;
         Ok(())
     }
 

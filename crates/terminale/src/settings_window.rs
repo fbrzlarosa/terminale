@@ -2414,6 +2414,18 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Plugins,
+            label: "Allow scrollback read",
+        },
+        SearchEntry {
+            section: Section::Plugins,
+            label: "Scrollback read cap",
+        },
+        SearchEntry {
+            section: Section::Plugins,
+            label: "Allow plugin keybindings",
+        },
+        SearchEntry {
+            section: Section::Plugins,
             label: "Loaded plugins",
         },
         // section_gpu

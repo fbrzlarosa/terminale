@@ -24,6 +24,11 @@ Enable the host and (optionally) point it at a custom directory in `config.toml`
 [plugins]
 enabled   = true
 # directory = "/absolute/path/to/my/plugins"   # optional override
+
+# Permissions (applied live; see "Permission model" below)
+# allow_scrollback_read = false   # let plugins read terminal contents
+# scrollback_read_cap   = 10000   # max lines per read
+# allow_keybindings     = true    # let plugins register shortcuts
 ```
 
 Files are loaded in directory order; each runs in the **same shared Lua state**,
@@ -68,6 +73,10 @@ All functions are namespaced under the global `terminale` table.
 | `terminale.send_text(text)` | Write raw bytes to the focused pane's PTY. |
 | `terminale.register_command(name, fn)` | Add `name` to the command palette; runs `fn` when chosen. |
 | `terminale.register_hook(event, fn)` | Subscribe `fn` to a lifecycle `event` (see below). |
+| `terminale.register_keybinding(combo, fn)` | Bind a shortcut (e.g. `"Ctrl+Shift+Y"`); runs `fn` when pressed. See [Permission model](#permission-model). |
+| `terminale.get_selection()` | The focused pane's selection text; `""` when nothing is selected. |
+| `terminale.get_scrollback(n)` | Array of the last `n` scrollback+screen lines (oldest-first). Gated; see below. |
+| `terminale.get_visible_text()` | The visible screen joined with `\n`. Gated; see below. |
 
 ### How side effects are applied
 
@@ -76,6 +85,59 @@ Lua callbacks never mutate terminal state directly. Calls like `notify`,
 applies on the main thread on the next tick. This keeps plugins free of
 re-entrancy and borrow hazards — you just call the function and the effect lands
 shortly after.
+
+### Reading terminal state
+
+The read APIs are synchronous and **copy-based**: once per tick, before any
+hook fires, the app publishes a snapshot of the focused pane (selection,
+scrollback, visible screen). `get_selection` / `get_scrollback` /
+`get_visible_text` return copies from that snapshot — a plugin never holds a
+live reference into terminal state, and the data is at most one tick old.
+
+- `get_selection()` always works (a selection is content the user actively
+  marked) and returns `""` — never `nil` — when nothing is selected.
+- `get_scrollback(n)` returns up to `n` lines, newest-last; `n` omitted or
+  `0` means "everything the snapshot carries". The snapshot itself is capped
+  at `plugins.scrollback_read_cap` lines (default 10 000).
+- `get_visible_text()` is the on-screen slice of the same content.
+
+### Permission model
+
+Two settings (Settings → Plugins, applied live — no restart) gate what
+plugins may do:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `plugins.allow_scrollback_read` | `false` | Master switch for `get_scrollback` / `get_visible_text`. Off = they return empty results. Off by default because terminal output can contain secrets. |
+| `plugins.scrollback_read_cap` | `10000` | Upper bound on lines a plugin can read per call (max 200 000). |
+| `plugins.allow_keybindings` | `true` | Master switch for `register_keybinding`. Off = registration is a logged no-op and existing plugin bindings stop firing. |
+
+Plugin keybindings **extend** the keymap, they never override it: a combo
+that collides with one of your `[shortcuts]` bindings or a
+`[[keybinds.custom]]` entry is refused with a warning in the log. Precedence
+is: your custom keybinds → your config shortcuts → plugin keybindings →
+built-in fallbacks.
+
+Example — grep the scrollback and act on the selection:
+
+```lua
+-- Ctrl+Shift+U: count how many visible lines mention "error".
+terminale.register_keybinding("Ctrl+Shift+U", function()
+  local n = 0
+  for _, line in ipairs(terminale.get_scrollback(500)) do
+    if line:lower():find("error", 1, true) then n = n + 1 end
+  end
+  terminale.notify("Scrollback scan", n .. " line(s) mention 'error'")
+end)
+
+-- Ctrl+Shift+M: shout the current selection back into the pane.
+terminale.register_keybinding("Ctrl+Shift+M", function()
+  local sel = terminale.get_selection()
+  if sel ~= "" then terminale.send_text(sel:upper()) end
+end)
+```
+
+(Remember: `get_scrollback` needs `plugins.allow_scrollback_read = true`.)
 
 ## Hooks
 
@@ -128,6 +190,6 @@ Everything else in the standard library stays available — notably `math`,
 
 ## Roadmap
 
-The current capability surface is intentionally small and will grow. Planned
-additions include reading selection/scrollback, richer pane/tab queries, and
-keybinding registration. See [`roadmap.md`](roadmap.md).
+Selection/scrollback reads and keybinding registration shipped (see the API
+table above). Planned next: richer pane/tab queries and per-plugin
+permission scoping. See [`roadmap.md`](roadmap.md).

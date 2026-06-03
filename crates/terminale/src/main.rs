@@ -722,6 +722,16 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// Trim `lines` in place to its newest `cap` entries (the vector is
+/// oldest-first, so the front is dropped). `cap == 0` empties it. Bounds
+/// the per-tick copy handed to the plugin snapshot regardless of how deep
+/// the user's scrollback is configured.
+fn cap_scrollback(lines: &mut Vec<String>, cap: usize) {
+    if lines.len() > cap {
+        lines.drain(..lines.len() - cap);
+    }
+}
+
 /// Boot a fresh [`terminale_plugin::PluginHost`] and load every Lua
 /// file from the user's plugins directory. Logs and swallows errors —
 /// a broken plugin must never prevent terminale from starting.
@@ -2179,6 +2189,18 @@ struct TermWindow {
     /// so `TerminaleApp::about_to_wait` can call `host.invoke_command(idx)` on
     /// the next tick (where we have `&mut self.plugins`). Cleared after drain.
     pending_plugin_invoke: Option<usize>,
+    /// Combo strings of every plugin-registered keybinding, index-aligned
+    /// with the host's `registered_keybinds`. Synced by `about_to_wait`
+    /// with combos that shadow a user binding replaced by an empty string
+    /// (so indices stay aligned but the combo can never match).
+    plugin_keybind_combos: Vec<String>,
+    /// When a pressed combo matches a plugin keybinding, the index is
+    /// stored here; `about_to_wait` calls `host.invoke_keybind(idx)` on
+    /// the next tick. Cleared after drain.
+    pending_plugin_keybind_invoke: Option<usize>,
+    /// Mirror of `config.plugins.allow_keybindings`, checked in the hot
+    /// key path. Refreshed every plugin tick so the toggle applies live.
+    plugins_allow_keybindings: bool,
 
     // ── Pending plugin lifecycle events ──────────────────────────────────────
     // These are set at the event call-site and drained in `about_to_wait` where
@@ -2691,6 +2713,9 @@ impl TerminaleApp {
             failed_command_cache: Vec::new(),
             plugin_command_names: Vec::new(),
             pending_plugin_invoke: None,
+            plugin_keybind_combos: Vec::new(),
+            pending_plugin_keybind_invoke: None,
+            plugins_allow_keybindings: self.config.plugins.allow_keybindings,
             pending_hook_tab_open: Vec::new(),
             pending_hook_tab_close: Vec::new(),
             pending_hook_pane_focus: Vec::new(),
@@ -7792,10 +7817,55 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         if self.plugins.is_some() {
             use terminale_plugin::LuaPayloadValue as Lpv;
 
+            // Step 0: publish the focused-pane snapshot and live-apply the
+            // plugin gates BEFORE any hook fires, so a `tick` handler that
+            // reads selection/scrollback sees current data and the Settings
+            // toggles apply without a restart.
+            {
+                let allow_read = self.config.plugins.allow_scrollback_read;
+                let read_cap = self.config.plugins.scrollback_read_cap;
+                let allow_kb = self.config.plugins.allow_keybindings;
+                let snap = self
+                    .windows
+                    .iter()
+                    .find(|w| w.window_focused)
+                    .or_else(|| self.windows.first())
+                    .map_or_else(terminale_plugin::PaneSnapshot::default, |state| {
+                        let selection = crate::tabs::selection_text(state);
+                        let (scrollback, visible) = if allow_read {
+                            state
+                                .tabs
+                                .get(state.active_tab)
+                                .map_or_else(Default::default, |tab| {
+                                    let emu = tab.emulator.lock();
+                                    let mut lines = emu.buffer_lines_text();
+                                    cap_scrollback(&mut lines, read_cap);
+                                    (lines, emu.visible_lines_text().join("\n"))
+                                })
+                        } else {
+                            (Vec::new(), String::new())
+                        };
+                        terminale_plugin::PaneSnapshot {
+                            selection,
+                            scrollback,
+                            visible,
+                            allow_scrollback_read: allow_read,
+                        }
+                    });
+                if let Some(host) = self.plugins.as_ref() {
+                    host.set_pane_snapshot(snap);
+                    host.set_allow_keybindings(allow_kb);
+                }
+                for w in &mut self.windows {
+                    w.plugins_allow_keybindings = allow_kb;
+                }
+            }
+
             // Step 1: promote any pending register_command calls to the host.
             {
                 let host = self.plugins.as_mut().unwrap();
                 host.flush_pending_registrations();
+                host.flush_pending_keybinds();
                 // Sync the per-window command-name cache.
                 let names: Vec<String> = host
                     .registered_commands
@@ -7806,6 +7876,38 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if w.plugin_command_names != names {
                         w.plugin_command_names.clone_from(&names);
                         w.window.request_redraw();
+                    }
+                }
+                // Sync plugin keybinding combos, blanking any that would
+                // shadow a user binding (blank never matches but keeps the
+                // indices aligned with the host's registered_keybinds).
+                for w in &mut self.windows {
+                    let combos: Vec<String> = host
+                        .registered_keybinds
+                        .iter()
+                        .map(|kb| {
+                            if crate::shortcuts::combo_shadows_user_binding(
+                                &kb.combo,
+                                &w.shortcuts,
+                                &w.custom_keybinds,
+                            ) {
+                                String::new()
+                            } else {
+                                kb.combo.clone()
+                            }
+                        })
+                        .collect();
+                    if w.plugin_keybind_combos != combos {
+                        // Warn once per change, not on every tick.
+                        for (kb, synced) in host.registered_keybinds.iter().zip(&combos) {
+                            if synced.is_empty() && !kb.combo.is_empty() {
+                                tracing::warn!(
+                                    combo = %kb.combo,
+                                    "plugin keybinding ignored: it shadows a user binding"
+                                );
+                            }
+                        }
+                        w.plugin_keybind_combos = combos;
                     }
                 }
             }
@@ -7942,6 +8044,28 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     host.invoke_command(idx);
                 }
                 // Drain any commands enqueued by the invoked fn.
+                if let Some(host) = self.plugins.as_mut() {
+                    let cmds = host.drain_commands();
+                    for cmd in cmds {
+                        self.apply_plugin_command(cmd);
+                    }
+                }
+            }
+
+            // Step 5b: invoke plugin keybindings matched in the key path.
+            // Same shape as Step 5 — collect indices first, then call into
+            // the host where `&mut self.plugins` is available.
+            let keybind_indices: Vec<usize> = self
+                .windows
+                .iter_mut()
+                .filter_map(|w| w.pending_plugin_keybind_invoke.take())
+                .collect();
+            for idx in keybind_indices {
+                if let Some(host) = self.plugins.as_ref() {
+                    host.invoke_keybind(idx);
+                }
+                // Drain any commands enqueued by the invoked fn (a keybind
+                // can itself call send_text / notify / …).
                 if let Some(host) = self.plugins.as_mut() {
                     let cmds = host.drain_commands();
                     for cmd in cmds {
@@ -14445,6 +14569,25 @@ mod tests {
             "height at midpoint must be ~270, got {}",
             mid.3
         );
+    }
+
+    // ── cap_scrollback (plugin snapshot bound) ────────────────────────────────
+
+    #[test]
+    fn cap_scrollback_keeps_newest_lines() {
+        let mk = |v: &[&str]| v.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        // Over the cap: oldest (front) entries are dropped.
+        let mut lines = mk(&["a", "b", "c", "d"]);
+        cap_scrollback(&mut lines, 2);
+        assert_eq!(lines, mk(&["c", "d"]));
+        // Under the cap: untouched.
+        let mut lines = mk(&["a", "b"]);
+        cap_scrollback(&mut lines, 10);
+        assert_eq!(lines, mk(&["a", "b"]));
+        // Zero cap empties the list.
+        let mut lines = mk(&["a"]);
+        cap_scrollback(&mut lines, 0);
+        assert!(lines.is_empty());
     }
 
     // ── configs_identical: new-field coverage ─────────────────────────────────

@@ -9,7 +9,8 @@ impl SettingsWindow {
             ui,
             "Plugins",
             "Lua 5.4 scripts loaded at startup from your plugins folder. \
-             All settings on this page require a restart to take effect.",
+             Enabling/disabling the host or changing the folder requires a \
+             restart; the permission toggles below apply live.",
         );
 
         let mut dirty = false;
@@ -49,6 +50,69 @@ impl SettingsWindow {
             sublabel(
                 ui,
                 "Default: ~/.config/terminale/plugins (or the OS equivalent). (requires restart)",
+            );
+        });
+
+        // ── Permissions (applied live) ──
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Allow scrollback read");
+                if toggle_switch(ui, self.config.plugins.allow_scrollback_read).clicked() {
+                    self.config.plugins.allow_scrollback_read =
+                        !self.config.plugins.allow_scrollback_read;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Plugins,
+                "Allow scrollback read",
+            );
+            sublabel(
+                ui,
+                "Lets plugins read terminal contents (get_scrollback / get_visible_text). \
+                 Off by default: terminal output can contain secrets. Applies live.",
+            );
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Scrollback read cap");
+                let r = ui.add(
+                    egui::DragValue::new(&mut self.config.plugins.scrollback_read_cap)
+                        .range(0..=terminale_config::plugins::SCROLLBACK_READ_CAP_MAX)
+                        .speed(100)
+                        .suffix(" lines"),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Plugins,
+                "Scrollback read cap",
+            );
+            sublabel(
+                ui,
+                "Maximum lines a plugin can read per call (bounds the copy). Applies live.",
+            );
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Allow plugin keybindings");
+                if toggle_switch(ui, self.config.plugins.allow_keybindings).clicked() {
+                    self.config.plugins.allow_keybindings = !self.config.plugins.allow_keybindings;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Plugins,
+                "Allow plugin keybindings",
+            );
+            sublabel(
+                ui,
+                "Lets plugins register shortcuts via register_keybinding. Plugin bindings \
+                 can never shadow your own keybinds or shortcuts. Applies live.",
             );
         });
 

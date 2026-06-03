@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- Expanded Lua plugin API: `get_selection()`, `get_scrollback(n)`,
+  `get_visible_text()` (synchronous, copy-based snapshot reads) and
+  `register_keybinding(combo, fn)`. Content reads are a privacy opt-in
+  (`plugins.allow_scrollback_read`, default off) capped at
+  `plugins.scrollback_read_cap` lines; plugin keybindings are gated by
+  `plugins.allow_keybindings` and can never shadow the user's own keybinds
+  or shortcuts. All three settings live in Settings → Plugins and apply
+  without a restart
+
 ## [0.1.13]
 
 ### Added

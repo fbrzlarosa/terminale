@@ -149,7 +149,6 @@ pub(crate) fn resolve_shortcut(
     logical: &winit::keyboard::Key,
     sc: &terminale_config::ShortcutsConfig,
 ) -> Option<ShortcutAction> {
-    use ShortcutAction::*;
     let pressed = ModFlags {
         ctrl: mods.control_key(),
         shift: mods.shift_key(),
@@ -158,7 +157,24 @@ pub(crate) fn resolve_shortcut(
     };
     let key = pressed_key_name(physical, logical)?;
 
-    let table: [(&str, ShortcutAction); 100] = [
+    for (binding, action) in shortcut_table(sc) {
+        if let Some((bm, bk)) = parse_binding(binding) {
+            if bm == pressed && bk.eq_ignore_ascii_case(&key) {
+                return Some(action);
+            }
+        }
+    }
+    None
+}
+
+/// Every configured shortcut binding string paired with its action.
+/// Shared between [`resolve_shortcut`] and the plugin-keybind shadow
+/// filter so "what does the user have bound?" has a single source of truth.
+pub(crate) fn shortcut_table(
+    sc: &terminale_config::ShortcutsConfig,
+) -> [(&str, ShortcutAction); 100] {
+    use ShortcutAction::*;
+    [
         (sc.new_tab.as_str(), NewTab),
         (sc.close_tab.as_str(), CloseTab),
         (sc.reopen_closed_tab.as_str(), ReopenClosedTab),
@@ -272,15 +288,27 @@ pub(crate) fn resolve_shortcut(
             sc.open_failed_command_picker.as_str(),
             OpenFailedCommandPicker,
         ),
-    ];
-    for (binding, action) in table {
-        if let Some((bm, bk)) = parse_binding(binding) {
-            if bm == pressed && bk.eq_ignore_ascii_case(&key) {
-                return Some(action);
-            }
-        }
-    }
-    None
+    ]
+}
+
+/// `true` when `combo` parses to the same modifiers+key as ANY non-empty
+/// user binding — either a config shortcut or a `[[keybinds.custom]]`
+/// entry. Used to refuse plugin keybindings that would shadow the user's
+/// own bindings (plugins extend the keymap, they never override it).
+/// Unparseable combos count as shadowing so they are refused too.
+pub(crate) fn combo_shadows_user_binding(
+    combo: &str,
+    sc: &terminale_config::ShortcutsConfig,
+    custom: &[terminale_config::CustomKeybind],
+) -> bool {
+    let Some((m, k)) = parse_binding(combo) else {
+        return true;
+    };
+    let collides = |binding: &str| {
+        parse_binding(binding).is_some_and(|(bm, bk)| bm == m && bk.eq_ignore_ascii_case(&k))
+    };
+    shortcut_table(sc).iter().any(|(b, _)| collides(b))
+        || custom.iter().any(|bind| collides(&bind.keys))
 }
 
 // ── dispatch_shortcut ─────────────────────────────────────────────────────────
@@ -1116,6 +1144,22 @@ pub(crate) fn handle_app_hotkey(
     if let Some(action) = resolve_shortcut(&state.modifiers, physical, logical, &shortcuts) {
         dispatch_shortcut(state, action);
         return true;
+    }
+
+    // Plugin-registered keybindings: below user custom binds and config
+    // shortcuts (plugins extend the keymap, never override the user), but
+    // above the built-in hardcoded fallbacks. The combo list is already
+    // shadow-filtered at sync time; the gate mirrors
+    // `plugins.allow_keybindings` so turning it off applies live.
+    if state.plugins_allow_keybindings && !state.plugin_keybind_combos.is_empty() {
+        let combos = state.plugin_keybind_combos.clone();
+        if let Some(idx) =
+            crate::keymap::resolve_plugin_keybind(&state.modifiers, physical, logical, &combos)
+        {
+            // Invoked on the next tick, where `&mut self.plugins` exists.
+            state.pending_plugin_keybind_invoke = Some(idx);
+            return true;
+        }
     }
 
     // Alt+Enter on a hovered URL → open it. No Ctrl needed, no click.
@@ -2046,8 +2090,9 @@ pub(crate) fn scroll_to_bytes(
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_for, build_fix_prompt, build_scrollback_export_content, extract_block_output_lines,
-        extract_block_output_text, scrollback_export_filename, translate_key,
+        binding_for, build_fix_prompt, build_scrollback_export_content, combo_shadows_user_binding,
+        extract_block_output_lines, extract_block_output_text, scrollback_export_filename,
+        translate_key,
     };
     use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};
 
@@ -2055,6 +2100,41 @@ mod tests {
 
     fn key_char(c: &str) -> Key {
         Key::Character(SmolStr::new(c))
+    }
+
+    // ── combo_shadows_user_binding ────────────────────────────────────────────
+
+    #[test]
+    fn plugin_keybind_shadowing_user_binding_is_filtered() {
+        let sc = terminale_config::ShortcutsConfig::default();
+        // The default copy binding must count as shadowed.
+        assert!(
+            combo_shadows_user_binding(&sc.copy, &sc, &[]),
+            "a combo equal to the configured copy binding must be refused"
+        );
+        // A free combo is not shadowed.
+        assert!(
+            !combo_shadows_user_binding("Ctrl+Alt+F9", &sc, &[]),
+            "an unbound combo must be accepted"
+        );
+        // A custom keybind shadows too.
+        let custom = vec![terminale_config::CustomKeybind {
+            keys: "Ctrl+Alt+F9".to_string(),
+            actions: vec![terminale_config::KeyActionSpec::Action("Copy".into())],
+        }];
+        assert!(
+            combo_shadows_user_binding("ctrl+alt+f9", &sc, &custom),
+            "matching a [[keybinds.custom]] entry (case-insensitive) must be refused"
+        );
+        // Unparseable combos (no key token at all) are refused outright.
+        assert!(
+            combo_shadows_user_binding("Ctrl+Shift+", &sc, &[]),
+            "a modifier-only combo must be refused"
+        );
+        assert!(
+            combo_shadows_user_binding("", &sc, &[]),
+            "an empty combo must be refused"
+        );
     }
 
     #[test]
