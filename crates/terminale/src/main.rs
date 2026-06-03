@@ -203,6 +203,12 @@ struct TabDrag {
     animated: bool,
 }
 
+/// One `PtyDataReady` in flight is enough: `drain_pty_output` empties every
+/// channel, so per-chunk notifications past the first are pure overhead.
+/// Reader threads set this before posting; the handler clears it before
+/// draining (see the notifier in `spawn_pane_with` for the race argument).
+static PTY_WAKE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Events the host can post to the winit loop to wake it up out-of-band
 /// (used by the PTY reader thread so input echo lands without waiting for
 /// the next OS event).
@@ -376,6 +382,14 @@ fn install_panic_message_box() {
     let prev = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         prev(info);
+        // Panics inside the parser's `catch_unwind` are recovered (the pane
+        // is marked crashed, the app keeps running) — a modal "fatal error"
+        // dialog for those would be a lie. The hook fires *before* the
+        // unwind is caught, so we ask the guard instead of the catch.
+        if crate::osc_handlers::parser_panic_is_caught() {
+            tracing::error!(%info, "recovered parser panic (pane marked crashed)");
+            return;
+        }
         show_fatal_message_box(&format!("{info}"));
     }));
 }
@@ -813,6 +827,9 @@ fn install_plugins(config: &Config) -> Option<terminale_plugin::PluginHost> {
             return None;
         }
     };
+    // Arm the execution watchdog before any plugin code runs (load chunks
+    // are budgeted too).
+    host.set_hook_budget_ms(config.plugins.hook_budget_ms);
     let dir = config
         .plugins
         .directory
@@ -2032,6 +2049,9 @@ struct TermWindow {
     /// OSC 777 notifications are forwarded to the OS notification centre
     /// (but only while the window is not focused).
     os_notifications: bool,
+    /// Mirror of `config.terminal.os_notification_rate_limit` — max
+    /// notifications per rolling 10 s window (`0` = unlimited).
+    os_notification_rate_limit: u32,
     /// `Some(pane_id)` while the pointer is over a pane-header close-X.
     /// Drives cursor-icon swap and the ✕ hover tint.
     pane_header_close_hover: Option<PaneId>,
@@ -2539,14 +2559,16 @@ impl TerminaleApp {
         position: Option<winit::dpi::PhysicalPosition<i32>>,
         tabs: Vec<TabState>,
     ) -> TermWindow {
-        let mut attrs = Window::default_attributes()
-            .with_title("terminale")
-            .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 600.0))
-            .with_decorations(false)
-            // Stay hidden until the first GPU frame is painted, then reveal
-            // via `reveal_window` — avoids the white flash of an unpainted
-            // window (same pattern as the AI/settings sub-windows).
-            .with_visible(false);
+        let mut attrs = app_icon::with_app_identity(
+            Window::default_attributes()
+                .with_title("terminale")
+                .with_inner_size(winit::dpi::LogicalSize::new(1024.0, 600.0))
+                .with_decorations(false)
+                // Stay hidden until the first GPU frame is painted, then reveal
+                // via `reveal_window` — avoids the white flash of an unpainted
+                // window (same pattern as the AI/settings sub-windows).
+                .with_visible(false),
+        );
         if let Some(pos) = position {
             attrs = attrs.with_position(pos);
         }
@@ -2728,6 +2750,7 @@ impl TerminaleApp {
             window_focused: true,
             occluded: false,
             os_notifications: self.config.terminal.os_notifications,
+            os_notification_rate_limit: self.config.terminal.os_notification_rate_limit,
             pane_header_close_hover: None,
             last_header_click: None,
             pane_header_press: None,
@@ -3432,7 +3455,7 @@ impl TerminaleApp {
         let pos =
             ghost_window_position(cursor_screen, scale, grab_offset_x, inner_w_px, inner_h_px);
 
-        let attrs = Window::default_attributes()
+        let attrs = app_icon::with_app_identity(Window::default_attributes())
             .with_title("terminale-ghost")
             .with_inner_size(winit::dpi::LogicalSize::new(
                 inner_w_logical,
@@ -4398,8 +4421,13 @@ impl TerminaleApp {
         use terminale_plugin::PluginCommand;
         match cmd {
             PluginCommand::Notify { title, body } => {
-                // Reuse the same OS notification path as OSC 9 / OSC 777.
-                crate::osc_handlers::fire_os_notification(&title, &body);
+                // Reuse the same OS notification path as OSC 9 / OSC 777
+                // (incl. the rate limiter — plugins shouldn't flood either).
+                crate::osc_handlers::fire_os_notification(
+                    &title,
+                    &body,
+                    self.config.terminal.os_notification_rate_limit,
+                );
             }
             PluginCommand::SetTabTitle(text) => {
                 // Rename the active tab in the most-recently-focused window.
@@ -4657,6 +4685,7 @@ impl TerminaleApp {
                     state.pane_resize_step_cells = cfg.terminal.pane_resize_step_cells;
                     state.show_prompt_marks = cfg.terminal.show_prompt_marks;
                     state.os_notifications = cfg.terminal.os_notifications;
+                    state.os_notification_rate_limit = cfg.terminal.os_notification_rate_limit;
                     // Update zen-mode mirror fields before applying chrome so
                     // re-applying zen overrides uses the new config values.
                     state.zen_hide.clone_from(&cfg.window.zen_hide);
@@ -4940,6 +4969,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::PtyDataReady => {
+                // Re-arm the coalesced wake *before* draining: chunks that
+                // arrive mid-drain are picked up by this pass, chunks that
+                // arrive after it queue exactly one fresh event.
+                PTY_WAKE_PENDING.store(false, std::sync::atomic::Ordering::Release);
                 // A single proxy feeds every window's PTY readers, so we
                 // can't tell which window produced output — drain them ALL.
                 for state in &mut self.windows {
@@ -7967,6 +8000,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 if let Some(host) = self.plugins.as_ref() {
                     host.set_pane_snapshot(snap);
                     host.set_allow_keybindings(allow_kb);
+                    host.set_hook_budget_ms(self.config.plugins.hook_budget_ms);
                 }
                 for w in &mut self.windows {
                     w.plugins_allow_keybindings = allow_kb;
@@ -8621,6 +8655,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.pane_resize_step_cells = cfg.terminal.pane_resize_step_cells;
                         state.show_prompt_marks = cfg.terminal.show_prompt_marks;
                         state.os_notifications = cfg.terminal.os_notifications;
+                        state.os_notification_rate_limit = cfg.terminal.os_notification_rate_limit;
                         // Update zen-mode mirror fields before applying chrome so
                         // re-applying zen overrides uses the new config values.
                         state.zen_hide.clone_from(&cfg.window.zen_hide);
@@ -9322,9 +9357,16 @@ fn spawn_pane(
 ) -> Pane {
     let spec = build_spawn_spec(profile, shell_override);
     let notifier: terminale_core::DataNotifier = Arc::new(move || {
-        // If the proxy is closed (event loop dead) we silently drop —
-        // there's no host left to wake, that's expected on shutdown.
-        let _ = proxy.send_event(UserEvent::PtyDataReady);
+        // Coalesce wakeups: under output floods the reader produces thousands
+        // of chunks per second, but one queued `PtyDataReady` already drains
+        // every channel — only send when no wake is pending. The handler
+        // clears the flag before draining, so a chunk that lands after the
+        // clear re-arms a fresh event and is never lost.
+        if !PTY_WAKE_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            // If the proxy is closed (event loop dead) we silently drop —
+            // there's no host left to wake, that's expected on shutdown.
+            let _ = proxy.send_event(UserEvent::PtyDataReady);
+        }
     });
     let mut session = Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier)
         .expect("failed to spawn shell behind PTY");
@@ -9819,6 +9861,20 @@ fn render_main(state: &mut RunningState) {
         .render_panes_with_dividers(&render_specs, &divider_strokes)
     {
         tracing::warn!(?e, "render frame failed");
+        // The renderer already reconfigures + retries on a lost/outdated
+        // surface; if even that failed (driver mid-reset), ask for another
+        // frame instead of leaving the window frozen until the next input.
+        // Only for *transient* surface errors — an OutOfMemory must not spin.
+        if matches!(
+            e,
+            terminale_render::RenderError::Surface(
+                wgpu::SurfaceError::Lost
+                    | wgpu::SurfaceError::Outdated
+                    | wgpu::SurfaceError::Timeout
+            )
+        ) {
+            state.window.request_redraw();
+        }
     }
 }
 

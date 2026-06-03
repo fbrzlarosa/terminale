@@ -38,6 +38,11 @@ impl HyperlinkRule {
     }
 }
 
+/// Serde default for [`TerminalConfig::os_notification_rate_limit`].
+fn default_os_notification_rate_limit() -> u32 {
+    5
+}
+
 /// The sane built-in default set of hyperlink rules. These are used as the
 /// fallback when `hyperlink_rules` is empty, and are also the initial
 /// contents when the user opens the settings list for the first time.
@@ -434,6 +439,12 @@ pub struct TerminalConfig {
     /// how most mail clients suppress notifications for a visible inbox.
     /// Default `true`.
     pub os_notifications: bool,
+    /// Maximum OS notifications allowed per rolling 10-second window.
+    /// Protects against programs flooding OSC 9/777 in a loop — each
+    /// notification is a synchronous OS call and an entry in the user's
+    /// notification center. `0` disables the limit. Default `5`.
+    #[serde(default = "default_os_notification_rate_limit")]
+    pub os_notification_rate_limit: u32,
     /// Custom hyperlink-detection rules applied to the visible terminal rows.
     ///
     /// Each entry is a regex pattern (plus an optional display label).
@@ -584,6 +595,7 @@ impl Default for TerminalConfig {
             pane_resize_step_cells: 2,
             show_prompt_marks: false,
             os_notifications: true,
+            os_notification_rate_limit: default_os_notification_rate_limit(),
             // Empty means "use built-in detection only" — existing behaviour.
             hyperlink_rules: Vec::new(),
             exit_behavior: ExitBehavior::default(),

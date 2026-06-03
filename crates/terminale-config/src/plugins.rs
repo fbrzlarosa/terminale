@@ -30,6 +30,12 @@ pub struct PluginsConfig {
     /// `register_keybinding`. Plugin bindings can never shadow the user's
     /// own keybinds or config shortcuts. Default `true`. Applied live.
     pub allow_keybindings: bool,
+    /// Maximum wall-clock milliseconds a single plugin hook (or the plugin's
+    /// top-level load chunk) may run before it is aborted with an error and
+    /// the offending handler is dropped. Protects the UI thread — hooks run
+    /// synchronously on it, so a `while true do end` would otherwise freeze
+    /// the whole app. `0` disables the budget. Default `100`. Applied live.
+    pub hook_budget_ms: u64,
 }
 
 impl Default for PluginsConfig {
@@ -40,6 +46,7 @@ impl Default for PluginsConfig {
             allow_scrollback_read: false,
             scrollback_read_cap: 10_000,
             allow_keybindings: true,
+            hook_budget_ms: 100,
         }
     }
 }

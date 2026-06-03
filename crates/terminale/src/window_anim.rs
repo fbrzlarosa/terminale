@@ -311,8 +311,8 @@ pub(crate) fn macos_dock_window(
     margin_px: u32,
     animate: bool,
 ) -> bool {
-    use objc2::{class, msg_send};
     use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use terminale_config::QuakeEdge;
 

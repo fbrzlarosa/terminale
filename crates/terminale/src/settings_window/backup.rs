@@ -184,6 +184,27 @@ impl SettingsWindow {
                     }
                 }
             }
+            // AI API keys live in the keychain too (never in config.toml, so
+            // the serialized Config below intentionally drops them) — export
+            // them through the same credentials channel; the generic import
+            // path restores them by secret_id.
+            for (id, key) in [
+                (
+                    terminale_config::secrets::AI_CLAUDE_KEY_ID,
+                    &self.config.ai.claude.api_key,
+                ),
+                (
+                    terminale_config::secrets::AI_OPENAI_KEY_ID,
+                    &self.config.ai.openai.api_key,
+                ),
+            ] {
+                if !key.is_empty() {
+                    credentials.push(terminale_config::BackupCredential {
+                        secret_id: id.to_string(),
+                        secret: key.clone(),
+                    });
+                }
+            }
         }
 
         let payload = terminale_config::BackupPayload {
@@ -267,20 +288,13 @@ impl SettingsWindow {
             }
         };
 
-        // Apply the restored config (already validated inside `decrypt`) and
-        // persist it to disk so it survives the next launch.
+        // Apply the restored config (already validated inside `decrypt`).
         self.config = payload.config;
-        // A new id may have been backfilled on hosts; mark dirty so the save
-        // bar reflects the change too.
-        self.dirty = true;
-        if let Err(e) = self.config.write_to(&self.config_path) {
-            self.backup.status =
-                Some((StatusKind::Error, format!("Imported but save failed: {e}")));
-            return;
-        }
-        self.dirty = false;
 
-        // Repopulate the keychain with any included credentials.
+        // Repopulate the keychain with any included credentials BEFORE the
+        // save below: `write_to` syncs the in-memory AI keys to the keychain,
+        // and the imported config intentionally carries none (they're never
+        // serialized) — saving first would wipe pre-existing keys.
         let mut restored = 0usize;
         let mut keychain_err = None;
         for cred in &payload.credentials {
@@ -289,6 +303,22 @@ impl SettingsWindow {
                 Err(e) => keychain_err = Some(e.to_string()),
             }
         }
+        // Refresh the in-memory AI keys from the keychain — imported ones if
+        // the backup carried them, the pre-existing ones otherwise.
+        self.config.ai.claude.api_key.clear();
+        self.config.ai.openai.api_key.clear();
+        self.config.hydrate_ai_keys();
+
+        // Persist to disk so the import survives the next launch. A new id
+        // may have been backfilled on hosts; mark dirty so the save bar
+        // reflects the change too.
+        self.dirty = true;
+        if let Err(e) = self.config.write_to(&self.config_path) {
+            self.backup.status =
+                Some((StatusKind::Error, format!("Imported but save failed: {e}")));
+            return;
+        }
+        self.dirty = false;
 
         self.backup.import_pass.clear();
         let (kind, msg) = match keychain_err {

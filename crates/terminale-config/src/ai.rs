@@ -8,8 +8,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct ClaudeAiConfig {
-    /// `$ANTHROPIC_API_KEY` if empty — never write the secret to the
-    /// config file by default.
+    /// Anthropic API key. **Never serialized to `config.toml`** — the key is
+    /// persisted in the OS keychain (id [`crate::secrets::AI_CLAUDE_KEY_ID`])
+    /// and hydrated into this in-memory field at load. Legacy plaintext
+    /// values still *deserialize* and are migrated to the keychain on the
+    /// next save. Empty = fall back to `$ANTHROPIC_API_KEY` at request time.
+    #[serde(skip_serializing)]
     pub api_key: String,
     /// Default model name.
     pub model: String,
@@ -31,7 +35,10 @@ impl Default for ClaudeAiConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, default)]
 pub struct OpenAiAiConfig {
-    /// `$OPENAI_API_KEY` if empty.
+    /// OpenAI API key. **Never serialized to `config.toml`** — persisted in
+    /// the OS keychain (id [`crate::secrets::AI_OPENAI_KEY_ID`]) exactly like
+    /// the Claude key above. Empty = fall back to `$OPENAI_API_KEY`.
+    #[serde(skip_serializing)]
     pub api_key: String,
     /// Default model name.
     pub model: String,
@@ -225,6 +232,34 @@ mod tests {
         AiConfig::default()
             .validate()
             .expect("default AI config must validate");
+    }
+
+    /// SEC: API keys must NEVER serialize into config.toml — they live in
+    /// the OS keychain. A legacy plaintext key must still *deserialize*
+    /// (that's the migration path).
+    #[test]
+    fn api_keys_never_serialize_but_still_deserialize() {
+        let cfg = AiConfig {
+            claude: ClaudeAiConfig {
+                api_key: "sk-ant-SECRET".into(),
+                ..Default::default()
+            },
+            openai: OpenAiAiConfig {
+                api_key: "sk-proj-SECRET".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let toml = toml::to_string(&cfg).expect("serialize");
+        assert!(
+            !toml.contains("SECRET") && !toml.contains("api_key"),
+            "API keys leaked into serialized config:\n{toml}"
+        );
+
+        // Legacy config with a plaintext key still parses (migration path).
+        let legacy = "[claude]\napi_key = \"sk-ant-OLD\"\n";
+        let parsed: AiConfig = toml::from_str(legacy).expect("legacy key must deserialize");
+        assert_eq!(parsed.claude.api_key, "sk-ant-OLD");
     }
 
     #[test]

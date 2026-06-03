@@ -169,6 +169,17 @@ pub struct PluginHost {
     /// Mirror of `plugins.allow_keybindings` — when false,
     /// `register_keybinding` is a logged no-op so plugins cannot grab keys.
     allow_keybindings: Arc<AtomicBool>,
+    /// Wall-clock budget per hook call in milliseconds (`0` = unlimited).
+    /// Mirror of `plugins.hook_budget_ms`; enforced via a Lua debug hook.
+    /// Atomic so the setting can be live-applied through `&self` like the
+    /// other plugin toggles.
+    hook_budget_ms: std::sync::atomic::AtomicU64,
+    /// Deadline for the Lua code currently executing. Armed by
+    /// [`Self::with_budget`] around every entry into the VM; the instruction
+    /// hook installed in [`Self::new`] aborts execution once it passes.
+    /// Hooks run on the UI thread, so a runaway `while true do end` would
+    /// otherwise freeze the entire app.
+    deadline: Arc<Mutex<Option<std::time::Instant>>>,
     loaded: Vec<PluginInfo>,
 }
 
@@ -185,8 +196,30 @@ impl PluginHost {
         let commands: CommandQueue = Arc::new(Mutex::new(Vec::new()));
         let snapshot: SnapshotCell = Arc::new(Mutex::new(PaneSnapshot::default()));
         let allow_keybindings = Arc::new(AtomicBool::new(true));
+        let deadline: Arc<Mutex<Option<std::time::Instant>>> = Arc::new(Mutex::new(None));
         sandbox(&lua)?;
         install_api(&lua, &hooks, &commands, &snapshot, &allow_keybindings)?;
+        // Watchdog: a Lua instruction hook that aborts the running chunk once
+        // the armed deadline passes. Checked every N instructions so the cost
+        // on well-behaved plugins is negligible, while `while true do end`
+        // gets cut off within milliseconds of its budget expiring.
+        {
+            let deadline = Arc::clone(&deadline);
+            lua.set_hook(
+                mlua::HookTriggers::new().every_nth_instruction(10_000),
+                move |_lua, _debug| {
+                    if deadline
+                        .lock()
+                        .is_some_and(|d| std::time::Instant::now() > d)
+                    {
+                        return Err(mlua::Error::external(
+                            "plugin exceeded its execution time budget (plugins.hook_budget_ms)",
+                        ));
+                    }
+                    Ok(mlua::VmState::Continue)
+                },
+            )?;
+        }
         Ok(Self {
             lua,
             hooks,
@@ -195,8 +228,26 @@ impl PluginHost {
             registered_keybinds: Vec::new(),
             snapshot,
             allow_keybindings,
+            hook_budget_ms: std::sync::atomic::AtomicU64::new(100),
+            deadline,
             loaded: Vec::new(),
         })
+    }
+
+    /// Live-apply the `plugins.hook_budget_ms` setting (`0` = unlimited).
+    pub fn set_hook_budget_ms(&self, ms: u64) {
+        self.hook_budget_ms.store(ms, Ordering::Relaxed);
+    }
+
+    /// Run `f` (a VM entry: hook call or chunk exec) under the configured
+    /// wall-clock budget, arming the watchdog deadline for its duration.
+    fn with_budget<T>(&self, f: impl FnOnce() -> T) -> T {
+        let ms = self.hook_budget_ms.load(Ordering::Relaxed);
+        *self.deadline.lock() =
+            (ms > 0).then(|| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+        let out = f();
+        *self.deadline.lock() = None;
+        out
     }
 
     /// Publish a fresh focused-pane snapshot for the Lua read APIs.
@@ -255,7 +306,9 @@ impl PluginHost {
             .unwrap_or("plugin")
             .to_string();
         let chunk = self.lua.load(source).set_name(name.clone());
-        chunk.exec()?;
+        // The top-level chunk runs under the same budget as hooks — a plugin
+        // that loops forever at load time would otherwise hang startup.
+        self.with_budget(|| chunk.exec())?;
         let info = PluginInfo {
             path: path.to_path_buf(),
             name,
@@ -331,7 +384,10 @@ impl PluginHost {
             }
 
             let args = MultiValue::from_vec(vec![Value::Table(tbl)]);
-            match f.call::<MultiValue>(args) {
+            // Budget-guarded: a handler that overruns `hook_budget_ms` is
+            // aborted by the watchdog and dropped like any other error —
+            // the UI thread must never be hostage to a plugin loop.
+            match self.with_budget(|| f.call::<MultiValue>(args)) {
                 Ok(_) => ran += 1,
                 Err(e) => {
                     tracing::warn!(hook = name, error = %e, "lua hook failed; dropping handler");
@@ -675,7 +731,7 @@ impl PluginHost {
             return;
         };
         let Value::Function(f) = value else { return };
-        if let Err(e) = f.call::<()>(()) {
+        if let Err(e) = self.with_budget(|| f.call::<()>(())) {
             tracing::warn!(combo = %bind.combo, error = %e, "plugin keybinding invocation failed");
         }
     }
@@ -692,7 +748,7 @@ impl PluginHost {
             return;
         };
         let Value::Function(f) = value else { return };
-        if let Err(e) = f.call::<()>(()) {
+        if let Err(e) = self.with_budget(|| f.call::<()>(())) {
             tracing::warn!(command = %cmd.name, error = %e, "plugin command invocation failed");
         }
     }
@@ -703,6 +759,74 @@ impl PluginHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Execution budget ──────────────────────────────────────────────────────
+
+    /// A plugin whose top-level chunk loops forever must be aborted by the
+    /// watchdog within its budget — not hang the host (and with it, the
+    /// app's UI thread) forever.
+    #[test]
+    fn budget_aborts_infinite_loop_at_load() {
+        let mut host = PluginHost::new().expect("host init");
+        host.set_hook_budget_ms(50);
+        let dir = std::env::temp_dir().join("terminale-plugin-budget-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("spin.lua");
+        std::fs::write(&path, "while true do end").expect("write plugin");
+
+        let start = std::time::Instant::now();
+        let result = host.load_file(&path);
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err(), "runaway plugin must fail to load");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "watchdog must abort well before a human notices ({elapsed:?})"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A runaway hook handler is aborted AND dropped; well-behaved handlers
+    /// keep running on later fires.
+    #[test]
+    fn budget_aborts_and_drops_runaway_hook() {
+        let host = PluginHost::new().expect("host init");
+        host.set_hook_budget_ms(50);
+        host.lua
+            .load(
+                "terminale.register_hook('tick', function() while true do end end)\n\
+                 terminale.register_hook('tick', function() end)",
+            )
+            .exec()
+            .expect("register hooks");
+
+        // First fire: the runaway handler is cut off (doesn't count as ran),
+        // the good one still runs.
+        let ran = host.fire("tick", None);
+        assert_eq!(ran, 1, "only the well-behaved handler may succeed");
+        // Second fire: the runaway handler was dropped, so this returns
+        // immediately with just the good handler.
+        let start = std::time::Instant::now();
+        let ran = host.fire("tick", None);
+        assert_eq!(ran, 1);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "dropped handler must not run again"
+        );
+    }
+
+    /// `0` disables the budget: a (finite but slow-ish) chunk completes.
+    #[test]
+    fn budget_zero_is_unlimited() {
+        let host = PluginHost::new().expect("host init");
+        host.set_hook_budget_ms(0);
+        let v: i64 = host
+            .lua
+            .load("local s = 0 for i = 1, 5000000 do s = s + i end return 1")
+            .eval()
+            .expect("finite loop must complete with budget disabled");
+        assert_eq!(v, 1);
+    }
 
     // ── Sandbox ───────────────────────────────────────────────────────────────
 

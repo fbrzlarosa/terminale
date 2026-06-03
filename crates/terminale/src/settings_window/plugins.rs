@@ -114,6 +114,30 @@ impl SettingsWindow {
                 "Lets plugins register shortcuts via register_keybinding. Plugin bindings \
                  can never shadow your own keybinds or shortcuts. Applies live.",
             );
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Hook execution budget");
+                let r = ui.add(
+                    egui::DragValue::new(&mut self.config.plugins.hook_budget_ms)
+                        .range(0..=10_000)
+                        .speed(10)
+                        .suffix(" ms"),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Plugins,
+                "Hook execution budget",
+            );
+            sublabel(
+                ui,
+                "Maximum time a single plugin hook may run before it is aborted and the \
+                 handler dropped — a runaway loop can't freeze the app. 0 = unlimited. \
+                 Applies live.",
+            );
         });
 
         // Show the list of currently-loaded plugins (read-only; runtime info).

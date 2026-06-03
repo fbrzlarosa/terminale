@@ -17,6 +17,14 @@ use thiserror::Error;
 /// Stable across releases so existing credentials keep resolving.
 pub const SERVICE: &str = "terminale";
 
+/// Keychain id for the Anthropic Claude API key (Settings → AI).
+/// Stable across releases.
+pub const AI_CLAUDE_KEY_ID: &str = "ai:claude:api_key";
+
+/// Keychain id for the OpenAI API key (Settings → AI). Stable across
+/// releases.
+pub const AI_OPENAI_KEY_ID: &str = "ai:openai:api_key";
+
 /// Errors talking to the OS keychain.
 #[derive(Debug, Error)]
 pub enum SecretError {

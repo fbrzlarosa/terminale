@@ -59,16 +59,34 @@ pub(crate) fn scroll_after_output(
 
 // ── advance_caught ────────────────────────────────────────────────────────────
 
+thread_local! {
+    /// True while [`advance_caught`] is inside its `catch_unwind`. The global
+    /// panic hook (release Windows pops a fatal message box) consults this to
+    /// stay quiet for panics we recover from: a malformed escape sequence
+    /// kills one pane, it should not ALSO flash a "fatal error" dialog.
+    static PARSER_PANIC_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread is inside the parser's `catch_unwind` — i.e.
+/// an in-flight panic will be caught and degraded to a per-pane crash.
+// Only referenced by the release-Windows panic hook; dead code elsewhere.
+#[allow(dead_code)]
+pub(crate) fn parser_panic_is_caught() -> bool {
+    PARSER_PANIC_GUARD.with(std::cell::Cell::get)
+}
+
 /// Push `chunk` into the emulator, catching any panic so a malformed
 /// escape sequence (or a bug in alacritty's parser) can only kill one
 /// tab — not the entire window. Returns `false` when the emulator
 /// panicked; the caller is expected to mark the tab as crashed.
 pub(crate) fn advance_caught(emulator: &Arc<Mutex<Emulator>>, chunk: &[u8]) -> bool {
-    let emu = Arc::clone(emulator);
-    let chunk = chunk.to_vec();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        emu.lock().advance(&chunk);
+    // Borrow both the emulator and the chunk — copying the chunk just to move
+    // it into the closure would double the per-chunk cost on the PTY hot path.
+    PARSER_PANIC_GUARD.with(|g| g.set(true));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        emulator.lock().advance(chunk);
     }));
+    PARSER_PANIC_GUARD.with(|g| g.set(false));
     result.is_ok()
 }
 
@@ -151,6 +169,20 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                 continue;
             };
             if pane.crashed {
+                continue;
+            }
+            // Nothing pending and the channel is still open: skip without
+            // touching the emulator lock. This function runs at the top of
+            // every window event (incl. CursorMoved storms), so the common
+            // case must stay lock-free. A closed channel is also "empty",
+            // hence the `is_closed` escape so PTY EOF is still detected.
+            if pane.output_rx.is_empty() && !pane.output_rx.is_closed() {
+                if is_focused {
+                    // Keep draining the focused pane's event queue — a tab
+                    // switch can leave events queued from its background
+                    // period even when no new bytes arrived since.
+                    active_events = pane.emulator.lock().drain_events();
+                }
                 continue;
             }
             let scroll_before = pane.scroll_lines;
@@ -246,6 +278,11 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                 continue;
             };
             if pane.crashed {
+                continue;
+            }
+            // Same lock-free skip as the active tab: idle background panes
+            // cost nothing on the per-event drain sweep.
+            if pane.output_rx.is_empty() && !pane.output_rx.is_closed() {
                 continue;
             }
             loop {
@@ -490,7 +527,7 @@ pub(crate) fn handle_emulator_event(
             // OSC 9 / OSC 777 desktop notification. Only fire when the
             // window is unfocused AND the user has enabled OS notifications.
             if state.os_notifications && !state.window_focused {
-                fire_os_notification(&title, &body);
+                fire_os_notification(&title, &body, state.os_notification_rate_limit);
             }
         }
         EmulatorEvent::PaletteChanged => {
@@ -502,20 +539,113 @@ pub(crate) fn handle_emulator_event(
     }
 }
 
+/// Rolling-window limiter + duplicate suppression for OS notifications.
+///
+/// Untrusted terminal output can emit OSC 9/777 in a tight loop; without a
+/// cap each one stalls the UI on a synchronous OS call (see dispatcher) and
+/// spams the user's notification center. Pure and unit-tested below.
+struct NotifyLimiter {
+    /// Send timestamps inside the rolling window, oldest first.
+    recent: std::collections::VecDeque<Instant>,
+    /// Hash + timestamp of the last sent notification, for burst dedupe.
+    last: Option<(u64, Instant)>,
+}
+
+impl NotifyLimiter {
+    /// Length of the rolling rate window.
+    const WINDOW: Duration = Duration::from_secs(10);
+    /// Identical (title, body) inside this span are considered one burst.
+    const DEDUPE: Duration = Duration::from_secs(2);
+
+    const fn new() -> Self {
+        Self {
+            recent: std::collections::VecDeque::new(),
+            last: None,
+        }
+    }
+
+    /// Whether a notification with content-hash `key` may be sent at `now`,
+    /// allowing at most `max_per_window` per [`Self::WINDOW`] (`0` = no
+    /// limit; the dedupe still applies). Records the send when allowed.
+    fn allow(&mut self, now: Instant, key: u64, max_per_window: u32) -> bool {
+        if let Some((last_key, last_at)) = self.last {
+            if last_key == key && now.duration_since(last_at) < Self::DEDUPE {
+                return false;
+            }
+        }
+        while self
+            .recent
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > Self::WINDOW)
+        {
+            self.recent.pop_front();
+        }
+        if max_per_window > 0 && self.recent.len() >= max_per_window as usize {
+            return false;
+        }
+        self.recent.push_back(now);
+        self.last = Some((key, now));
+        true
+    }
+}
+
+static NOTIFY_LIMITER: Mutex<NotifyLimiter> = Mutex::new(NotifyLimiter::new());
+
+/// Queue feeding the background dispatcher thread; bounded so a flood that
+/// somehow passes the limiter degrades to dropped notifications, never to
+/// unbounded memory.
+static NOTIFY_TX: std::sync::OnceLock<std::sync::mpsc::SyncSender<(String, String)>> =
+    std::sync::OnceLock::new();
+
 /// Raise an OS desktop notification with `title` and `body`. The call is
-/// best-effort: failures are logged at `warn` level and never surface to the
-/// user (a notification failing to appear is not a fatal error).
-pub(crate) fn fire_os_notification(title: &str, body: &str) {
-    let summary = if title.is_empty() { "terminale" } else { title };
-    // `notify_rust::Notification::show()` is synchronous on Windows and
-    // macOS; on Linux it dispatches via DBus.
-    let result = notify_rust::Notification::new()
-        .summary(summary)
-        .body(body)
-        .appname("terminale")
-        .show();
-    if let Err(e) = result {
-        tracing::warn!(error = ?e, "OS notification send failed");
+/// best-effort: failures are logged and never surface to the user (a
+/// notification failing to appear is not a fatal error).
+///
+/// Rate-limited to `rate_limit` per rolling 10 s (`0` = unlimited; identical
+/// back-to-back notifications are deduped regardless) and dispatched on a
+/// dedicated thread — `notify_rust::Notification::show()` is synchronous on
+/// Windows and macOS, so it must not run on the UI thread.
+pub(crate) fn fire_os_notification(title: &str, body: &str, rate_limit: u32) {
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        title.hash(&mut h);
+        body.hash(&mut h);
+        h.finish()
+    };
+    if !NOTIFY_LIMITER.lock().allow(Instant::now(), key, rate_limit) {
+        tracing::debug!("OS notification dropped by rate limiter");
+        return;
+    }
+    let tx = NOTIFY_TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(String, String)>(8);
+        let spawned = std::thread::Builder::new()
+            .name("terminale-notify".into())
+            .spawn(move || {
+                while let Ok((title, body)) = rx.recv() {
+                    let summary = if title.is_empty() {
+                        "terminale"
+                    } else {
+                        &title
+                    };
+                    let result = notify_rust::Notification::new()
+                        .summary(summary)
+                        .body(&body)
+                        .appname("terminale")
+                        .show();
+                    if let Err(e) = result {
+                        tracing::warn!(error = ?e, "OS notification send failed");
+                    }
+                }
+            });
+        if let Err(e) = spawned {
+            // Channel with no reader: sends fail harmlessly below.
+            tracing::warn!(?e, "failed to spawn notification dispatcher thread");
+        }
+        tx
+    });
+    if tx.try_send((title.to_string(), body.to_string())).is_err() {
+        tracing::debug!("notification queue full; dropped");
     }
 }
 
@@ -995,6 +1125,61 @@ pub(crate) fn update_dir_jump(state: &mut RunningState) {
 #[cfg(test)]
 mod tests {
     use super::osc52_base64_encode;
+    use super::NotifyLimiter;
+    use std::time::{Duration, Instant};
+
+    // ── NotifyLimiter ─────────────────────────────────────────────────────────
+
+    /// Up to `max` distinct notifications pass inside one window, the next
+    /// is rejected, and the window rolling past frees a slot again.
+    #[test]
+    fn notify_limiter_caps_per_window() {
+        let mut l = NotifyLimiter::new();
+        let t0 = Instant::now();
+        for i in 0..3u64 {
+            assert!(l.allow(t0 + Duration::from_secs(i), i, 3), "send {i}");
+        }
+        assert!(
+            !l.allow(t0 + Duration::from_secs(3), 99, 3),
+            "4th notification in the window must be rejected"
+        );
+        // 11s after the first send, its slot has rolled out of the window.
+        assert!(
+            l.allow(t0 + Duration::from_secs(11), 100, 3),
+            "rolling window must free old slots"
+        );
+    }
+
+    /// Identical content fired back-to-back is deduped even when the rate
+    /// budget would allow it; different content passes.
+    #[test]
+    fn notify_limiter_dedupes_bursts() {
+        let mut l = NotifyLimiter::new();
+        let t0 = Instant::now();
+        assert!(l.allow(t0, 42, 10));
+        assert!(
+            !l.allow(t0 + Duration::from_millis(500), 42, 10),
+            "identical burst within the dedupe span must drop"
+        );
+        assert!(
+            l.allow(t0 + Duration::from_millis(600), 7, 10),
+            "different content is not deduped"
+        );
+        assert!(
+            l.allow(t0 + Duration::from_secs(5), 42, 10),
+            "same content after the dedupe span passes again"
+        );
+    }
+
+    /// `0` disables the rolling cap entirely (dedupe still applies).
+    #[test]
+    fn notify_limiter_zero_is_unlimited() {
+        let mut l = NotifyLimiter::new();
+        let t0 = Instant::now();
+        for i in 0..100u64 {
+            assert!(l.allow(t0 + Duration::from_millis(i), i, 0), "send {i}");
+        }
+    }
 
     // ── osc52_base64_encode ───────────────────────────────────────────────────
 

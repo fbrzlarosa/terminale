@@ -195,6 +195,10 @@ impl SettingsWindow {
                 }
             });
             self.highlight_row(ui, hr.response.rect, Section::Ai, "API key");
+            sublabel(
+                ui,
+                "Stored in the OS keychain — never written to config.toml.",
+            );
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Model");
                 if ui
@@ -244,6 +248,10 @@ impl SettingsWindow {
                 }
             });
             self.highlight_row(ui, hr.response.rect, Section::Ai, "API key");
+            sublabel(
+                ui,
+                "Stored in the OS keychain — never written to config.toml.",
+            );
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Model");
                 if ui

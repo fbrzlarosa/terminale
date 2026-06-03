@@ -381,6 +381,34 @@ impl SettingsWindow {
                 ui,
                 "Show an OS desktop notification when a program sends OSC 9 or OSC 777. Notifications are suppressed while the window is focused.",
             );
+            if self.config.terminal.os_notifications {
+                ui.add_space(4.0);
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Notification rate limit");
+                    if ui
+                        .add(
+                            egui::Slider::new(
+                                &mut self.config.terminal.os_notification_rate_limit,
+                                0..=50,
+                            )
+                            .suffix(" / 10s"),
+                        )
+                        .changed()
+                    {
+                        dirty = true;
+                    }
+                });
+                self.highlight_row(
+                    ui,
+                    hr.response.rect,
+                    Section::Terminal,
+                    "Notification rate limit",
+                );
+                sublabel(
+                    ui,
+                    "Maximum notifications per 10-second window — protects against programs flooding OSC 9/777 in a loop. 0 = unlimited.",
+                );
+            }
         });
 
         ui.add_space(6.0);

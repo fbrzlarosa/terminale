@@ -212,6 +212,11 @@ pub enum RenderError {
     /// Failed to create the surface.
     #[error("surface creation error: {0}")]
     SurfaceCreate(#[from] wgpu::CreateSurfaceError),
+    /// The adapter reported no usable surface formats / alpha modes.
+    /// Observed in the wild on virtual/remote display adapters (RDP,
+    /// headless) — fail renderer init gracefully instead of panicking.
+    #[error("adapter reported no usable surface capabilities")]
+    EmptySurfaceCaps,
 }
 
 /// Rectangle of cells, inclusive on both ends, in (col, row) coordinates.
@@ -485,6 +490,11 @@ pub struct Renderer {
     bg_fx_emitters: Vec<CpuEmitter>,
     /// Monotonic counter for emitter seed diversification.
     bg_fx_spawn_counter: u32,
+    /// Whether the Matrix glyph atlas has been rasterized + uploaded. Built
+    /// lazily by `set_bg_fx_params` the first time the Matrix mode is enabled
+    /// — the effect is off by default and the 60-glyph rasterization doesn't
+    /// belong on every window's first-frame path.
+    matrix_atlas_ready: bool,
     font_size: f32,
     line_height: f32,
     /// Configured monospace family name (e.g. "JetBrains Mono"). Empty =
@@ -1786,13 +1796,15 @@ impl Renderer {
             .iter()
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(surface_caps.formats[0]);
+            .or_else(|| surface_caps.formats.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         let alpha_mode = surface_caps
             .alpha_modes
             .iter()
             .copied()
             .find(|m| *m == CompositeAlphaMode::Opaque)
-            .unwrap_or(surface_caps.alpha_modes[0]);
+            .or_else(|| surface_caps.alpha_modes.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         let present_mode = surface_caps
             .present_modes
             .iter()
@@ -1819,7 +1831,7 @@ impl Renderer {
         // Register the curated set of embedded monospace typefaces so they
         // are always selectable in the font picker on any machine.
         bundled_fonts::load_bundled_fonts(&mut font_system);
-        let mut swash_cache = SwashCache::new();
+        let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
         let mut atlas = TextAtlas::with_color_mode(
@@ -1837,13 +1849,9 @@ impl Renderer {
         let (cell_width, cell_height) = monospace_cell_size(&mut font_system, DEFAULT_FONT_SIZE);
 
         let bg = BgPipeline::new(&device, format);
-        let mut bg_fx = BgFxPipeline::new(&device, format);
-        {
-            let a = build_matrix_atlas(&mut font_system, &mut swash_cache);
-            bg_fx.set_glyph_atlas(
-                &device, &queue, &a.data, a.width, a.height, a.cols, a.rows, a.count,
-            );
-        }
+        // The Matrix glyph atlas is built lazily on first use (default-off
+        // effect; rasterizing 60 glyphs would tax every window's first frame).
+        let bg_fx = BgFxPipeline::new(&device, format);
         let bg_image = BgImagePipeline::new(&device, format);
         let image_blit = image_blit::ImageBlitPipeline::new(&device, format);
         Ok(Self {
@@ -1866,6 +1874,7 @@ impl Renderer {
             bg_fx_pulse_start: None,
             bg_fx_emitters: Vec::new(),
             bg_fx_spawn_counter: 0,
+            matrix_atlas_ready: false,
             bg_image,
             bg_image_params: BgImageParams::default(),
             font_size: DEFAULT_FONT_SIZE,
@@ -1978,13 +1987,15 @@ impl Renderer {
             .iter()
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(surface_caps.formats[0]);
+            .or_else(|| surface_caps.formats.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         let alpha_mode = surface_caps
             .alpha_modes
             .iter()
             .copied()
             .find(|m| *m == CompositeAlphaMode::Opaque)
-            .unwrap_or(surface_caps.alpha_modes[0]);
+            .or_else(|| surface_caps.alpha_modes.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         let present_mode = surface_caps
             .present_modes
             .iter()
@@ -2009,7 +2020,7 @@ impl Renderer {
         // typefaces — torn-off / shared windows are first-class, not stripped.
         load_symbol_fonts(&mut font_system);
         bundled_fonts::load_bundled_fonts(&mut font_system);
-        let mut swash_cache = SwashCache::new();
+        let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
         let mut atlas = TextAtlas::with_color_mode(
@@ -2027,13 +2038,9 @@ impl Renderer {
         let (cell_width, cell_height) = monospace_cell_size(&mut font_system, DEFAULT_FONT_SIZE);
 
         let bg = BgPipeline::new(&device, format);
-        let mut bg_fx = BgFxPipeline::new(&device, format);
-        {
-            let a = build_matrix_atlas(&mut font_system, &mut swash_cache);
-            bg_fx.set_glyph_atlas(
-                &device, &queue, &a.data, a.width, a.height, a.cols, a.rows, a.count,
-            );
-        }
+        // The Matrix glyph atlas is built lazily on first use (default-off
+        // effect; rasterizing 60 glyphs would tax every window's first frame).
+        let bg_fx = BgFxPipeline::new(&device, format);
         let bg_image = BgImagePipeline::new(&device, format);
         let image_blit = image_blit::ImageBlitPipeline::new(&device, format);
         Ok(Self {
@@ -2056,6 +2063,7 @@ impl Renderer {
             bg_fx_pulse_start: None,
             bg_fx_emitters: Vec::new(),
             bg_fx_spawn_counter: 0,
+            matrix_atlas_ready: false,
             bg_image,
             bg_image_params: BgImageParams::default(),
             font_size: DEFAULT_FONT_SIZE,
@@ -2166,7 +2174,8 @@ impl Renderer {
             .iter()
             .copied()
             .find(wgpu::TextureFormat::is_srgb)
-            .unwrap_or(surface_caps.formats[0]);
+            .or_else(|| surface_caps.formats.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         // For a transparent ghost window we want compositor-driven alpha
         // blending. Prefer premultiplied alpha (the BgPipeline already emits
         // premultiplied colours, matching `clear_color`), then postmultiplied,
@@ -2185,7 +2194,8 @@ impl Renderer {
                     .copied()
                     .find(|m| *m == CompositeAlphaMode::PostMultiplied)
             })
-            .unwrap_or(surface_caps.alpha_modes[0]);
+            .or_else(|| surface_caps.alpha_modes.first().copied())
+            .ok_or(RenderError::EmptySurfaceCaps)?;
         let present_mode = surface_caps
             .present_modes
             .iter()
@@ -2208,7 +2218,7 @@ impl Renderer {
         let mut font_system = FontSystem::new();
         load_symbol_fonts(&mut font_system);
         bundled_fonts::load_bundled_fonts(&mut font_system);
-        let mut swash_cache = SwashCache::new();
+        let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
         let mut atlas = TextAtlas::with_color_mode(
@@ -2226,13 +2236,9 @@ impl Renderer {
         let (cell_width, cell_height) = monospace_cell_size(&mut font_system, DEFAULT_FONT_SIZE);
 
         let bg = BgPipeline::new(&device, format);
-        let mut bg_fx = BgFxPipeline::new(&device, format);
-        {
-            let a = build_matrix_atlas(&mut font_system, &mut swash_cache);
-            bg_fx.set_glyph_atlas(
-                &device, &queue, &a.data, a.width, a.height, a.cols, a.rows, a.count,
-            );
-        }
+        // The Matrix glyph atlas is built lazily on first use (default-off
+        // effect; rasterizing 60 glyphs would tax every window's first frame).
+        let bg_fx = BgFxPipeline::new(&device, format);
         let bg_image = BgImagePipeline::new(&device, format);
         let image_blit = image_blit::ImageBlitPipeline::new(&device, format);
         Ok(Self {
@@ -2255,6 +2261,7 @@ impl Renderer {
             bg_fx_pulse_start: None,
             bg_fx_emitters: Vec::new(),
             bg_fx_spawn_counter: 0,
+            matrix_atlas_ready: false,
             bg_image,
             bg_image_params: BgImageParams::default(),
             font_size: DEFAULT_FONT_SIZE,
@@ -2349,7 +2356,7 @@ impl Renderer {
     ///
     /// Bubbles up failures from surface acquisition or text preparation.
     pub fn render_ghost_only(&mut self) -> Result<(), RenderError> {
-        let frame = self.surface.get_current_texture()?;
+        let frame = self.acquire_frame()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
@@ -3796,7 +3803,25 @@ impl Renderer {
 
     /// Update the animated background-effect parameters (style, intensity,
     /// speed, tints). Live-applied from the settings window / config reload.
+    ///
+    /// Shader mode `3` is the Matrix "digital rain", the only mode that
+    /// samples the glyph atlas — which is rasterized + uploaded here on first
+    /// use (the pipeline ships with a placeholder texture until then).
     pub fn set_bg_fx_params(&mut self, params: BgFxParams) {
+        if params.enabled && params.mode == 3 && !self.matrix_atlas_ready {
+            let a = build_matrix_atlas(&mut self.font_system, &mut self.swash_cache);
+            self.bg_fx.set_glyph_atlas(
+                &self.device,
+                &self.queue,
+                &a.data,
+                a.width,
+                a.height,
+                a.cols,
+                a.rows,
+                a.count,
+            );
+            self.matrix_atlas_ready = true;
+        }
         self.bg_fx_params = params;
     }
 
@@ -4982,8 +5007,12 @@ impl Renderer {
     }
 
     /// Update the scale factor reported by winit (HiDPI changes, monitor move).
+    ///
+    /// Floored at `0.1`: winit promises a positive value, but monitor-unplug /
+    /// remote-session edge cases have produced `0` in the wild, and the scale
+    /// is used as a divisor in cell hit-testing (`inf`/`NaN` coordinates).
     pub fn set_scale_factor(&mut self, scale_factor: f32) {
-        self.scale_factor = scale_factor;
+        self.scale_factor = scale_factor.max(0.1);
     }
 
     /// Current DPI scale factor (physical pixels per logical pixel).
@@ -5913,6 +5942,28 @@ impl Renderer {
         }
     }
 
+    /// Acquire the next swapchain frame, recovering from a lost/outdated
+    /// surface by reconfiguring and retrying once.
+    ///
+    /// `Lost`/`Outdated` are *expected* lifecycle events — GPU reset (TDR),
+    /// driver update, sleep/wake, RDP attach/detach, monitor hot-plug — not
+    /// errors. Without the reconfigure the surface never heals and every
+    /// subsequent frame fails the same way: a permanently frozen window
+    /// until some resize happens to call `configure` again.
+    fn acquire_frame(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
+        match self.surface.get_current_texture() {
+            Ok(frame) => Ok(frame),
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                tracing::debug!("surface lost/outdated; reconfiguring and retrying");
+                self.surface.configure(&self.device, &self.config);
+                Ok(self.surface.get_current_texture()?)
+            }
+            // Timeout = compositor hiccup, skip the frame; OutOfMemory and
+            // friends bubble to the caller (logged, frame dropped).
+            Err(e) => Err(e.into()),
+        }
+    }
+
     /// Single-pane render entry point — kept for the simple cases (the
     /// ghost window, tests, scripts) and reused internally by
     /// [`Self::render_panes`] when it routes the focused pane through.
@@ -5922,7 +5973,7 @@ impl Renderer {
     /// Bubbles failures from surface acquisition or text-renderer
     /// preparation.
     pub fn render(&mut self, emulator: &Emulator) -> Result<(), RenderError> {
-        let frame = self.surface.get_current_texture()?;
+        let frame = self.acquire_frame()?;
         let view = frame.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self
             .device
@@ -7943,7 +7994,11 @@ fn cell_size_for(font_system: &mut FontSystem, font_size: f32, family: Option<&s
             width = g.w;
         }
     }
-    let height = font_size;
+    // A broken/empty face can report a zero-advance 'M'. A zero cell would
+    // blow the grid math up (`usable / 0 → inf → 65535 cols`) and hand the
+    // emulator an absurd allocation — floor both dimensions at 1px instead.
+    let width = width.max(1.0);
+    let height = font_size.max(1.0);
     (width, height)
 }
 

@@ -675,17 +675,20 @@ impl Emulator {
         // We intercept raw bytes here: bytes belonging to a Sixel frame are
         // accumulated in `dcs_sixel_buf` and NOT forwarded to alacritty (which
         // has no Sixel support). All other bytes are forwarded normally.
-        let after_sixel: Vec<u8> = if self.sixel_images_enabled {
+        // `Cow` keeps the common path (both protocols disabled) zero-copy:
+        // the chunk flows straight to alacritty's parser without touching the
+        // allocator. Only an active byte-stripping protocol pays for a copy.
+        let after_sixel: std::borrow::Cow<'_, [u8]> = if self.sixel_images_enabled {
             // Prepend any partial-intro bytes left over from the previous
             // chunk so an intro that straddles a chunk boundary is recognised.
-            let effective_bytes: Vec<u8> = if self.dcs_intro_prefix.is_empty() {
-                bytes.to_vec()
+            let effective_bytes: std::borrow::Cow<'_, [u8]> = if self.dcs_intro_prefix.is_empty() {
+                std::borrow::Cow::Borrowed(bytes)
             } else {
                 let mut v = std::mem::take(&mut self.dcs_intro_prefix);
                 v.extend_from_slice(bytes);
-                v
+                std::borrow::Cow::Owned(v)
             };
-            sniff_dcs_sixel(
+            std::borrow::Cow::Owned(sniff_dcs_sixel(
                 &effective_bytes,
                 cursor_abs,
                 &mut self.dcs_sixel_active,
@@ -693,25 +696,25 @@ impl Emulator {
                 &mut self.dcs_sixel_cursor_abs,
                 &mut self.dcs_intro_prefix,
                 &mut self.image_store,
-            )
+            ))
         } else {
-            bytes.to_vec()
+            std::borrow::Cow::Borrowed(bytes)
         };
 
         // Pre-scan for APC graphics `ESC _ G … ST` sequences when the protocol
         // is enabled. We chain this after the Sixel filter so both protocols can
         // coexist in the same byte stream. APC graphics bytes are stripped from
         // the slice forwarded to alacritty; non-APC bytes are passed through.
-        let bytes_for_alacritty: Vec<u8> = if self.apc_graphics_enabled {
+        let bytes_for_alacritty: std::borrow::Cow<'_, [u8]> = if self.apc_graphics_enabled {
             // Prepend any partial-intro bytes left over from the previous chunk.
-            let effective_bytes: Vec<u8> = if self.apc_intro_prefix.is_empty() {
+            let effective_bytes: std::borrow::Cow<'_, [u8]> = if self.apc_intro_prefix.is_empty() {
                 after_sixel
             } else {
                 let mut v = std::mem::take(&mut self.apc_intro_prefix);
                 v.extend_from_slice(&after_sixel);
-                v
+                std::borrow::Cow::Owned(v)
             };
-            sniff_apc_graphics(
+            std::borrow::Cow::Owned(sniff_apc_graphics(
                 &effective_bytes,
                 cursor_abs,
                 &mut self.apc_graphics_active,
@@ -722,7 +725,7 @@ impl Emulator {
                 &mut self.apc_intro_prefix,
                 &mut self.apc_graphics_assembler,
                 &mut self.image_store,
-            )
+            ))
         } else {
             after_sixel
         };

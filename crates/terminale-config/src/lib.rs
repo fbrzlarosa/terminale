@@ -285,8 +285,9 @@ impl Config {
         };
         if path.exists() {
             let text = std::fs::read_to_string(&path)?;
-            let cfg: Self = toml::from_str(&text)?;
+            let mut cfg: Self = toml::from_str(&text)?;
             cfg.validate()?;
+            cfg.hydrate_ai_keys();
             Ok((cfg, path))
         } else {
             let cfg = Self::with_auto_profiles();
@@ -295,8 +296,55 @@ impl Config {
             }
             let body = render_default_toml(&cfg);
             std::fs::write(&path, body)?;
+            restrict_config_permissions(&path);
             Ok((cfg, path))
         }
+    }
+
+    /// Hydrate the in-memory AI API keys from the OS keychain, migrating any
+    /// legacy plaintext values found in `config.toml` into the keychain
+    /// (the `skip_serializing` on those fields drops them from the file on
+    /// the next save). Call after deserializing a config from disk — both
+    /// at startup and on hot-reload, otherwise a reload would wipe the
+    /// in-memory keys (the file intentionally no longer contains them).
+    pub fn hydrate_ai_keys(&mut self) {
+        hydrate_ai_key(&mut self.ai.claude.api_key, secrets::AI_CLAUDE_KEY_ID);
+        hydrate_ai_key(&mut self.ai.openai.api_key, secrets::AI_OPENAI_KEY_ID);
+        *ai_keys_synced()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((
+            self.ai.claude.api_key.clone(),
+            self.ai.openai.api_key.clone(),
+        ));
+    }
+
+    /// Persist the in-memory AI keys to the OS keychain when they changed
+    /// since the last hydrate/sync. A key cleared by the user (non-empty →
+    /// empty) is deleted from the keychain; an untouched pair is a no-op so
+    /// ordinary config saves never pay a keychain round-trip.
+    fn sync_ai_keys_to_keychain(&self) {
+        let current = (
+            self.ai.claude.api_key.clone(),
+            self.ai.openai.api_key.clone(),
+        );
+        let mut cache = ai_keys_synced()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.as_ref() == Some(&current) {
+            return;
+        }
+        let prev = cache.clone();
+        sync_ai_key(
+            &current.0,
+            prev.as_ref().is_some_and(|p| !p.0.is_empty()),
+            secrets::AI_CLAUDE_KEY_ID,
+        );
+        sync_ai_key(
+            &current.1,
+            prev.as_ref().is_some_and(|p| !p.1.is_empty()),
+            secrets::AI_OPENAI_KEY_ID,
+        );
+        *cache = Some(current);
     }
 
     /// Construct a fresh `Config` with profiles auto-detected on this host.
@@ -328,6 +376,11 @@ impl Config {
 
     /// Write a TOML rendering of the current config back to `path`.
     ///
+    /// The write is atomic: the text lands in a `.tmp` sibling first and is
+    /// then renamed over the target, so a crash or power loss mid-write can
+    /// never leave a torn/empty `config.toml` behind (the settings window
+    /// saves on a 400 ms debounce, so this runs often).
+    ///
     /// # Errors
     ///
     /// Returns [`ConfigError::Io`] or [`ConfigError::Serialise`].
@@ -336,8 +389,101 @@ impl Config {
             std::fs::create_dir_all(parent)?;
         }
         let text = render_default_toml(self);
-        std::fs::write(path, text)?;
+        let tmp = path.with_extension("toml.tmp");
+        std::fs::write(&tmp, text)?;
+        restrict_config_permissions(&tmp);
+        // Windows refuses to rename over an existing file in some setups;
+        // `rename` is atomic on Unix and effectively so on NTFS once the
+        // destination is replaceable. Fall back to a direct write only if
+        // the rename itself fails (better a rare torn write than no save).
+        if let Err(e) = std::fs::rename(&tmp, path) {
+            tracing::warn!(
+                ?e,
+                "atomic config rename failed; falling back to direct write"
+            );
+            let text = render_default_toml(self);
+            std::fs::write(path, text)?;
+            let _ = std::fs::remove_file(&tmp);
+        }
+        restrict_config_permissions(path);
+        // Secrets ride along on every save: AI keys live in the OS keychain,
+        // never in the TOML (see `hydrate_ai_keys`); no-op when unchanged.
+        self.sync_ai_keys_to_keychain();
         Ok(())
+    }
+}
+
+/// Last AI-key pair synced with the OS keychain in this process —
+/// `(claude, openai)`. Lets `write_to` skip keychain round-trips when the
+/// keys didn't change (the settings window saves on a 400 ms debounce).
+fn ai_keys_synced() -> &'static std::sync::Mutex<Option<(String, String)>> {
+    static SYNCED: std::sync::OnceLock<std::sync::Mutex<Option<(String, String)>>> =
+        std::sync::OnceLock::new();
+    SYNCED.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Fill `field` from the keychain when empty; migrate a legacy plaintext
+/// value into the keychain when present. Keychain failures degrade to the
+/// in-memory/env-var behaviour and are logged, never fatal.
+fn hydrate_ai_key(field: &mut String, id: &str) {
+    if field.is_empty() {
+        match secrets::get_secret(id) {
+            Ok(Some(v)) => *field = v,
+            Ok(None) => {}
+            Err(e) => tracing::warn!(?e, id, "could not read AI key from the OS keychain"),
+        }
+    } else {
+        // Legacy plaintext key found in config.toml — move it to the
+        // keychain; `skip_serializing` drops it from the file on next save.
+        match secrets::store_secret(id, field) {
+            Ok(()) => tracing::info!(id, "migrated plaintext AI key to the OS keychain"),
+            Err(e) => {
+                tracing::warn!(
+                    ?e,
+                    id,
+                    "could not migrate AI key to keychain; kept in memory"
+                );
+            }
+        }
+    }
+}
+
+/// Store a (changed) AI key in the keychain, or delete the entry when the
+/// user cleared a previously stored key. Empty-and-never-stored is a no-op.
+fn sync_ai_key(value: &str, was_stored: bool, id: &str) {
+    if !value.is_empty() {
+        if let Err(e) = secrets::store_secret(id, value) {
+            tracing::warn!(?e, id, "could not store AI key in the OS keychain");
+        }
+    } else if was_stored {
+        if let Err(e) = secrets::delete_secret(id) {
+            tracing::warn!(
+                ?e,
+                id,
+                "could not delete cleared AI key from the OS keychain"
+            );
+        }
+    }
+}
+
+/// Restrict `config.toml` to owner read/write on Unix (`0600`). The config
+/// can reference secrets-adjacent material (workspace commands, hosts) and
+/// historically held AI keys — keep it private by default. Best-effort:
+/// permission errors are ignored (e.g. exotic filesystems). On Windows the
+/// profile directory ACL already scopes access to the user.
+fn restrict_config_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            let mut perm = meta.permissions();
+            perm.set_mode(0o600);
+            let _ = std::fs::set_permissions(path, perm);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
@@ -403,6 +549,29 @@ stay_on_top = "Ctrl+Shift+Period"
         let s = toml::to_string(&cfg).unwrap();
         let back: Config = toml::from_str(&s).unwrap();
         assert!(back.window.always_on_top);
+    }
+
+    #[test]
+    fn write_to_is_atomic_and_overwrites() {
+        let dir = std::env::temp_dir().join("terminale-config-atomic-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let cfg = Config::default();
+        // First write creates the file; second must replace it via rename
+        // (regression: rename-over-existing must work on every OS).
+        cfg.write_to(&path).expect("first write");
+        cfg.write_to(&path).expect("overwrite");
+
+        let text = std::fs::read_to_string(&path).expect("config readable");
+        assert!(text.contains("# terminale configuration"));
+        // No staging file may linger after a successful save.
+        assert!(
+            !dir.join("config.toml.tmp").exists(),
+            "tmp staging file must not be left behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
