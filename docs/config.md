@@ -80,9 +80,29 @@ auto) are configured in **Settings → AI**.
 [plugins]
 enabled   = true
 # directory = "/absolute/path/to/plugins"   # optional override
+
+# Permissions (applied live)
+allow_scrollback_read = false  # let plugins read terminal contents (opt-in)
+scrollback_read_cap   = 10000  # max lines a plugin can read per call
+allow_keybindings     = true   # let plugins register shortcuts
 ```
 
-See [`plugins.md`](plugins.md) for the plugin API.
+See [`plugins.md`](plugins.md) for the plugin API and the permission model.
+
+### `[terminal.image_protocols]`
+
+Inline images render out of the box — these toggles exist to *disable* a
+protocol (e.g. when a runaway script floods the terminal with images).
+
+```toml
+[terminal.image_protocols]
+sixel   = true                 # DCS Sixel graphics
+osc1337 = true                 # OSC 1337 File= inline images
+apc     = true                 # APC (ESC _G) graphics
+```
+
+Quick test: any Sixel-producing tool works (e.g. `img2sixel photo.jpg` from
+libsixel), as do `imgcat`-style scripts that emit `OSC 1337 File=` payloads.
 
 ### `[keybinds]`
 
