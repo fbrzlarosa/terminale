@@ -116,7 +116,7 @@ egui-wgpu = "0.29"
 egui-winit = { version = "0.29", default-features = false, features = ["links"] }
 
 # Config
-toml = "0.8"
+toml = "1.1"
 figment = { version = "0.10", features = ["toml", "env"] }
 schemars = "1"
 directories = "5"

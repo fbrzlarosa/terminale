@@ -6289,7 +6289,7 @@ dependencies = [
  "terminale-ui",
  "tiny-skia 0.12.0",
  "tokio",
- "toml 0.8.23",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "usvg",
@@ -6329,7 +6329,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
- "toml 0.8.23",
+ "toml 1.1.2+spec-1.1.0",
  "tracing",
 ]
 
