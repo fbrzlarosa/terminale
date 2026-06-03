@@ -8,36 +8,66 @@ use crate::AiMessage;
 
 /// System prompt sent to the model for command suggestion.
 ///
-/// Instructs the model to reply with exactly one shell command and nothing
-/// else — no explanation, no markdown, no backticks.  If it cannot produce a
-/// useful suggestion it must reply with an empty line.
+/// Deliberately compact and example-driven: the 3–4B local-model class that
+/// users run via Ollama follows short positive rules + few-shot demos far
+/// better than long negated prose. The worked examples live in [`FEW_SHOT`]
+/// and are sent as real conversation turns.
 const SYSTEM_PROMPT: &str = concat!(
-    "You are a shell command suggester embedded in a terminal emulator. ",
-    "You will be given structured terminal context (environment, recent commands with their ",
-    "exit status, the last failed command's output when one failed) and the user's current ",
-    "(possibly incomplete) input line. ",
-    "Your job is to propose EXACTLY ONE next shell command the user most likely wants to run.\n",
+    "You suggest the next shell command inside a terminal emulator. ",
+    "You receive the environment in <env>, recent commands with exit status, the last failed ",
+    "command's output when one failed, and the user's current (possibly incomplete) input.\n",
     "\n",
-    "Rules (follow strictly):\n",
-    "- Reply with ONLY the command on a single line.\n",
-    "- No explanation. No markdown. No backticks. No bullet points.\n",
-    "- Do not repeat the prompt prefix (e.g. do not echo `$` or `PS >`).\n",
-    "- If you cannot suggest anything useful, reply with an empty line and nothing else.\n",
-    "- Treat <last_command_error> as authoritative: when it is present, your suggestion MUST ",
-    "be either a CORRECTED version of that command (fixing the cause shown in its output) or a ",
-    "clearly different next step. It MUST NOT be identical to the failed command, and MUST NOT ",
-    "be identical to any command marked FAILED in <recent_commands>.\n",
-    "- Do not invent file names, paths, or arguments that are not clearly present in the context. ",
-    "When unsure, prefer a safe, broadly-useful command (list the current directory, check status) over guessing.\n",
-    "- Use the syntax of the user's ACTUAL shell and OS (stated in <env>). ",
-    "On Windows PowerShell use cmdlets such as Get-ChildItem / dir and NEVER `ls -l`; ",
-    "on cmd.exe use dir; only use Unix commands (ls, grep, cat, ...) when the shell is clearly bash / zsh / sh.\n",
-    "- When <env> says this is a REMOTE session (SSH) with an unknown OS, do NOT assume the ",
-    "local OS: prefer portable POSIX commands, and if the right command depends on the remote ",
-    "OS or distro, suggest a safe discovery command FIRST (`uname -a`, or `cat /etc/os-release` ",
-    "on Linux) instead of guessing.\n",
+    "Reply format (strict):\n",
+    "- EXACTLY ONE command, on one line, plain text.\n",
+    "- No explanation. No markdown. No backticks. No prompt prefix ($, #, PS>).\n",
+    "- Reply with an empty line if nothing useful fits.\n",
+    "\n",
+    "Choosing the command:\n",
+    "- Match the shell and OS from <env>. PowerShell -> cmdlets (Get-ChildItem, Get-Content, ",
+    "Select-String); `ls -l` belongs to Unix shells, its PowerShell equivalent is Get-ChildItem. ",
+    "cmd.exe -> dir, type, findstr. bash/zsh/sh -> ls, cat, grep.\n",
+    "- When <env> says REMOTE session with unknown OS: use portable POSIX commands; when the ",
+    "right command depends on the remote OS or distro, suggest `uname -a` first.\n",
+    "- When <last_command_error> is present: reply with a corrected version of the failed ",
+    "command (fixing the cause shown in its output) or a different next step. The reply MUST ",
+    "NOT be identical to the failed command or to any command marked FAILED.\n",
+    "- Use only file names and paths that appear in the context. When unsure, suggest a safe ",
+    "inspection command (list the directory, show status).\n",
     "- Never mention any specific terminal-emulator product by name.",
 );
+
+/// Worked examples sent as real `user`/`assistant` turns before the live
+/// request. Few-shot demonstrations are the single most effective lever for
+/// small local models: they teach the exact output shape (bare command, no
+/// prose) and the three rules they most often break — OS/shell matching,
+/// fixing rather than repeating a failed command, and discovery-first on
+/// remote hosts with an unknown OS.
+const FEW_SHOT: &[(&str, &str)] = &[
+    (
+        // OS/shell matching: a Unix habit typed on PowerShell.
+        "<env>\nOS = windows; shell = PowerShell; cwd = C:\\proj\n</env>\n\
+         <recent_commands>\nok    $ git status\n</recent_commands>\n\
+         <current_input>\nls -l\n</current_input>\nNext command:",
+        "Get-ChildItem",
+    ),
+    (
+        // Error fixing: correct the failed command, never repeat it.
+        "<env>\nOS = linux; shell = bash; cwd = /repo\n</env>\n\
+         <recent_commands>\nok    $ git add -A\nFAILED(128) $ git push\n</recent_commands>\n\
+         <last_command_error>\ncommand: git push\nexit: 128\noutput:\n\
+         fatal: The current branch feature has no upstream branch.\n</last_command_error>\n\
+         <current_input>\n\n</current_input>\nNext command:",
+        "git push --set-upstream origin feature",
+    ),
+    (
+        // Remote discovery: unknown OS -> find out before acting.
+        "<env>\nREMOTE SESSION over SSH \u{2014} remote OS/shell UNKNOWN (do not assume the \
+         local OS; the local machine is windows but commands run on the remote host); \
+         cwd = unknown\n</env>\n\
+         <current_input>\n\n</current_input>\nNext command:",
+        "uname -a",
+    ),
+];
 
 /// The last command's failure details, scoped to that command's own output.
 #[derive(Debug, Clone, Default)]
@@ -131,7 +161,14 @@ pub fn suggestion_messages(ctx: &SuggestionContext) -> Vec<AiMessage> {
     // instructions far more than a line buried in the user turn, and the
     // wrong-OS suggestions almost always came from exactly that.
     let system = format!("{SYSTEM_PROMPT}\n\nCurrent environment (authoritative): {env_line}");
-    vec![AiMessage::system(system), AiMessage::user(user_text)]
+    let mut msgs = Vec::with_capacity(2 + FEW_SHOT.len() * 2);
+    msgs.push(AiMessage::system(system));
+    for (demo_user, demo_reply) in FEW_SHOT {
+        msgs.push(AiMessage::user(*demo_user));
+        msgs.push(AiMessage::assistant(*demo_reply));
+    }
+    msgs.push(AiMessage::user(user_text));
+    msgs
 }
 
 /// One-line environment summary shared by the user `<env>` block and the
@@ -397,15 +434,35 @@ mod tests {
     #[test]
     fn suggestion_messages_count_and_roles() {
         let msgs = suggestion_messages(&ctx_basic());
-        assert_eq!(msgs.len(), 2);
+        // system + N few-shot (user, assistant) pairs + the live user turn.
+        assert_eq!(msgs.len(), 2 + super::FEW_SHOT.len() * 2);
         assert_eq!(msgs[0].role, "system");
-        assert_eq!(msgs[1].role, "user");
+        for pair in msgs[1..msgs.len() - 1].chunks(2) {
+            assert_eq!(pair[0].role, "user", "few-shot demo must be a user turn");
+            assert_eq!(pair[1].role, "assistant", "few-shot reply must be assistant");
+        }
+        assert_eq!(msgs.last().unwrap().role, "user");
+    }
+
+    #[test]
+    fn few_shot_replies_are_bare_commands() {
+        // The demos teach the output shape — they must themselves obey it
+        // (single line, no fences, no prompt prefix, parseable).
+        for (_, reply) in super::FEW_SHOT {
+            assert_eq!(reply.lines().count(), 1, "demo reply must be one line");
+            assert!(!reply.contains("```"), "demo reply must not be fenced");
+            assert_eq!(
+                extract_suggested_command(reply).as_deref(),
+                Some(*reply),
+                "demo reply must parse to itself"
+            );
+        }
     }
 
     #[test]
     fn suggestion_messages_embeds_structured_sections() {
         let msgs = suggestion_messages(&ctx_basic());
-        let u = &msgs[1].content;
+        let u = &msgs.last().unwrap().content;
         assert!(u.contains("<env>"), "env section present");
         assert!(u.contains("cwd = /repo"), "cwd embedded");
         assert!(u.contains("<recent_commands>"), "recent commands present");
@@ -433,7 +490,7 @@ mod tests {
             ..SuggestionContext::default()
         };
         let msgs = suggestion_messages(&ctx);
-        let u = &msgs[1].content;
+        let u = &msgs.last().unwrap().content;
         assert!(u.contains("<recent_output>"), "fallback tail present");
         assert!(u.contains("file.txt"));
         assert!(!u.contains("<recent_commands>"));
@@ -503,7 +560,11 @@ mod tests {
             msgs[0].content.contains("OS = linux; shell = bash"),
             "system message must repeat the live environment"
         );
-        assert!(msgs[1].content.contains("OS = linux; shell = bash"));
+        assert!(msgs
+            .last()
+            .unwrap()
+            .content
+            .contains("OS = linux; shell = bash"));
     }
 
     #[test]
@@ -516,9 +577,11 @@ mod tests {
             ..SuggestionContext::default()
         };
         let msgs = suggestion_messages(&ctx);
-        for m in &msgs {
+        // The env line lives in the system message and the LIVE user turn
+        // (few-shot demos in between carry their own fixed environments).
+        for m in [&msgs[0], msgs.last().unwrap()] {
             assert!(
-                m.content.contains("REMOTE SESSION") || m.content.contains("Rules"),
+                m.content.contains("REMOTE SESSION"),
                 "remote flag must surface in the env line"
             );
             assert!(
@@ -549,6 +612,6 @@ mod tests {
             ..SuggestionContext::default()
         };
         let msgs = suggestion_messages(&ctx);
-        assert!(msgs[1].content.contains("shell = unknown"));
+        assert!(msgs.last().unwrap().content.contains("shell = unknown"));
     }
 }
