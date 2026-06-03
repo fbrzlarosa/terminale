@@ -145,7 +145,7 @@ rfd = { version = "0.15", default-features = false, features = [
 ] }
 
 # OS integration
-global-hotkey = "0.5"
+global-hotkey = "0.8"
 arboard = "3"
 open = "5"
 # System resource sampling (CPU + memory) for the bottom resource-indicator strip.
