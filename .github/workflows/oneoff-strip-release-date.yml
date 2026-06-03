@@ -1,0 +1,19 @@
+# One-off (delete after it runs): retitle the v0.1.16 release to drop the
+# date — release titles carry the bare version only, per project convention.
+# Same pattern as the v0.1.10 recovery one-offs.
+name: oneoff-strip-release-date
+permissions:
+  contents: write
+on:
+  push:
+    branches: [main]
+jobs:
+  retitle:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Strip the date from the v0.1.16 release title
+        run: |
+          gh release edit v0.1.16 --repo "${{ github.repository }}" --title "0.1.16"
+          echo "retitled v0.1.16"

@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
-## [0.1.16] — 2026-06-03
+## [0.1.16]
 
 Supersedes v0.1.15, whose release pipeline failed mid-publish and left a
 partial release (no Windows/Linux downloads). All v0.1.15 changes below are
@@ -26,7 +26,7 @@ included.
   partial archive and fail checksum verification — or see a release with no
   matching asset at all
 
-## [0.1.15] — 2026-06-03
+## [0.1.15]
 
 ### Fixed
 - macOS: the downloaded `.dmg` no longer opens as **"damaged"** on Apple
