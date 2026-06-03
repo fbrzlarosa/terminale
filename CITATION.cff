@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use terminale in your work, please cite it as below."
+type: software
+title: "terminale"
+abstract: "A native, cross-platform, GPU-accelerated terminal emulator written in Rust."
+authors:
+  - family-names: "La Rosa"
+    given-names: "Fabrizio"
+    email: "hello@stackbyte.dev"
+repository-code: "https://github.com/fbrzlarosa/terminale"
+url: "https://stackbyte.dev/terminale"
+license:
+  - MIT
+  - Apache-2.0
+version: "0.1.13"
+date-released: "2026-06-03"

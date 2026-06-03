@@ -1,0 +1,13 @@
+# Default owner for everything in the repo. More specific rules below win.
+* @fbrzlarosa
+
+# GPU rendering layer — changes here affect every frame on every OS.
+/crates/terminale-render/ @fbrzlarosa
+
+# Terminal emulation / escape-sequence parsing — correctness-critical.
+/crates/terminale-term/ @fbrzlarosa
+
+# CI, release pipeline, and security automation.
+/.github/workflows/ @fbrzlarosa
+/deny.toml @fbrzlarosa
+/.cargo/audit.toml @fbrzlarosa
