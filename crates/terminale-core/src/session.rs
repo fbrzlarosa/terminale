@@ -137,20 +137,49 @@ impl std::fmt::Debug for Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // Kill the child process before the PTY master / pseudo-console tears
-        // down. On Windows, closing the ConPTY pseudo-console blocks until the
-        // background reader thread's pending blocking `read()` returns — and
-        // while the child is alive and silent, that read never returns. So the
-        // master drop would dead-lock the entire `Session` drop. That is exactly
-        // what hung session-restore: replacing the freshly-spawned initial tab
-        // (`tabs.clear()`) dropped a brand-new `Session` whose reader was parked
-        // in `read()`. Killing the child makes the PTY read return EOF, the
-        // reader thread exits, and the pseudo-console can close cleanly.
+        // PTY teardown can block indefinitely, so it must NEVER run on the
+        // calling thread (typically the winit event loop). On Windows,
+        // closing the ConPTY pseudo-console blocks until the console host
+        // (OpenConsole.exe) drains and exits — and the host stays alive while
+        // ANY process in the child's tree keeps a handle to the pseudo
+        // console. `kill()` only terminates the direct child (the shell), so
+        // a tab running e.g. a dev server kept the host alive and the master
+        // drop froze the whole event loop until Windows reported the app as
+        // hung and killed it (WER `AppHangXProcB1` on OpenConsole.exe).
         //
-        // For remote (SSH) backends there is no local child to kill.
-        if let Backend::Pty { child, .. } = &self.backend {
-            if let Some(mut guard) = child.try_lock() {
-                let _ = guard.kill();
+        // So: swap the backend out for an inert placeholder and hand the
+        // real teardown (child kill + master/pseudo-console close) to a
+        // detached reaper thread. The worst case is now a leaked background
+        // thread + console host instead of a dead app.
+        //
+        // For remote (SSH) backends there is no local child to kill and no
+        // pseudo-console to close — dropping the closures is trivially cheap,
+        // so those tear down inline.
+        let backend = std::mem::replace(
+            &mut self.backend,
+            Backend::Remote {
+                write: Arc::new(|_: &[u8]| Ok(())),
+                resize: Arc::new(|_, _| Ok(())),
+            },
+        );
+        if let Backend::Pty { child, .. } = &backend {
+            let child = Arc::clone(child);
+            let spawned = thread::Builder::new()
+                .name("terminale-pty-reaper".into())
+                .spawn(move || {
+                    // Blocking lock is fine here — we're off the UI thread.
+                    // Killing the child makes the reader thread's pending
+                    // `read()` return EOF, which lets the pseudo-console
+                    // close cleanly when `backend` (the master) drops below.
+                    let _ = child.lock().kill();
+                    drop(backend);
+                });
+            if let Err(e) = spawned {
+                // Reaper thread failed to spawn (resource exhaustion). The
+                // backend was moved into the closure which never ran, so it
+                // drops right here on the calling thread — same behaviour as
+                // before this fix, and strictly better than leaking the PTY.
+                tracing::warn!(?e, "pty reaper thread spawn failed; tearing down inline");
             }
         }
     }
@@ -467,6 +496,27 @@ mod tests {
         assert!(
             rx.recv_timeout(Duration::from_secs(10)).is_ok(),
             "spawning then dropping a Session dead-locked (ConPTY teardown)"
+        );
+    }
+
+    /// Regression for the tab-close hang: `Session::drop` must return
+    /// (nearly) immediately on the calling thread — the blocking ConPTY
+    /// teardown happens on the detached reaper thread. Before this fix the
+    /// drop ran `ClosePseudoConsole` inline, which blocks until the console
+    /// host exits; with any descendant process still attached that meant the
+    /// event loop froze and Windows killed the app as hung.
+    #[test]
+    fn session_drop_returns_promptly_on_calling_thread() {
+        use std::time::{Duration, Instant};
+        let Ok(session) = Session::spawn_default(80, 24) else {
+            return; // no shell available in this environment — skip
+        };
+        let start = Instant::now();
+        drop(session);
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "Session::drop blocked the calling thread for {:?}",
+            start.elapsed()
         );
     }
 
