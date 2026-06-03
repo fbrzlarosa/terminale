@@ -19,19 +19,6 @@
 //! (`NSScreen.screens()[0]` and XRandR primary / compositor-flagged output,
 //! respectively).
 //!
-//! # Cursor-position API
-//!
-//! [`os_cursor_position`] returns the OS-level global cursor position in
-//! virtual-screen physical-pixel coordinates — the same coordinate space used
-//! by winit's `MonitorHandle::position()`. This is a synchronous OS poll, not
-//! an event-driven update, so it is always current at call time and does not
-//! require the application window to have focus.
-//!
-//! [`monitor_at_point`] performs a hit-test against a slice of winit
-//! `MonitorHandle`s to find which monitor contains a given `(x, y)` point.
-//! Together these two functions let callers resolve "where is the user's cursor
-//! right now?" into a `MonitorHandle` without any cached state.
-//!
 //! # Platform notes
 //!
 //! * **Windows** — calls `QueryDisplayConfig` + `DisplayConfigGetDeviceInfo`
@@ -39,25 +26,13 @@
 //!   friendly name (e.g. `"Dell U2720Q"`, `"Generic PnP Monitor"`). This is
 //!   the name shown in *Settings → Display*. Always better than winit's GDI
 //!   device path (`\\.\DISPLAY1`).
-//!   `os_cursor_position` uses `GetCursorPos` which returns coordinates in the
-//!   virtual screen in physical (unscaled) pixels. The application must be
-//!   per-monitor DPI aware (set by winit 0.30 via
-//!   `PROCESS_PER_MONITOR_DPI_AWARE_V2`) for these coordinates to match winit's
-//!   `MonitorHandle::position()` values — do NOT disable that manifest flag.
 //! * **macOS** — reads `NSScreen.localizedName` (10.15+). winit already returns
 //!   this via `MonitorHandle::name()` on recent versions; we call it directly
 //!   for robustness on older builds and to guarantee a non-empty result.
-//!   `os_cursor_position` returns `None` for the first cut; callers should fall
-//!   back to the `quake_last_monitor` snapshot. The macOS retina coordinate
-//!   space requires additional conversion between Quartz points, backing-scale
-//!   factors, and winit physical pixels; this is tracked as a follow-up.
 //! * **Linux / others** — trusts `MonitorHandle::name()`. winit returns the
 //!   XRandR connector name on X11 (`HDMI-1`, `eDP-1`, `DP-2`) and
 //!   `wl_output.name` on Wayland (GNOME 42+, KDE 5.27+). These are already
 //!   user-friendly.
-//!   `os_cursor_position` returns `None` (Wayland provides no global cursor by
-//!   design; X11 support via `x11_dl` is tracked as a follow-up). Callers
-//!   fall back to the `quake_last_monitor` snapshot.
 //!
 //! # Invariants
 //!
@@ -95,11 +70,11 @@ mod imp {
         DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_PATH_INFO,
         DISPLAYCONFIG_SOURCE_DEVICE_NAME, DISPLAYCONFIG_TARGET_DEVICE_NAME, QDC_ONLY_ACTIVE_PATHS,
     };
-    use windows_sys::Win32::Foundation::{ERROR_SUCCESS, POINT};
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
     use windows_sys::Win32::Graphics::Gdi::{
         EnumDisplayMonitors, GetMonitorInfoW, HMONITOR, MONITORINFOEXW,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, MONITORINFOF_PRIMARY};
+    use windows_sys::Win32::UI::WindowsAndMessaging::MONITORINFOF_PRIMARY;
 
     /// Query a friendly monitor name for the given [`MonitorHandle`].
     ///
@@ -284,33 +259,6 @@ mod imp {
 
         None
     }
-
-    /// Query the current OS cursor position in virtual-screen physical-pixel
-    /// coordinates.
-    ///
-    /// Returns `None` only when `GetCursorPos` fails (extremely rare; happens
-    /// only under thread-desktop isolation or a broken driver).
-    ///
-    /// # Coordinate space
-    ///
-    /// `GetCursorPos` returns coordinates in the Win32 virtual screen in
-    /// physical (unscaled) pixels, which is the same coordinate space that
-    /// winit uses for `MonitorHandle::position()`.  This requires the process
-    /// to be per-monitor DPI aware.  winit 0.30 sets
-    /// `PROCESS_PER_MONITOR_DPI_AWARE_V2` by default, so the coordinates are
-    /// correct without any additional scaling.
-    pub(super) fn cursor_position() -> Option<(i32, i32)> {
-        let mut pt = POINT { x: 0, y: 0 };
-        // SAFETY: `pt` is a valid, writable `POINT` on the stack.
-        // `GetCursorPos` writes the cursor position into it and returns
-        // TRUE on success.
-        let ok = unsafe { GetCursorPos(&mut pt) };
-        if ok != 0 {
-            Some((pt.x, pt.y))
-        } else {
-            None
-        }
-    }
 }
 
 // macOS: read NSScreen.localizedName via winit's name() which already returns
@@ -340,17 +288,6 @@ mod imp {
     pub(super) fn primary_monitor_by_enumeration() -> Option<String> {
         None
     }
-
-    /// macOS global cursor position — not yet implemented.
-    ///
-    /// The macOS implementation requires converting between Quartz global
-    /// display points (Y-down, Quartz device space) and winit physical pixels
-    /// (also Y-down but scaled by the backing-scale factor per-screen on
-    /// Retina displays).  This is tracked as a follow-up; callers fall back
-    /// to the `quake_last_monitor` snapshot on this platform.
-    pub(super) fn cursor_position() -> Option<(i32, i32)> {
-        None
-    }
 }
 
 // Linux / other unixes: XRandR output names and wl_output.name are already
@@ -375,16 +312,6 @@ mod imp {
     /// compositor-flagged output on Wayland. No supplemental enumeration
     /// is needed.
     pub(super) fn primary_monitor_by_enumeration() -> Option<String> {
-        None
-    }
-
-    /// Linux global cursor position — not yet implemented.
-    ///
-    /// Wayland intentionally does not expose the global cursor position
-    /// (privacy design). X11 support via `x11_dl::xlib::XQueryPointer` is
-    /// tracked as a follow-up. Callers fall back to the `quake_last_monitor`
-    /// snapshot on this platform.
-    pub(super) fn cursor_position() -> Option<(i32, i32)> {
         None
     }
 }
@@ -427,59 +354,6 @@ pub fn os_primary_monitor(monitors: &[MonitorHandle]) -> Option<MonitorHandle> {
         .cloned()
 }
 
-/// Query the OS cursor position in virtual-screen physical-pixel coordinates.
-///
-/// Returns `Some((x, y))` in the same coordinate space as
-/// `MonitorHandle::position()` so the result can be used directly in
-/// [`monitor_at_point`].
-///
-/// Returns `None` on platforms where a reliable global cursor position is not
-/// yet implemented (macOS, Linux) — callers should fall back to a cached
-/// monitor snapshot in that case.  See the module-level docs for the per-
-/// platform coordinate-space invariants and planned follow-up work.
-///
-/// # Thread safety
-///
-/// Safe to call from the main thread inside the winit event loop.  On Windows
-/// the function is synchronous (no messages dispatched).
-pub fn os_cursor_position() -> Option<(i32, i32)> {
-    imp::cursor_position()
-}
-
-/// Find which monitor in `monitors` contains the point `(x, y)`.
-///
-/// `x` and `y` must be in the same coordinate space as
-/// `MonitorHandle::position()` — virtual-screen physical pixels on Windows,
-/// global points on macOS, virtual-screen logical pixels on Linux.  Use
-/// [`os_cursor_position`] to obtain a point in the correct space.
-///
-/// The hit-test uses inclusive-lower / exclusive-upper bounds on both axes,
-/// which is the standard convention for tiling rectangles with no gaps:
-/// `pos.x <= x < pos.x + size.width` and `pos.y <= y < pos.y + size.height`.
-///
-/// Returns `None` when `monitors` is empty or the point falls in a gap between
-/// monitors (e.g. a non-rectangular multi-monitor arrangement).
-pub fn monitor_at_point(monitors: &[MonitorHandle], point: (i32, i32)) -> Option<MonitorHandle> {
-    let (px, py) = point;
-    for m in monitors {
-        let pos = m.position();
-        let size = m.size();
-        // Use checked arithmetic to avoid wrapping on degenerate monitor sizes.
-        // `size.width` / `size.height` are u32; cast to i32 for the addition.
-        // An individual monitor dimension exceeding i32::MAX is not realistic
-        // (that would be a ~2-billion-pixel display), so cast_possible_wrap is
-        // acceptable here.
-        #[allow(clippy::cast_possible_wrap)]
-        let right = pos.x.saturating_add(size.width as i32);
-        #[allow(clippy::cast_possible_wrap)]
-        let bottom = pos.y.saturating_add(size.height as i32);
-        if px >= pos.x && px < right && py >= pos.y && py < bottom {
-            return Some(m.clone());
-        }
-    }
-    None
-}
-
 /// Returns `true` when `s` looks like a raw Win32 device-namespace path
 /// (e.g. `\\.\DISPLAY1` or `\\?\...`). Used as a safety net so we never
 /// surface a GDI path even if a future winit version leaks one through.
@@ -514,7 +388,7 @@ pub fn friendly_monitor_label(mon: &MonitorHandle, zero_based_idx: usize) -> Str
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_gdi_path, monitor_at_point, os_primary_monitor};
+    use super::{looks_like_gdi_path, os_primary_monitor};
 
     #[test]
     fn gdi_path_detection() {
@@ -532,32 +406,5 @@ mod tests {
     #[test]
     fn os_primary_monitor_empty_slice_returns_none() {
         assert!(os_primary_monitor(&[]).is_none());
-    }
-
-    /// `monitor_at_point` must return `None` for an empty monitor list.
-    #[test]
-    fn monitor_at_point_empty_returns_none() {
-        assert!(monitor_at_point(&[], (0, 0)).is_none());
-        assert!(monitor_at_point(&[], (100, 200)).is_none());
-    }
-
-    /// On Windows `os_cursor_position` must not panic.
-    ///
-    /// We cannot assert specific pixel values in a headless test environment,
-    /// but we can assert the call does not panic and that any returned
-    /// coordinates fit in i32 (guaranteed by the Win32 POINT type).
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn os_cursor_position_windows_does_not_panic() {
-        use super::os_cursor_position;
-        // GetCursorPos should always succeed in a normal desktop session.
-        // In headless CI it might still succeed (cursor at (0,0) or wherever
-        // the desktop is parked). We accept both Some and None — the important
-        // thing is that the function does not panic.
-        if let Some((x, y)) = os_cursor_position() {
-            // Coordinates must fit in i32 (trivially true: POINT.x/y are i32).
-            let _ = (x, y);
-        }
-        // None is acceptable in a headless environment.
     }
 }
