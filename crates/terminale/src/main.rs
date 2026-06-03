@@ -7395,8 +7395,20 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             && self.config.quake.edge != terminale_config::QuakeEdge::Off
             && state.quake_visible
         {
-            let cfg = self.config.quake.clone();
-            toggle_quake(state, &cfg);
+            // Focus moving to one of OUR OWN auxiliary windows must not hide
+            // the quake terminal under the user's feet — most visibly:
+            // opening Settings to configure Quake itself would fade the
+            // terminal away mid-edit (and an interrupted Fade is exactly the
+            // kind of state that used to strand the window semi-transparent).
+            let focus_within_app = self.settings.as_ref().is_some_and(|s| s.window.has_focus())
+                || self
+                    .ai_assistant
+                    .as_ref()
+                    .is_some_and(|a| a.window.has_focus());
+            if !focus_within_app {
+                let cfg = self.config.quake.clone();
+                toggle_quake(state, &cfg);
+            }
         }
 
         // Deferred pane restart (Ctrl+Shift+R / palette): resolved here so
@@ -12198,10 +12210,13 @@ fn import_openssh_hosts(
 fn import_theme_from_picker(
     config: &mut Config,
     settings: Option<&mut crate::settings_window::SettingsWindow>,
-    _window: &winit::window::Window,
+    window: &winit::window::Window,
 ) {
-    // Open the native file picker. `rfd` is already a dep of terminale.
+    // Open the native file picker, owned by our window — a parentless modal
+    // dialog can open BEHIND the app, which then reads as frozen (Windows
+    // files an AppHang against the unresponsive-looking window).
     let picked = rfd::FileDialog::new()
+        .set_parent(window)
         .add_filter("Theme TOML", &["toml"])
         .set_title("Import Theme")
         .pick_file();

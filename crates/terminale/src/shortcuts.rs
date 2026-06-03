@@ -1061,6 +1061,7 @@ pub(crate) fn export_scrollback(state: &mut RunningState) {
     } else {
         // Open a native save-file dialog.
         rfd::FileDialog::new()
+            .set_parent(&*state.window)
             .set_title("Export scrollback")
             .set_file_name(&default_name)
             .add_filter("Text file", &["txt"])

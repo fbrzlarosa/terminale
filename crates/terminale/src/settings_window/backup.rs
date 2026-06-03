@@ -199,6 +199,7 @@ impl SettingsWindow {
         };
 
         let Some(path) = rfd::FileDialog::new()
+            .set_parent(&*self.window)
             .set_title("Export terminale settings")
             .set_file_name("terminale-settings.tbk")
             .add_filter("terminale backup", &["tbk"])
@@ -241,6 +242,7 @@ impl SettingsWindow {
         }
 
         let Some(path) = rfd::FileDialog::new()
+            .set_parent(&*self.window)
             .set_title("Import terminale settings")
             .add_filter("terminale backup", &["tbk"])
             .add_filter("all files", &["*"])

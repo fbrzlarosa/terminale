@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- Native file dialogs (theme/background/backup/export pickers) are now owned
+  by the window that opened them: a parentless modal dialog could open
+  *behind* the app, which then looked frozen and was reported by Windows as
+  an application hang
+- Quake Fade can no longer strand the window layered and semi-transparent
+  when the animation is interrupted (rapid toggle, switching the animation
+  off, config reload mid-fade): every instant show/hide path now restores
+  full opacity, matching what the animation-completion path already did
+- Quake auto-hide on focus loss no longer fires when focus moves to one of
+  terminale's own windows (Settings, AI assistant) — configuring Quake from
+  Settings used to fade the terminal away mid-edit
+
 ### Added
 - Diagnostic file logging: terminale now writes a rolling daily log file to
   `<config dir>/logs/terminale.log.<date>` (GUI launches have no console, so

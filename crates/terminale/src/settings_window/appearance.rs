@@ -111,7 +111,14 @@ impl SettingsWindow {
                         self.theme_cache_dirty = true;
                     }
                     if ui.button("\u{1f4c2}").on_hover_text("Browse…").clicked() {
-                        if let Some(picked) = rfd::FileDialog::new().pick_folder() {
+                        // `set_parent` makes the dialog owned by the settings
+                        // window: without an owner it can open BEHIND us and
+                        // the app reads as frozen (Windows then files an
+                        // AppHang against the unresponsive-looking window).
+                        if let Some(picked) = rfd::FileDialog::new()
+                            .set_parent(&*self.window)
+                            .pick_folder()
+                        {
                             self.config.appearance.themes_dir = Some(picked);
                             dirty = true;
                             self.theme_cache_dirty = true;
@@ -204,6 +211,7 @@ impl SettingsWindow {
                     }
                     if ui.button("\u{1f4c2}").on_hover_text("Browse…").clicked() {
                         if let Some(picked) = rfd::FileDialog::new()
+                            .set_parent(&*self.window)
                             .add_filter(
                                 "Images",
                                 &[

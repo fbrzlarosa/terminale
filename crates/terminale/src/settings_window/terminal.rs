@@ -938,6 +938,7 @@ impl SettingsWindow {
                 }
                 if ui.small_button("Browse\u{2026}").clicked() {
                     if let Some(path) = rfd::FileDialog::new()
+                        .set_parent(&*self.window)
                         .set_title("Choose export directory")
                         .pick_folder()
                     {

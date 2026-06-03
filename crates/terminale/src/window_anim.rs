@@ -942,6 +942,13 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
             state.window.request_redraw();
         } else {
             state.quake_anim = None;
+            // A Fade interrupted mid-flight (rapid toggle, animation switched
+            // to None, config reload) may have left the window layered and
+            // semi-transparent. A window must NEVER be hidden in that state:
+            // the next show would come back invisible, and a layered wgpu
+            // surface can wedge presentation. Pump completion and snaps
+            // already restore; this instant path must too.
+            set_window_alpha(&state.window, 255);
             state.window.set_visible(false);
         }
         return;
@@ -1046,6 +1053,9 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
         apply_window_rect(&state.window, rect, true);
     }
     state.quake_anim = None;
+    // Defensive mirror of the instant-hide path: if an earlier Fade was
+    // interrupted with alpha < 255, an instant show must come back opaque.
+    set_window_alpha(&state.window, 255);
     state.window.set_visible(true);
     state.window.focus_window();
 }
