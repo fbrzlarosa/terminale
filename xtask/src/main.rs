@@ -280,6 +280,31 @@ fn bundle_macos(bin: Option<PathBuf>) -> Result<PathBuf> {
             .status();
     }
 
+    // Ad-hoc sign the *bundle*. The linker already ad-hoc-signs the inner
+    // Mach-O on Apple Silicon, but that signature expects a bundle-level
+    // `Contents/_CodeSignature/CodeResources` that doesn't exist until the
+    // bundle itself is signed. Without this step `codesign --verify` reports
+    // "code has no resources but signature indicates they must be present" and
+    // Gatekeeper rejects the app as **damaged** — a hard, fatal block on Apple
+    // Silicon (where arm64 code must be signed to run at all). Ad-hoc signing
+    // is NOT notarization: the user still right-clicks → Open the first time,
+    // but it turns the dead-end "damaged" error into the normal
+    // unidentified-developer prompt. Done last so the earlier `xattr -c` sweep
+    // can't strip the freshly written signature metadata.
+    #[cfg(target_os = "macos")]
+    {
+        let status = Command::new("codesign")
+            .args(["--force", "--deep", "--sign", "-", &app.to_string_lossy()])
+            .status()
+            .context("run codesign (macOS) to ad-hoc sign the bundle")?;
+        if !status.success() {
+            bail!(
+                "codesign --sign - failed for {} (the .app would be rejected as 'damaged' on Apple Silicon)",
+                app.display()
+            );
+        }
+    }
+
     println!("built {} (v{version})", app.display());
     println!(
         "test it: open {}  — or drag it into /Applications",
