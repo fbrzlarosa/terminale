@@ -20,6 +20,15 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - Killed shells are reaped before their pseudo-console is closed, so a torn
   down tab can no longer leave an orphaned console-host process spinning at
   full CPU in the background
+- **AI suggestions know where they're running.** SSH sessions (native SSH
+  tabs, and `ssh`/`mosh` typed in a local shell and still connected) now tell
+  the model the commands execute on a remote host with an unknown OS — it is
+  instructed to prefer portable POSIX commands and, when the right command
+  depends on the remote OS, to suggest a discovery command first (`uname -a`)
+  instead of assuming the local machine. The live OS/shell/cwd line is also
+  repeated inside the system prompt, where small local models actually honour
+  it — fixing wrong-OS suggestions (Unix commands proposed to PowerShell and
+  vice versa)
 
 ## [0.1.17]
 

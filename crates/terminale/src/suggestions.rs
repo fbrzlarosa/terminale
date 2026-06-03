@@ -126,6 +126,33 @@ pub fn current_line_index(cursor_row: u16, history_size: usize) -> usize {
     history_size + cursor_row as usize
 }
 
+/// Heuristic: is the user currently INSIDE a remote shell started from this
+/// local session (an `ssh`/`mosh` command still running)?
+///
+/// OSC 133 command blocks come from the LOCAL shell; while a remote login is
+/// in flight, the most recent block is the `ssh …` invocation with no exit
+/// code yet. In that state the local OS/shell stop describing what executes
+/// typed commands, so the AI context must flip to "remote, OS unknown".
+/// Native SSH tabs don't need this — their `Session::is_remote()` says so
+/// directly.
+#[must_use]
+pub fn inflight_remote_shell(recent_commands: &[(String, Option<i32>)]) -> bool {
+    let Some((cmd, exit)) = recent_commands.last() else {
+        return false;
+    };
+    if exit.is_some() {
+        return false; // finished — we're back at the local prompt
+    }
+    let first_word = cmd.trim().split_whitespace().next().unwrap_or("");
+    // Strip a path prefix (`/usr/bin/ssh`) and a Windows extension.
+    let bare = first_word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(first_word)
+        .trim_end_matches(".exe");
+    matches!(bare, "ssh" | "mosh" | "et")
+}
+
 // ── Provider-usability check ──────────────────────────────────────────────────
 
 /// Returns `true` when the configured default AI provider can actually be used.
@@ -166,6 +193,44 @@ mod tests {
             last_output_at: Instant::now().checked_sub(Duration::from_secs(secs_ago)),
             ..SuggestionRuntime::default()
         }
+    }
+
+    // ── inflight_remote_shell ─────────────────────────────────────────────────
+
+    #[test]
+    fn inflight_ssh_detected() {
+        let recent = vec![
+            ("git status".to_string(), Some(0)),
+            ("ssh user@host".to_string(), None),
+        ];
+        assert!(inflight_remote_shell(&recent));
+    }
+
+    #[test]
+    fn inflight_detects_path_and_exe_variants() {
+        assert!(inflight_remote_shell(&[("/usr/bin/ssh box".into(), None)]));
+        assert!(inflight_remote_shell(&[(
+            r"C:\Windows\System32\OpenSSH\ssh.exe box".into(),
+            None
+        )]));
+        assert!(inflight_remote_shell(&[("mosh devbox".into(), None)]));
+    }
+
+    #[test]
+    fn finished_ssh_is_local_again() {
+        // Exit code present → the remote session ended; back at local prompt.
+        assert!(!inflight_remote_shell(&[("ssh user@host".into(), Some(0))]));
+    }
+
+    #[test]
+    fn non_ssh_running_command_is_not_remote() {
+        assert!(!inflight_remote_shell(&[("cargo build".into(), None)]));
+        // Substring traps: `sshuttle` is not `ssh`.
+        assert!(!inflight_remote_shell(&[(
+            "sshuttle -r host 0/0".into(),
+            None
+        )]));
+        assert!(!inflight_remote_shell(&[]));
     }
 
     #[test]

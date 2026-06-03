@@ -360,6 +360,14 @@ impl Session {
         self.id
     }
 
+    /// `true` when this session is backed by a remote transport (SSH)
+    /// rather than a local PTY. Callers use this to avoid assuming the
+    /// local OS/shell apply to what's running in the session.
+    #[must_use]
+    pub fn is_remote(&self) -> bool {
+        matches!(self.backend, Backend::Remote { .. })
+    }
+
     /// Current PTY size in (cols, rows).
     #[must_use]
     pub fn size(&self) -> (u16, u16) {

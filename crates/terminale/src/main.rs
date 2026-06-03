@@ -9714,6 +9714,10 @@ fn build_suggestion_context(
         ..Default::default()
     };
     if let Some(tab) = state.tabs.get(state.active_tab) {
+        // Native SSH tab → the session runs on a remote host; the local
+        // OS/shell don't describe it. (An `ssh` typed in a LOCAL shell is
+        // detected below once the recent command blocks are known.)
+        sctx.remote = tab.session.is_remote();
         let emu = tab.emulator.lock();
         let all_lines = emu.buffer_lines_text();
         // The cursor's visible row maps into buffer_lines_text() AFTER the
@@ -9739,6 +9743,11 @@ fn build_suggestion_context(
                 .filter(|b| !b.command_text.trim().is_empty())
                 .map(|b| (b.command_text.clone(), b.exit_code))
                 .collect();
+            // `ssh host` typed in a local shell and still running → typed
+            // commands now execute on the remote box.
+            if suggestions::inflight_remote_shell(&sctx.recent_commands) {
+                sctx.remote = true;
+            }
             if let Some(b) = blocks.last() {
                 sctx.cwd = b.cwd.clone();
                 if let Some(code) = b.exit_code.filter(|&c| c != 0) {

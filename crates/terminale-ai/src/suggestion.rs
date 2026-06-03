@@ -32,6 +32,10 @@ const SYSTEM_PROMPT: &str = concat!(
     "- Use the syntax of the user's ACTUAL shell and OS (stated in <env>). ",
     "On Windows PowerShell use cmdlets such as Get-ChildItem / dir and NEVER `ls -l`; ",
     "on cmd.exe use dir; only use Unix commands (ls, grep, cat, ...) when the shell is clearly bash / zsh / sh.\n",
+    "- When <env> says this is a REMOTE session (SSH) with an unknown OS, do NOT assume the ",
+    "local OS: prefer portable POSIX commands, and if the right command depends on the remote ",
+    "OS or distro, suggest a safe discovery command FIRST (`uname -a`, or `cat /etc/os-release` ",
+    "on Linux) instead of guessing.\n",
     "- Never mention any specific terminal-emulator product by name.",
 );
 
@@ -55,9 +59,17 @@ pub struct LastError {
 #[derive(Debug, Clone, Default)]
 pub struct SuggestionContext {
     /// `std::env::consts::OS` — `"windows"`, `"macos"`, `"linux"`.
+    /// Describes the LOCAL machine; ignored for the env line when
+    /// `remote` is set (the remote OS is unknown).
     pub os: String,
     /// Launching profile / shell name (e.g. `"PowerShell"`, `"bash"`).
     pub shell: String,
+    /// `true` when the focused session runs on a remote host (an SSH tab,
+    /// or an `ssh`/`mosh` command currently in flight in a local shell).
+    /// The local `os`/`shell` then do NOT describe what executes the
+    /// command — the env line says so explicitly so the model stops
+    /// proposing local-OS syntax at a remote box.
+    pub remote: bool,
     /// Current working directory (OSC 7), when known.
     pub cwd: Option<String>,
     /// Most recent commands, oldest first: `(command_text, exit_code)`.
@@ -85,16 +97,8 @@ pub struct SuggestionContext {
 /// The caller feeds these messages into [`crate::AiProvider::complete`].
 #[must_use]
 pub fn suggestion_messages(ctx: &SuggestionContext) -> Vec<AiMessage> {
-    let shell = if ctx.shell.trim().is_empty() {
-        "unknown"
-    } else {
-        ctx.shell.trim()
-    };
-    let mut user_text = format!(
-        "<env>\nOS = {os}; shell = {shell}; cwd = {cwd}\n</env>\n",
-        os = ctx.os,
-        cwd = ctx.cwd.as_deref().unwrap_or("unknown"),
-    );
+    let env_line = env_line(ctx);
+    let mut user_text = format!("<env>\n{env_line}\n</env>\n");
     if !ctx.recent_commands.is_empty() {
         user_text.push_str("<recent_commands>\n");
         for (cmd, exit) in &ctx.recent_commands {
@@ -122,7 +126,38 @@ pub fn suggestion_messages(ctx: &SuggestionContext) -> Vec<AiMessage> {
         "<current_input>\n{}\n</current_input>\nNext command:",
         ctx.current_line,
     ));
-    vec![AiMessage::system(SYSTEM_PROMPT), AiMessage::user(user_text)]
+    // Repeat the live environment INSIDE the system message too: small local
+    // models (the 3-4B class users run via local providers) weight system
+    // instructions far more than a line buried in the user turn, and the
+    // wrong-OS suggestions almost always came from exactly that.
+    let system = format!("{SYSTEM_PROMPT}\n\nCurrent environment (authoritative): {env_line}");
+    vec![AiMessage::system(system), AiMessage::user(user_text)]
+}
+
+/// One-line environment summary shared by the user `<env>` block and the
+/// system-prompt suffix. Remote sessions deliberately replace the local
+/// OS/shell with "unknown" + an explicit warning — advertising the local
+/// values for a remote box is precisely what produced wrong-OS suggestions.
+fn env_line(ctx: &SuggestionContext) -> String {
+    if ctx.remote {
+        format!(
+            "REMOTE SESSION over SSH — remote OS/shell UNKNOWN (do not assume the local OS; \
+             the local machine is {os} but commands run on the remote host); cwd = {cwd}",
+            os = ctx.os,
+            cwd = ctx.cwd.as_deref().unwrap_or("unknown"),
+        )
+    } else {
+        let shell = if ctx.shell.trim().is_empty() {
+            "unknown"
+        } else {
+            ctx.shell.trim()
+        };
+        format!(
+            "OS = {os}; shell = {shell}; cwd = {cwd}",
+            os = ctx.os,
+            cwd = ctx.cwd.as_deref().unwrap_or("unknown"),
+        )
+    }
 }
 
 /// Format the same structured context as a readable `<context>` block for
@@ -132,16 +167,8 @@ pub fn suggestion_messages(ctx: &SuggestionContext) -> Vec<AiMessage> {
 #[must_use]
 pub fn assistant_context_block(ctx: &SuggestionContext) -> String {
     let mut out = String::from("<context>\n");
-    out.push_str(&format!(
-        "OS: {} | shell: {} | cwd: {}\n",
-        ctx.os,
-        if ctx.shell.trim().is_empty() {
-            "unknown"
-        } else {
-            ctx.shell.trim()
-        },
-        ctx.cwd.as_deref().unwrap_or("unknown"),
-    ));
+    out.push_str(&env_line(ctx));
+    out.push('\n');
     if !ctx.recent_commands.is_empty() {
         out.push_str("Recent commands (oldest first):\n");
         for (cmd, exit) in &ctx.recent_commands {
@@ -351,6 +378,7 @@ mod tests {
         SuggestionContext {
             os: "linux".into(),
             shell: "bash".into(),
+            remote: false,
             cwd: Some("/repo".into()),
             recent_commands: vec![
                 ("git status".into(), Some(0)),
@@ -463,6 +491,52 @@ mod tests {
         assert!(
             SYSTEM_PROMPT.contains("PowerShell") && SYSTEM_PROMPT.contains("ls -l"),
             "system prompt must steer the model away from Unix commands on PowerShell"
+        );
+    }
+
+    #[test]
+    fn system_message_carries_live_environment() {
+        // Small local models weight system instructions over user-turn text;
+        // the env line must be present in BOTH places.
+        let msgs = suggestion_messages(&ctx_basic());
+        assert!(
+            msgs[0].content.contains("OS = linux; shell = bash"),
+            "system message must repeat the live environment"
+        );
+        assert!(msgs[1].content.contains("OS = linux; shell = bash"));
+    }
+
+    #[test]
+    fn remote_context_replaces_local_os_and_warns() {
+        let ctx = SuggestionContext {
+            os: "windows".into(),
+            shell: "Windows PowerShell".into(),
+            remote: true,
+            current_line: "l".into(),
+            ..SuggestionContext::default()
+        };
+        let msgs = suggestion_messages(&ctx);
+        for m in &msgs {
+            assert!(
+                m.content.contains("REMOTE SESSION") || m.content.contains("Rules"),
+                "remote flag must surface in the env line"
+            );
+            assert!(
+                !m.content.contains("shell = Windows PowerShell"),
+                "a remote session must NOT advertise the local shell as the target"
+            );
+        }
+        // The assistant context block must flip too.
+        let block = assistant_context_block(&ctx);
+        assert!(block.contains("REMOTE SESSION"));
+        assert!(!block.contains("shell = Windows PowerShell"));
+    }
+
+    #[test]
+    fn system_prompt_has_remote_discovery_rule() {
+        assert!(
+            SYSTEM_PROMPT.contains("uname -a") && SYSTEM_PROMPT.contains("REMOTE"),
+            "system prompt must teach discovery-first for unknown remote OSes"
         );
     }
 
