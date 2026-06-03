@@ -79,25 +79,14 @@ impl SettingsWindow {
                 let hr = ui.horizontal(|ui| {
                     field_label(ui, "Display");
 
-                    // Build friendly hints for "Current" and "Primary" once
-                    // per frame so both the selected-text and the dropdown
-                    // entries show the physical monitor name.
-                    //
-                    // "Current" is resolved from the OS cursor position
-                    // (same logic as the hotkey handler uses at runtime), so
-                    // the hint always shows the monitor the cursor is on right
-                    // now — independent of where the Settings window is.
+                    // Build a friendly hint for "Primary" once per frame so
+                    // both the selected-text and the dropdown entry show the
+                    // physical monitor name. "Window's monitor" needs no
+                    // hint: it resolves at toggle time to wherever the Quake
+                    // window itself was last visible (which this Settings
+                    // window cannot know).
                     let monitors: Vec<_> = self.window.available_monitors().collect();
-                    let cursor_monitor = crate::monitor_names::os_cursor_position()
-                        .and_then(|p| crate::monitor_names::monitor_at_point(&monitors, p));
-                    let current_monitor = self.window.current_monitor();
-                    let current_hint = cursor_monitor
-                        .as_ref()
-                        .or(current_monitor.as_ref())
-                        .map_or_else(
-                            || "unknown".to_string(),
-                            |m| crate::monitor_names::friendly_monitor_label(m, 0),
-                        );
+                    let current_hint = "follows the window".to_string();
                     let os_primary = crate::monitor_names::os_primary_monitor(&monitors);
                     let winit_primary = self.window.primary_monitor();
                     let primary_hint = os_primary.as_ref().or(winit_primary.as_ref()).map_or_else(
@@ -107,7 +96,7 @@ impl SettingsWindow {
 
                     let current_label = match self.config.quake.display {
                         terminale_config::QuakeDisplay::Current => {
-                            format!("Current \u{2014} {current_hint}")
+                            format!("Window's monitor \u{2014} {current_hint}")
                         }
                         terminale_config::QuakeDisplay::Primary => {
                             format!("Primary \u{2014} {primary_hint}")
@@ -124,7 +113,7 @@ impl SettingsWindow {
                                         self.config.quake.display,
                                         terminale_config::QuakeDisplay::Current
                                     ),
-                                    format!("Current \u{2014} {current_hint}"),
+                                    format!("Window's monitor \u{2014} {current_hint}"),
                                 )
                                 .clicked()
                             {
@@ -179,11 +168,9 @@ impl SettingsWindow {
                 sublabel(
                     ui,
                     "Which monitor the dock attaches to. \
-                     \u{201c}Current\u{201d} = the monitor containing your mouse \
-                     cursor at the moment you press the Quake hotkey \u{2014} \
-                     queried from the OS at hotkey time, independent of where \
-                     this Settings window or the terminal window is. \
-                     The name shown updates live as you move your cursor. \
+                     \u{201c}Window's monitor\u{201d} = the toggle always shows the \
+                     window back on the monitor it was last visible on; drag the \
+                     window to another monitor to anchor it there. \
                      \u{201c}Primary\u{201d} always uses the OS-marked primary.",
                 );
             });

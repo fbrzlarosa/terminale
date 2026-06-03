@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Closing a tab no longer freezes (and gets killed) the whole app** when the
+  tab's shell still has child processes attached. PTY teardown — including the
+  Windows pseudo-console close, which blocks until the console host exits —
+  now runs on a background reaper thread instead of the UI event loop
+- **Text selection, link detection, and mouse reporting now work in split
+  panes.** Mouse hit-testing was window-global and knew nothing about the pane
+  layout, so in any split the clicked cell matched no pane's grid: drag /
+  double-click / triple-click selection silently failed and URLs under the
+  pointer were never recognised. Hit-testing is now pane-aware (pane-local
+  cells), and the URL/path scanner runs per pane — links resolve in every
+  pane of a split, not just the focused one
+- Holding **Shift** now bypasses app mouse reporting (xterm convention), so
+  text can be selected and the wheel scrolls history even inside full-screen
+  apps that capture the mouse
+- The log file no longer fills with third-party GPU noise (`wgpu` logged every
+  device poll at INFO — hundreds of MB per day); chatty crates are capped at
+  WARN unless explicitly re-enabled via `logging.file_level`
+
+### Changed
+- The pointer now shows the standard **I-beam** cursor over the terminal text
+  grid (and the hand cursor over Ctrl+clickable links), instead of the default
+  arrow everywhere
+- **Quake mode is anchored to its own monitor**: the toggle always shows the
+  window on the monitor it was last visible on, and dragging it to another
+  monitor re-anchors it there. The previous behaviour ("follow the mouse
+  cursor at hotkey time") proved unreliable and surprising; the `display`
+  setting's `current` option now means "window's monitor" (`primary` and
+  fixed-index pinning are unchanged)
+
 ## [0.1.16]
 
 Supersedes v0.1.15, whose release pipeline failed mid-publish and left a

@@ -1102,32 +1102,31 @@ pub(crate) fn compute_quake_target(
     // Pick the target monitor following `cfg.display`.
     let monitors: Vec<_> = state.window.available_monitors().collect();
     let mon = match cfg.display {
-        // `Current` means "the monitor containing the OS cursor at the moment
-        // the hotkey fires".  We resolve this by polling the OS cursor
-        // position synchronously via `os_cursor_position` + `monitor_at_point`
-        // — this is a pull (not a push/cache), so it is always correct even
-        // when the Quake window has been hidden and the user has moved to a
-        // different monitor in another application.
+        // `Current` means "the monitor this Quake window lives on" — the one
+        // it was on when it was last visible (snapshotted at hide-time and on
+        // every visible-window Move/Focus/Resize). The toggle therefore always
+        // shows the window back on the SAME monitor it disappeared from; to
+        // re-anchor Quake to a different monitor, show it and drag it there.
+        //
+        // This used to chase the OS cursor instead ("monitor under the mouse
+        // at hotkey time"), which was unreliable in practice and made the
+        // window land on whatever monitor the pointer happened to cross —
+        // surprising, and unusable with several windows parked on several
+        // monitors.
         //
         // Fallback chain (in priority order):
-        //  1. OS cursor → monitor at that point  (Windows; None on macOS/Linux)
-        //  2. quake_last_monitor snapshot          (set at hide-time and on
-        //                                           visible-window events;
-        //                                           the only signal on macOS/Linux)
-        //  3. Window::current_monitor()            (window's last-known rect)
-        //  4. Window::primary_monitor()            (last resort)
-        //  5. First available monitor              (degenerate: no other info)
+        //  1. quake_last_monitor snapshot  (authoritative: where it last was)
+        //  2. Window::current_monitor()    (window's last-known rect)
+        //  3. Window::primary_monitor()    (last resort)
+        //  4. First available monitor      (degenerate: no other info)
         QuakeDisplay::Current => {
-            let cursor_mon = crate::monitor_names::os_cursor_position()
-                .and_then(|p| crate::monitor_names::monitor_at_point(&monitors, p));
             tracing::debug!(
-                os_cursor = ?crate::monitor_names::os_cursor_position(),
-                monitor_from_cursor = ?cursor_mon.as_ref().and_then(winit::monitor::MonitorHandle::name),
                 snapshot = ?state.quake_last_monitor.as_ref().and_then(winit::monitor::MonitorHandle::name),
-                "compute_quake_target: Current resolution chain"
+                "compute_quake_target: Current = window's own monitor"
             );
-            cursor_mon
-                .or_else(|| state.quake_last_monitor.clone())
+            state
+                .quake_last_monitor
+                .clone()
                 .or_else(|| state.window.current_monitor())
                 .or_else(|| state.window.primary_monitor())
                 .or_else(|| monitors.first().cloned())

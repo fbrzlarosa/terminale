@@ -122,15 +122,18 @@ impl QuakeEdge {
     }
 }
 
-/// Which monitor the Quake terminal docks on. `Current` follows the
-/// window's current monitor at toggle time; `Primary` always uses the
+/// Which monitor the Quake terminal docks on. `Current` (default) keeps
+/// the window anchored to its own monitor — show/hide always happens on
+/// the monitor the window was last visible on, and dragging the window to
+/// another monitor re-anchors it there. `Primary` always uses the
 /// OS-designated primary; `Index(n)` pins it to the n-th enumerated
 /// monitor (the order winit returns from `available_monitors()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum QuakeDisplay {
-    /// Use whichever monitor the Quake window is currently sitting on
-    /// (or, if it's hidden, the one it was last on).
+    /// Use the monitor the Quake window is currently sitting on (or, if
+    /// it's hidden, the one it was last visible on). Drag the window to a
+    /// different monitor to re-anchor the toggle there.
     Current,
     /// Always use the OS primary monitor.
     Primary,
