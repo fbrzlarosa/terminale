@@ -90,9 +90,21 @@ pub fn download_and_stage() -> Result<Option<String>> {
     let tmp = tempfile::tempdir().context("create temp dir for download")?;
     let archive = tmp.path().join(&asset.name);
 
-    // Download archive + checksum over HTTPS.
-    download_to_file(&asset.download_url, &archive)?;
-    let expected = parse_sha256(&download_to_string(&sum_asset.download_url)?);
+    // Download archive + checksum over HTTPS — via the BROWSER download URL,
+    // not the `api.github.com` asset endpoint that `asset.download_url`
+    // carries. API downloads count against GitHub's unauthenticated rate
+    // limit (60 requests/hour per IP) and fail with 403 once exhausted;
+    // `github.com/<owner>/<repo>/releases/download/…` is the CDN path with no
+    // API rate limit. Only the small release-list metadata call above still
+    // touches the API.
+    download_to_file(
+        &browser_download_url(&latest.version, &asset.name),
+        &archive,
+    )?;
+    let expected = parse_sha256(&download_to_string(&browser_download_url(
+        &latest.version,
+        &sum_asset.name,
+    ))?);
 
     // Verify BEFORE touching the installed binary.
     let actual = sha256_of(&archive)?;
@@ -137,6 +149,13 @@ fn download_to_string(url: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 
+/// Rate-limit-free download URL for a release asset. Our tags are always
+/// `v{semver}` (cargo-dist), and `self_update` strips the leading `v` from
+/// `Release::version`, so the tag is reconstructed here.
+fn browser_download_url(version: &str, asset_name: &str) -> String {
+    format!("https://github.com/{OWNER}/{REPO}/releases/download/v{version}/{asset_name}")
+}
+
 /// A cargo-dist `.sha256` file is `"<hex>  <filename>"`; take the first token.
 fn parse_sha256(s: &str) -> String {
     s.split_whitespace().next().unwrap_or("").to_owned()
@@ -178,6 +197,19 @@ mod tests {
     #[test]
     fn current_version_is_set() {
         assert!(!current_version().is_empty());
+    }
+
+    #[test]
+    fn browser_download_url_uses_cdn_not_api() {
+        let url = browser_download_url("0.1.14", "terminale-x86_64-pc-windows-msvc.zip");
+        assert_eq!(
+            url,
+            "https://github.com/fbrzlarosa/terminale/releases/download/v0.1.14/terminale-x86_64-pc-windows-msvc.zip",
+        );
+        assert!(
+            !url.contains("api.github.com"),
+            "asset downloads must never go through the rate-limited API host"
+        );
     }
 
     #[test]
