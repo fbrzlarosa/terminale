@@ -6406,7 +6406,7 @@ dependencies = [
  "terminale-core",
  "thiserror 1.0.69",
  "tracing",
- "unicode-width 0.1.14",
+ "unicode-width 0.2.2",
 ]
 
 [[package]]
