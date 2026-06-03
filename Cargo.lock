@@ -6309,7 +6309,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -6328,7 +6328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "toml 0.8.23",
  "tracing",
 ]
@@ -6342,7 +6342,7 @@ dependencies = [
  "portable-pty",
  "serde",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -6355,7 +6355,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
 ]
 
@@ -6374,7 +6374,7 @@ dependencies = [
  "swash",
  "terminale-config",
  "terminale-term",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "ttf-parser 0.20.0",
  "wgpu",
@@ -6390,7 +6390,7 @@ dependencies = [
  "serde",
  "tempfile",
  "terminale-config",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
 ]
@@ -6404,7 +6404,7 @@ dependencies = [
  "parking_lot",
  "proptest",
  "terminale-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "unicode-width 0.1.14",
 ]
@@ -6418,7 +6418,7 @@ dependencies = [
  "raw-window-handle",
  "terminale-config",
  "terminale-core",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
  "tracing",
  "winit",
 ]

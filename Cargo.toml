@@ -82,7 +82,7 @@ format_push_string = "allow"
 # Core
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-thiserror = "1"
+thiserror = "2"
 color-eyre = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
