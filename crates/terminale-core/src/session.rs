@@ -172,6 +172,13 @@ impl Drop for Session {
                     // `read()` return EOF, which lets the pseudo-console
                     // close cleanly when `backend` (the master) drops below.
                     let _ = child.lock().kill();
+                    // Reap the child before closing the pseudo-console:
+                    // TerminateProcess is asynchronous, and closing the
+                    // console while the client is still dying is what leaves
+                    // wedged console-host processes spinning at 100% CPU.
+                    // Blocking is fine on this thread; kill() above makes the
+                    // wait bounded in practice.
+                    let _ = child.lock().wait();
                     drop(backend);
                 });
             if let Err(e) = spawned {
