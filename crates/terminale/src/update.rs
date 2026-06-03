@@ -54,11 +54,43 @@ pub fn check_for_update() -> Result<Option<String>> {
     }
 }
 
-/// Download the latest release asset for this target, verify its SHA-256, and
-/// atomically replace the on-disk binary. The running process is untouched; the
-/// new version applies on the next launch. Returns the staged version, or
-/// `Ok(None)` when already up to date.
-pub fn download_and_stage() -> Result<Option<String>> {
+/// What an update attempt actually did. Callers turn this into user-facing
+/// copy — the three success shapes need very different follow-up actions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateOutcome {
+    /// Already running the latest published version.
+    UpToDate,
+    /// The new binary was verified and swapped on disk; it applies on the
+    /// next launch. The running session is untouched.
+    Staged(String),
+    /// The install location is not writable from this process (typically an
+    /// MSI install under `Program Files`), so the platform installer was
+    /// downloaded, verified, and launched — the user finishes the update in
+    /// its UI (Windows handles the elevation prompt).
+    InstallerLaunched(String),
+    /// Non-interactive contexts only (startup auto-update): a newer version
+    /// exists but applying it needs the platform installer, which would pop
+    /// UI/elevation prompts unprompted — so nothing was launched.
+    InstallerRequired(String),
+}
+
+/// Download the latest release for this target, verify its SHA-256, and apply
+/// it. Two strategies:
+///
+/// * **Writable install** (zip/tarball/portable/dev): extract the binary and
+///   atomically replace the on-disk image — `self_replace` handles the
+///   Windows running-exe rename dance — returning [`UpdateOutcome::Staged`].
+///   The running process is untouched; the new version applies on the next
+///   launch.
+/// * **Non-writable install** (MSI under `Program Files`): in-place
+///   replacement is impossible without elevation, and silently rewriting a
+///   Windows-Installer-managed tree would desync the MSI database anyway.
+///   With `interactive = true` the `.msi` for the new version is downloaded,
+///   checksum-verified, and handed to `msiexec` ([`UpdateOutcome::
+///   InstallerLaunched`]); with `interactive = false` nothing is launched and
+///   [`UpdateOutcome::InstallerRequired`] is returned so the caller can
+///   notify instead.
+pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner(OWNER)
         .repo_name(REPO)
@@ -66,7 +98,11 @@ pub fn download_and_stage() -> Result<Option<String>> {
         .fetch()?;
     let latest = releases.first().context("no releases found")?;
     if !self_update::version::bump_is_greater(current_version(), &latest.version)? {
-        return Ok(None);
+        return Ok(UpdateOutcome::UpToDate);
+    }
+
+    if !install_dir_is_writable() {
+        return apply_via_installer(latest, interactive);
     }
 
     let target = self_update::get_target();
@@ -80,42 +116,10 @@ pub fn download_and_stage() -> Result<Option<String>> {
             a.name.contains(target) && (a.name.ends_with(".tar.gz") || a.name.ends_with(".zip"))
         })
         .ok_or_else(|| anyhow!("no release asset matching target {target}"))?;
-    let sum_name = format!("{}.sha256", asset.name);
-    let sum_asset = latest
-        .assets
-        .iter()
-        .find(|a| a.name == sum_name)
-        .ok_or_else(|| anyhow!("no {sum_name} checksum published for this release"))?;
 
     let tmp = tempfile::tempdir().context("create temp dir for download")?;
     let archive = tmp.path().join(&asset.name);
-
-    // Download archive + checksum over HTTPS — via the BROWSER download URL,
-    // not the `api.github.com` asset endpoint that `asset.download_url`
-    // carries. API downloads count against GitHub's unauthenticated rate
-    // limit (60 requests/hour per IP) and fail with 403 once exhausted;
-    // `github.com/<owner>/<repo>/releases/download/…` is the CDN path with no
-    // API rate limit. Only the small release-list metadata call above still
-    // touches the API.
-    download_to_file(
-        &browser_download_url(&latest.version, &asset.name),
-        &archive,
-    )?;
-    let expected = parse_sha256(&download_to_string(&browser_download_url(
-        &latest.version,
-        &sum_asset.name,
-    ))?);
-
-    // Verify BEFORE touching the installed binary.
-    let actual = sha256_of(&archive)?;
-    if expected.is_empty() || !actual.eq_ignore_ascii_case(&expected) {
-        bail!(
-            "checksum mismatch for {} (expected {expected:?}, got {actual}) — refusing to \
-             install. If the release was published minutes ago its assets may still be \
-             uploading; retry shortly",
-            asset.name
-        );
-    }
+    download_and_verify(&latest.version, &asset.name, &latest.assets, &archive)?;
 
     // Extract the binary and atomically replace ourselves on disk.
     let bin = if cfg!(windows) {
@@ -130,7 +134,115 @@ pub fn download_and_stage() -> Result<Option<String>> {
         .with_context(|| format!("extract {bin} from {}", asset.name))?;
     self_replace::self_replace(out.join(bin)).context("atomically replace the running binary")?;
 
-    Ok(Some(latest.version.clone()))
+    Ok(UpdateOutcome::Staged(latest.version.clone()))
+}
+
+/// Can this process create files in the directory the running binary lives
+/// in? Probed with a real `create_new` + delete, which is the only reliable
+/// answer on Windows (ACLs) and Unix (mount flags, ownership) alike.
+fn install_dir_is_writable() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(dir) = exe.parent() else {
+        return false;
+    };
+    let probe = dir.join(format!(".terminale-update-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(f) => {
+            drop(f);
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Non-writable install: hand the update to the platform installer.
+///
+/// Windows: download + verify the release `.msi` and launch `msiexec /i` —
+/// Windows Installer performs the upgrade (and shows the standard elevation
+/// prompt). Elsewhere a read-only install means a package manager owns the
+/// binary, so we bail with a pointer to it rather than fight the ownership.
+fn apply_via_installer(
+    latest: &self_update::update::Release,
+    interactive: bool,
+) -> Result<UpdateOutcome> {
+    if !cfg!(windows) {
+        bail!(
+            "terminale is installed in a read-only location; update it with the package \
+             manager that installed it (e.g. `brew upgrade terminale` or your distro's tool)"
+        );
+    }
+    if !interactive {
+        return Ok(UpdateOutcome::InstallerRequired(latest.version.clone()));
+    }
+
+    let target = self_update::get_target();
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    let asset = latest
+        .assets
+        .iter()
+        .find(|a| a.name.contains(target) && a.name.ends_with(".msi"))
+        .ok_or_else(|| anyhow!("no .msi release asset matching target {target}"))?;
+
+    // Persistent temp location — msiexec reads the file AFTER this function
+    // returns, so a self-deleting tempdir would yank it away mid-install.
+    let dir = std::env::temp_dir().join("terminale-update");
+    std::fs::create_dir_all(&dir).context("create download dir for the installer")?;
+    let msi = dir.join(&asset.name);
+    download_and_verify(&latest.version, &asset.name, &latest.assets, &msi)?;
+
+    // Hand off to Windows Installer: it upgrades the managed install,
+    // prompts for elevation itself, and asks to close the running app.
+    std::process::Command::new("msiexec")
+        .arg("/i")
+        .arg(&msi)
+        .spawn()
+        .context("launch msiexec for the downloaded installer")?;
+    Ok(UpdateOutcome::InstallerLaunched(latest.version.clone()))
+}
+
+/// Download release asset `name` to `dest` and verify it against its
+/// published `.sha256` sidecar. Fails (and removes nothing) on any mismatch —
+/// the caller's `dest` must be treated as poisoned in that case.
+fn download_and_verify(
+    version: &str,
+    name: &str,
+    assets: &[self_update::update::ReleaseAsset],
+    dest: &Path,
+) -> Result<()> {
+    let sum_name = format!("{name}.sha256");
+    if !assets.iter().any(|a| a.name == sum_name) {
+        bail!("no {sum_name} checksum published for this release");
+    }
+
+    // Download archive + checksum over HTTPS — via the BROWSER download URL,
+    // not the `api.github.com` asset endpoint that `asset.download_url`
+    // carries. API downloads count against GitHub's unauthenticated rate
+    // limit (60 requests/hour per IP) and fail with 403 once exhausted;
+    // `github.com/<owner>/<repo>/releases/download/…` is the CDN path with no
+    // API rate limit. Only the small release-list metadata call still touches
+    // the API.
+    download_to_file(&browser_download_url(version, name), dest)?;
+    let expected = parse_sha256(&download_to_string(&browser_download_url(
+        version, &sum_name,
+    ))?);
+
+    // Verify BEFORE anything acts on the downloaded file.
+    let actual = sha256_of(dest)?;
+    if expected.is_empty() || !actual.eq_ignore_ascii_case(&expected) {
+        bail!(
+            "checksum mismatch for {name} (expected {expected:?}, got {actual}) — refusing to \
+             install. If the release was published minutes ago its assets may still be \
+             uploading; retry shortly"
+        );
+    }
+    Ok(())
 }
 
 fn download_to_file(url: &str, dest: &Path) -> Result<()> {
@@ -197,6 +309,28 @@ mod tests {
     #[test]
     fn current_version_is_set() {
         assert!(!current_version().is_empty());
+    }
+
+    /// Dev/test binaries live in `target/…`, which is always writable — the
+    /// probe must say so (and clean up after itself; the probe file must not
+    /// survive the call).
+    #[test]
+    fn install_dir_writable_probe_is_clean() {
+        assert!(install_dir_is_writable());
+        let dir = std::env::current_exe()
+            .expect("current_exe")
+            .parent()
+            .expect("exe parent")
+            .to_path_buf();
+        let leftover = std::fs::read_dir(dir)
+            .expect("read exe dir")
+            .filter_map(Result::ok)
+            .any(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".terminale-update-probe-")
+            });
+        assert!(!leftover, "writability probe file must be removed");
     }
 
     #[test]

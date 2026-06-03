@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **In-app updates now work for MSI installs.** The updater tried to replace
+  the binary in place, which fails without elevation when terminale lives
+  under `Program Files` (the MSI default) — "Check for updates now" just
+  errored out. The install location's writability is now probed first: MSI
+  installs download the new release's `.msi` (checksum-verified like every
+  update) and hand it to the Windows installer, which performs the upgrade
+  with the standard elevation prompt. Portable/zip installs keep the silent
+  in-place staging. The startup auto-update never launches installer UI —
+  on MSI installs it only notifies that a new version is available
+- Killed shells are reaped before their pseudo-console is closed, so a torn
+  down tab can no longer leave an orphaned console-host process spinning at
+  full CPU in the background
+
 ## [0.1.17]
 
 ### Fixed

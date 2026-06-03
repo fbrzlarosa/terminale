@@ -224,9 +224,8 @@ pub struct SettingsWindow {
     /// runs off the UI thread (network + disk); it reports back here so the
     /// About section can show a visible result instead of only logging. `Some`
     /// while a check is in flight; drained and reset to `None` once it lands.
-    /// The payload is `Ok(Some(version))` staged, `Ok(None)` up to date, or
-    /// `Err(message)` on failure.
-    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
+    /// The payload is the update outcome, or `Err(message)` on failure.
+    update_rx: Option<std::sync::mpsc::Receiver<Result<crate::update::UpdateOutcome, String>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -817,12 +816,28 @@ impl SettingsWindow {
         if let Some(rx) = &self.update_rx {
             match rx.try_recv() {
                 Ok(result) => {
+                    use crate::update::UpdateOutcome;
                     self.status = Some(match result {
-                        Ok(Some(v)) => (
+                        Ok(UpdateOutcome::Staged(v)) => (
                             StatusKind::Success,
                             format!("Update {v} downloaded — restart terminale to apply."),
                         ),
-                        Ok(None) => (StatusKind::Success, "terminale is up to date.".to_owned()),
+                        Ok(UpdateOutcome::InstallerLaunched(v)) => (
+                            StatusKind::Success,
+                            format!(
+                                "Installer for {v} launched — follow its prompts to finish \
+                                 updating (it may ask to close terminale)."
+                            ),
+                        ),
+                        // Unreachable from the interactive button, but keep a
+                        // sensible message rather than silence if it ever is.
+                        Ok(UpdateOutcome::InstallerRequired(v)) => (
+                            StatusKind::Success,
+                            format!("Update {v} is available — run the installer to apply it."),
+                        ),
+                        Ok(UpdateOutcome::UpToDate) => {
+                            (StatusKind::Success, "terminale is up to date.".to_owned())
+                        }
                         Err(e) => (StatusKind::Error, format!("Update failed: {e}")),
                     });
                     self.update_rx = None;

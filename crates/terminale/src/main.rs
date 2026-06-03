@@ -515,11 +515,21 @@ fn main() -> Result<()> {
 
     if cli.update {
         println!("Checking for updates…");
-        match update::download_and_stage() {
-            Ok(Some(v)) => {
+        match update::download_and_apply(true) {
+            Ok(update::UpdateOutcome::Staged(v)) => {
                 println!("Updated to terminale {v}. Restart terminale to use the new version.");
             }
-            Ok(None) => println!(
+            Ok(update::UpdateOutcome::InstallerLaunched(v)) => {
+                println!(
+                    "Installer for terminale {v} launched — follow its prompts to finish \
+                     updating."
+                );
+            }
+            Ok(update::UpdateOutcome::InstallerRequired(v)) => {
+                // Not reachable with interactive=true; cover it anyway.
+                println!("terminale {v} is available — run the platform installer to apply it.");
+            }
+            Ok(update::UpdateOutcome::UpToDate) => println!(
                 "Already on the latest version ({}).",
                 update::current_version()
             ),
@@ -612,11 +622,23 @@ fn main() -> Result<()> {
         let auto = config.updates.auto_install;
         std::thread::spawn(move || {
             if auto {
-                match update::download_and_stage() {
-                    Ok(Some(v)) => {
+                // interactive=false: a background startup task must never pop
+                // installer UI / elevation prompts. MSI installs downgrade to
+                // a notification; the user applies via Settings → About.
+                match update::download_and_apply(false) {
+                    Ok(update::UpdateOutcome::Staged(v)) => {
                         tracing::info!(version = %v, "update staged; restart terminale to apply");
                     }
-                    Ok(None) => {}
+                    Ok(update::UpdateOutcome::InstallerRequired(v)) => {
+                        tracing::info!(
+                            version = %v,
+                            "a newer terminale is available; this install is managed by the \
+                             platform installer — use Settings → About → Check for updates \
+                             to run it"
+                        );
+                    }
+                    Ok(update::UpdateOutcome::InstallerLaunched(_))
+                    | Ok(update::UpdateOutcome::UpToDate) => {}
                     Err(e) => tracing::warn!(?e, "background auto-update failed"),
                 }
             } else {

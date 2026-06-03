@@ -46,7 +46,9 @@ impl SettingsWindow {
                 ui,
                 "terminale updates itself from GitHub releases. Downloads are verified \
                  (SHA-256) and the binary is replaced on disk without interrupting your \
-                 session — the new version applies on the next launch (never a forced restart).",
+                 session — the new version applies on the next launch (never a forced \
+                 restart). Installs managed by the Windows installer (MSI) hand off to it \
+                 instead: the verified installer is downloaded and launched for you.",
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -90,12 +92,21 @@ impl SettingsWindow {
                 self.update_rx = Some(rx);
                 self.status = Some((StatusKind::Success, "Checking for updates…".to_owned()));
                 std::thread::spawn(move || {
-                    let result = crate::update::download_and_stage().map_err(|e| format!("{e:#}"));
+                    use crate::update::UpdateOutcome;
+                    // interactive=true: a manual click may hand off to the
+                    // platform installer (UI + elevation prompt are expected).
+                    let result =
+                        crate::update::download_and_apply(true).map_err(|e| format!("{e:#}"));
                     match &result {
-                        Ok(Some(v)) => {
+                        Ok(UpdateOutcome::Staged(v)) => {
                             tracing::info!(version = %v, "update staged; restart to apply");
                         }
-                        Ok(None) => tracing::info!("terminale is up to date"),
+                        Ok(UpdateOutcome::InstallerLaunched(v)) => {
+                            tracing::info!(version = %v, "installer launched for update");
+                        }
+                        Ok(UpdateOutcome::InstallerRequired(_)) | Ok(UpdateOutcome::UpToDate) => {
+                            tracing::info!("update check finished");
+                        }
                         Err(e) => tracing::warn!(error = %e, "manual update failed"),
                     }
                     // Receiver may be gone if the window closed mid-check; ignore.
