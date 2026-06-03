@@ -10,9 +10,35 @@
 //! pre-baked PNGs for each DPI.
 
 use winit::window::Icon;
+use winit::window::WindowAttributes;
 
 /// SVG bytes, bundled at compile time so the binary stays self-contained.
 const ICON_SVG: &[u8] = include_bytes!("../../../assets/icons/icon.svg");
+
+/// Tag window attributes with the application identity the desktop
+/// environment uses to group windows and resolve the launcher icon.
+///
+/// On Linux this sets the Wayland `app_id` and the X11 `WM_CLASS` (winit
+/// stores a single application name used for both). Compositors match it
+/// against the `terminale.desktop` entry installed by `desktop_entry.rs`
+/// (`StartupWMClass=terminale`) — without it the window has an empty/default
+/// identity and GNOME/KDE show a generic gear instead of the brand icon.
+/// Every window builder (main, settings, AI, prompts…) must route through
+/// this so all windows group under the same dock entry.
+///
+/// On other platforms this is a no-op: Windows uses the embedded `.ico` +
+/// `with_window_icon`, macOS the `.icns` in the app bundle.
+pub fn with_app_identity(attrs: WindowAttributes) -> WindowAttributes {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use winit::platform::wayland::WindowAttributesExtWayland;
+        // Called via UFCS: the X11 extension trait declares an identical
+        // `with_name`, and both write the same underlying field.
+        WindowAttributesExtWayland::with_name(attrs, "terminale", "terminale")
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    attrs
+}
 
 /// Target side length, in pixels, of the rasterised window icon. 256
 /// is what Windows / GNOME / KDE prefer for high-DPI taskbar entries.

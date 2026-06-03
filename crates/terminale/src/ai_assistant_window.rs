@@ -90,7 +90,7 @@ impl AiAssistantWindow {
         // plain open reasons about the real OS/shell/cwd/last failure.
         term_context: Option<String>,
     ) -> Self {
-        let mut attrs = Window::default_attributes()
+        let mut attrs = crate::app_icon::with_app_identity(Window::default_attributes())
             .with_title("terminale — AI")
             .with_inner_size(winit::dpi::LogicalSize::new(560.0, 520.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(420.0, 360.0))

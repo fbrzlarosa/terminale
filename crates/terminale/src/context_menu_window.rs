@@ -201,7 +201,7 @@ impl ContextMenuWindow {
         // Window is created hidden and rendered offscreen, then DWM-cloaked
         // and only THEN made visible: the compositor never sees a
         // hidden → visible-with-content transition, so no open animation fires.
-        let attrs = Window::default_attributes()
+        let attrs = crate::app_icon::with_app_identity(Window::default_attributes())
             .with_title("terminale — menu")
             .with_inner_size(LogicalSize::new(w, h))
             .with_decorations(false)

@@ -269,7 +269,7 @@ impl SettingsWindow {
         // Created hidden so we can render the first egui frame to the GPU
         // surface BEFORE the OS gets a chance to show the window. Avoids
         // the white-flash and the show animation.
-        let mut attrs = Window::default_attributes()
+        let mut attrs = crate::app_icon::with_app_identity(Window::default_attributes())
             .with_title("terminale — settings")
             .with_inner_size(winit::dpi::LogicalSize::new(900.0, 620.0))
             .with_min_inner_size(winit::dpi::LogicalSize::new(580.0, 460.0))

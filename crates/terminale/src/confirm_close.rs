@@ -101,7 +101,7 @@ impl ConfirmCloseDialog {
             parent_pos.y + ((parent_size.height as f32 - win_h_px) / 2.0) as i32,
         );
 
-        let attrs = Window::default_attributes()
+        let attrs = crate::app_icon::with_app_identity(Window::default_attributes())
             .with_title("terminale — confirm close")
             .with_inner_size(LogicalSize::new(WIN_WIDTH, WIN_HEIGHT))
             .with_decorations(false)
