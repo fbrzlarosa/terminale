@@ -249,11 +249,24 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                 ));
             }
             // Collect events from the focused pane only (bell etc.
-            // come from the foreground program).
+            // come from the foreground program). Non-focused panes still
+            // get their protocol WRITE-BACKS answered: the parser emits
+            // `PtyWrite` replies to queries like DSR/CPR (`CSI 6n`), DA,
+            // and colour queries — and the querying side BLOCKS on them.
+            // Discarding those stalled a restored split's sibling shell
+            // forever: the console host sent `CSI 6n` during startup,
+            // never got the cursor report (focus had already moved to the
+            // other pane), and the pane stayed blank for its whole life.
+            // UI events (Bell, Title, notifications, …) remain
+            // focused-only by design.
             if is_focused {
                 active_events = pane.emulator.lock().drain_events();
             } else {
-                let _ = pane.emulator.lock().drain_events();
+                for ev in pane.emulator.lock().drain_events() {
+                    if let terminale_term::EmulatorEvent::PtyWrite(s) = ev {
+                        let _ = pane.session.write_input(s.as_bytes());
+                    }
+                }
             }
         }
         let _ = active_pane_changed;
@@ -327,7 +340,13 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                     }
                 }
             }
-            let _ = pane.emulator.lock().drain_events();
+            // Same protocol-response duty as the active tab's non-focused
+            // panes: background shells block on unanswered DSR/DA queries.
+            for ev in pane.emulator.lock().drain_events() {
+                if let terminale_term::EmulatorEvent::PtyWrite(s) = ev {
+                    let _ = pane.session.write_input(s.as_bytes());
+                }
+            }
         }
         if got_bytes && !tab.unread {
             // First unseen output for this background tab: the tab bar needs
