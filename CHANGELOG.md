@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.17]
+
 ### Fixed
 - **Closing a tab no longer freezes (and gets killed) the whole app** when the
   tab's shell still has child processes attached. PTY teardown — including the
@@ -22,6 +24,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - Holding **Shift** now bypasses app mouse reporting (xterm convention), so
   text can be selected and the wheel scrolls history even inside full-screen
   apps that capture the mouse
+- The renderer now recovers from lost/outdated GPU surfaces (driver reset,
+  sleep/wake, RDP, monitor hot-plug) by reconfiguring and retrying instead of
+  freezing the window; probed cell sizes are clamped (zero-advance fonts
+  produced degenerate 65535-column grids) and renderer init fails gracefully
+  on adapters with empty surface capabilities (virtual/RDP displays)
+- Config saves are atomic (write-to-temp + rename): a crash mid-save can no
+  longer leave a torn `config.toml`
+- Linux: every window now sets the Wayland `app_id` / X11 `WM_CLASS`
+  (`terminale`), so GNOME/KDE match the desktop entry and show the brand icon
+  instead of a generic gear; all sub-windows group under the same dock entry
+- macOS: changing the Quake hotkey binding in Settings re-registers the global
+  hotkey live (previously required a restart), and docked Quake windows no
+  longer leave an empty strip under the menu bar when shown before the window
+  server has flushed
 - The log file no longer fills with third-party GPU noise (`wgpu` logged every
   device poll at INFO — hundreds of MB per day); chatty crates are capped at
   WARN unless explicitly re-enabled via `logging.file_level`
@@ -36,6 +52,33 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   cursor at hotkey time") proved unreliable and surprising; the `display`
   setting's `current` option now means "window's monitor" (`primary` and
   fixed-index pinning are unchanged)
+- New minimal app icon: a bare `>_` prompt glyph with a full-spectrum diagonal
+  gradient on a transparent background
+
+### Security
+- **AI API keys moved out of `config.toml` and into the OS keychain**
+  (Windows Credential Manager / macOS Keychain / Secret Service). Existing
+  plaintext keys migrate automatically on the next save; encrypted backups
+  carry them through the credentials channel; `config.toml` is `0600` on Unix
+- Lua plugin hooks run under a wall-clock execution budget
+  (`plugins.hook_budget_ms`, default 100 ms, configurable in Settings): a
+  runaway or malicious hook is aborted instead of hanging the UI
+- OS notifications triggered by terminal output (OSC 9/777) are rate-limited
+  per rolling 10 s window (`terminal.os_notification_rate_limit`, configurable
+  in Settings), deduplicated, and dispatched off the UI thread
+- `OSC 1337 SetUserVar` names are capped per pane so untrusted output cannot
+  grow the variable map without bound
+
+### Performance
+- Split panes no longer re-shape every visible row of every pane on every
+  frame: non-focused panes' shaped text is cached per pane (with correct
+  invalidation via an emulator content-generation counter) — the dominant
+  steady-state render cost in split layouts is gone
+- The PTY hot path drops two per-chunk heap copies, coalesces redundant
+  event-loop wakeups during output floods, and skips idle panes without
+  touching emulator locks
+- The tab bar rebuild and the plugin-host snapshot are skipped when nothing
+  observable changed
 
 ## [0.1.16]
 
@@ -400,7 +443,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/fbrzlarosa/terminale/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/fbrzlarosa/terminale/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/fbrzlarosa/terminale/compare/v0.1.13...v0.1.14
