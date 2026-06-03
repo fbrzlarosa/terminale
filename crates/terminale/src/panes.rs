@@ -1150,6 +1150,35 @@ pub(crate) fn pane_cell_at_pixel(
     None
 }
 
+/// Like [`pane_cell_at_pixel`] but **forgiving on the leading edges**: a
+/// position inside a pane's rect that falls in the padding strip left of
+/// column 0 (or above row 0) clamps to the first cell instead of missing.
+///
+/// This is the right hit-test for STARTING a selection: users habitually
+/// press a few pixels left of the text they want and drag across. In a
+/// split, that padding strip sits in the middle of the window (right next
+/// to the divider), so the strict test silently swallowed those drags —
+/// the press never armed and "selection didn't work".
+pub(crate) fn pane_cell_at_pixel_clamped(
+    state: &RunningState,
+    pos_px: (f32, f32),
+) -> Option<(PaneId, u16, u16)> {
+    let tab = state.tabs.get(state.active_tab)?;
+    let scale = state.window.scale_factor() as f32;
+    let cw = state.renderer.cell_width() * scale;
+    let ch = state.renderer.cell_height() * scale;
+    let pad = state.renderer.padding() * scale;
+    for (id, (rx, ry, rw, rh)) in active_tab_pane_rects(state) {
+        if pos_px.0 < rx || pos_px.1 < ry || pos_px.0 >= rx + rw || pos_px.1 >= ry + rh {
+            continue;
+        }
+        let pane = tab.panes.get(&id)?;
+        return cell_from_pane_origin(pos_px, (rx, ry), pad, cw, ch, pane.cols, pane.rows, true)
+            .map(|(c, r)| (id, c, r));
+    }
+    None
+}
+
 /// `true` when the pointer is over the **focused** pane's grid. Used to gate
 /// chrome that the renderer can only draw in the focused pane's frame (e.g.
 /// hover link underlines).

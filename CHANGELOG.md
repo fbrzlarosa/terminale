@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Starting a drag-selection just left of the text now works.** Pressing in
+  the thin padding strip before a pane's first column — right next to the
+  divider in a split, exactly where drags naturally start — silently failed
+  the hit test and the selection never armed. Presses inside a pane's rect
+  now clamp to the nearest cell (xterm-style), like trailing-edge clicks
+  always did
+- **The selection highlight is actually visible now.** It was painted at a
+  hardcoded 55% opacity, which on dark themes (e.g. a `#1a2426` selection
+  over a `#0e1415` background) blended down to a ~7-RGB-point difference —
+  selections worked but could not be seen. The theme's selection colour is
+  now painted opaque, as theme authors design it; a new
+  `appearance.selection_opacity` setting (Settings → Appearance) restores
+  blending for those who prefer it
+
+### Added
+- AI command suggestions are now taught with worked examples (few-shot
+  turns) and a compact rule prompt — small local models follow them far
+  better than long prose rules
+
 ## [0.1.18]
 
 ### Fixed

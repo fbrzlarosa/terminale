@@ -2976,6 +2976,8 @@ impl TerminaleApp {
         tw.renderer
             .set_inactive_pane_dim(self.config.appearance.inactive_pane_dim);
         tw.renderer
+            .set_selection_opacity(self.config.appearance.selection_opacity);
+        tw.renderer
             .set_unfocused_window_dim(self.config.appearance.unfocused_window_dim);
         tw.renderer
             .set_cell_width_multiplier(self.config.font.cell_width);
@@ -4834,6 +4836,9 @@ impl TerminaleApp {
                         .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
                     state
                         .renderer
+                        .set_selection_opacity(cfg.appearance.selection_opacity);
+                    state
+                        .renderer
                         .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
                     state
                         .renderer
@@ -4929,6 +4934,9 @@ impl TerminaleApp {
                     state
                         .renderer
                         .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
+                    state
+                        .renderer
+                        .set_selection_opacity(cfg.appearance.selection_opacity);
                     state
                         .renderer
                         .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
@@ -7027,7 +7035,6 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         }
                     }
                 }
-
                 if state.selecting && left_held {
                     if let (Some(anchor), Some(end)) = (
                         state.selection_anchor,
@@ -8911,6 +8918,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state
                             .renderer
                             .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
+                        state
+                            .renderer
+                            .set_selection_opacity(cfg.appearance.selection_opacity);
                         state
                             .renderer
                             .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);

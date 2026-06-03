@@ -576,8 +576,8 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
             // the cell is local to the pane under the cursor (the press has
             // already focused it), so word/line lookup hits the right grid.
             if count >= 2 {
-                if let Some((col, row)) =
-                    crate::panes::pane_cell_at_pixel(state, pos_px).and_then(|(id, c, r)| {
+                if let Some((col, row)) = crate::panes::pane_cell_at_pixel_clamped(state, pos_px)
+                    .and_then(|(id, c, r)| {
                         let focused = state.tabs.get(state.active_tab)?.focused;
                         (id == focused).then_some((c, r))
                     })
@@ -621,8 +621,11 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
             state.renderer.set_selection(None);
             // Pane-aware anchor: cell local to the (now-focused) pane under
             // the press, so the drag-selection grid matches what is drawn.
+            // The CLAMPED variant matters here: a press in the pane's left
+            // padding (right next to a divider in splits — where drags
+            // naturally start) snaps to column 0 instead of dead-arming.
             if let Some(anchor) =
-                crate::panes::pane_cell_at_pixel(state, pos_px).and_then(|(id, c, r)| {
+                crate::panes::pane_cell_at_pixel_clamped(state, pos_px).and_then(|(id, c, r)| {
                     let focused = state.tabs.get(state.active_tab)?.focused;
                     (id == focused).then_some((c, r))
                 })

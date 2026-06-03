@@ -1285,6 +1285,38 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                field_label(ui, "Selection opacity");
+                let r = ui.add(
+                    egui::Slider::new(&mut self.config.appearance.selection_opacity, 0.2..=1.0)
+                        .fixed_decimals(2)
+                        .text(""),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+                if ui.small_button("Reset").clicked() {
+                    self.config.appearance.selection_opacity = 1.0;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Selection opacity",
+            );
+            sublabel(
+                ui,
+                "Opacity of the text-selection highlight. 1.0 (default) paints the theme's \
+                 selection colour as a solid background — most visible; lower values blend it \
+                 over the cell background.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Dim inactive panes");
                 let r = ui.add(
                     egui::Slider::new(&mut self.config.appearance.inactive_pane_dim, 0.0..=0.9)

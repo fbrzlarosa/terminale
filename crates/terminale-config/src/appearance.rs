@@ -303,6 +303,13 @@ pub struct AppearanceConfig {
     /// (feature off, default); higher values darken non-focused panes so the
     /// active one stands out. Range: `0.0..=0.9`.
     pub inactive_pane_dim: f32,
+    /// Opacity of the text-selection highlight. `1.0` (default) paints the
+    /// theme's `selection` colour as an opaque cell background — what theme
+    /// authors design that colour to be; lower values blend it over the cell
+    /// background instead. Range: `0.2..=1.0`. (The old hardcoded `0.55`
+    /// blend made dark-theme selections nearly invisible: e.g. a `#1a2426`
+    /// selection over a `#0e1415` background ended up ~7 RGB points apart.)
+    pub selection_opacity: f32,
     /// Alpha of a translucent black overlay drawn over the entire terminal
     /// grid when the window loses OS focus. `0.0` = no dimming (feature off,
     /// default); higher values reduce brightness while unfocused so the window
@@ -371,6 +378,7 @@ impl Default for AppearanceConfig {
             dim_amount: 0.5,
             minimum_contrast: 1.0,
             inactive_pane_dim: 0.0,
+            selection_opacity: 1.0,
             unfocused_window_dim: 0.0,
             pinned_tab_width: 44.0,
             builtin_box_drawing: true,
@@ -551,6 +559,12 @@ impl AppearanceConfig {
             return Err(ConfigError::Invalid {
                 field: "appearance.inactive_pane_dim",
                 message: "must be between 0.0 and 0.9",
+            });
+        }
+        if !(0.2..=1.0).contains(&self.selection_opacity) {
+            return Err(ConfigError::Invalid {
+                field: "appearance.selection_opacity",
+                message: "must be between 0.2 and 1.0",
             });
         }
         if !(0.0..=0.9).contains(&self.unfocused_window_dim) {
@@ -818,6 +832,37 @@ mod tests {
         parsed
             .validate()
             .expect("roundtripped config must validate");
+    }
+
+    // ── selection_opacity ─────────────────────────────────────────────────────
+
+    #[test]
+    fn selection_opacity_default_is_opaque() {
+        let cfg = AppearanceConfig::default();
+        assert!(
+            (cfg.selection_opacity - 1.0).abs() < f32::EPSILON,
+            "selection_opacity default must be 1.0 (opaque, theme-faithful)"
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn selection_opacity_bounds_validate() {
+        let too_low = AppearanceConfig {
+            selection_opacity: 0.1,
+            ..Default::default()
+        };
+        assert!(too_low.validate().is_err(), "0.1 must be rejected (< 0.2)");
+        let too_high = AppearanceConfig {
+            selection_opacity: 1.1,
+            ..Default::default()
+        };
+        assert!(too_high.validate().is_err(), "1.1 must be rejected (> 1.0)");
+        let min = AppearanceConfig {
+            selection_opacity: 0.2,
+            ..Default::default()
+        };
+        assert!(min.validate().is_ok(), "0.2 must be accepted");
     }
 
     // ── inactive_pane_dim ─────────────────────────────────────────────────────

@@ -439,7 +439,10 @@ mod tests {
         assert_eq!(msgs[0].role, "system");
         for pair in msgs[1..msgs.len() - 1].chunks(2) {
             assert_eq!(pair[0].role, "user", "few-shot demo must be a user turn");
-            assert_eq!(pair[1].role, "assistant", "few-shot reply must be assistant");
+            assert_eq!(
+                pair[1].role, "assistant",
+                "few-shot reply must be assistant"
+            );
         }
         assert_eq!(msgs.last().unwrap().role, "user");
     }

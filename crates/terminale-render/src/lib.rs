@@ -546,6 +546,10 @@ pub struct Renderer {
     background_rgb: [u8; 3],
     background_alpha: f32,
     selection_rgb: [u8; 3],
+    /// Alpha for the selection highlight quad. `1.0` = the theme's selection
+    /// colour painted as an opaque cell background (default); see
+    /// [`Self::set_selection_opacity`].
+    selection_opacity: f32,
     /// Extra underlines (autodetected URLs, search highlights, …) drawn
     /// on top of the normal SGR underline pass. Each entry is the
     /// inclusive cell range `(col_start, col_end, row)` in viewport
@@ -1907,6 +1911,7 @@ impl Renderer {
             background_rgb: BACKGROUND_RGB,
             background_alpha: 1.0,
             selection_rgb: [0x33, 0x46, 0x7c],
+            selection_opacity: 1.0,
             extra_underlines: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
@@ -2097,6 +2102,7 @@ impl Renderer {
             background_rgb: BACKGROUND_RGB,
             background_alpha: 1.0,
             selection_rgb: [0x33, 0x46, 0x7c],
+            selection_opacity: 1.0,
             extra_underlines: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
@@ -2298,6 +2304,7 @@ impl Renderer {
             background_rgb: [0, 0, 0],
             background_alpha: 0.0,
             selection_rgb: [0x33, 0x46, 0x7c],
+            selection_opacity: 1.0,
             extra_underlines: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
@@ -3956,6 +3963,16 @@ impl Renderer {
     /// sRGB selection-highlight colour. Driven by the active theme.
     pub fn set_selection_color(&mut self, rgb: [u8; 3]) {
         self.selection_rgb = rgb;
+    }
+
+    /// Opacity of the selection highlight quad. `1.0` paints the theme's
+    /// selection colour as an opaque cell background (the way theme authors
+    /// design it); lower values blend over the cell background. Clamped to
+    /// `0.2..=1.0` — fully transparent selections are never allowed (a
+    /// hardcoded `0.55` blend used to render dark-theme selections nearly
+    /// invisible). Mirrors `appearance.selection_opacity`.
+    pub fn set_selection_opacity(&mut self, alpha: f32) {
+        self.selection_opacity = alpha.clamp(0.2, 1.0);
     }
 
     /// The active theme's cursor colour, used as the cursor tint whenever
@@ -6545,7 +6562,12 @@ impl Renderer {
                     body_x_origin + pad_px + f32::from(col) * cw_px,
                     body_y_origin + f32::from(row) * ch_px,
                 ];
-                quads.push(Quad::new(pos, [cw_px, ch_px], self.selection_rgb, 0.55));
+                quads.push(Quad::new(
+                    pos,
+                    [cw_px, ch_px],
+                    self.selection_rgb,
+                    self.selection_opacity,
+                ));
             }
         }
 
