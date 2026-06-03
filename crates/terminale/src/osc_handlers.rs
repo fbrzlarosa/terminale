@@ -228,8 +228,17 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                     }
                 }
             }
-            if pane_got_bytes && is_focused {
+            if pane_got_bytes {
+                // EVERY visible pane's output needs a repaint, not just the
+                // focused one — gating `any` on focus left non-focused split
+                // panes visually frozen (classically: the freshly-restored
+                // sibling pane staying blank forever, its shell banner
+                // applied to the emulator but never drawn). The per-pane
+                // shaped-text cache keys on the emulator's content
+                // generation, so the repaint stays cheap.
                 any = true;
+            }
+            if pane_got_bytes && is_focused {
                 active_pane_changed = true;
                 focused_got_bytes = true;
                 let history_after = pane.emulator.lock().history_size();
@@ -320,8 +329,12 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
             }
             let _ = pane.emulator.lock().drain_events();
         }
-        if got_bytes {
+        if got_bytes && !tab.unread {
+            // First unseen output for this background tab: the tab bar needs
+            // one repaint to show the unread badge. Transition-only so a
+            // chatty background tab doesn't force a redraw per chunk.
             tab.unread = true;
+            any = true;
         }
     }
     // Apply events from the focused pane to host state.

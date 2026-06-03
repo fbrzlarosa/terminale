@@ -14,6 +14,13 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   the hit test and the selection never armed. Presses inside a pane's rect
   now clamp to the nearest cell (xterm-style), like trailing-edge clicks
   always did
+- **Non-focused split panes no longer freeze visually.** A repaint was only
+  requested when the *focused* pane received output, so a sibling pane's
+  content was applied to its emulator but never drawn — most visibly, a
+  restored split's second pane stayed blank until something else forced a
+  frame. Any visible pane's output now schedules a repaint (cheap thanks to
+  the per-pane shaped-text cache), and a background tab's first unseen
+  output repaints once so the unread badge shows up
 - **The selection highlight is actually visible now.** It was painted at a
   hardcoded 55% opacity, which on dark themes (e.g. a `#1a2426` selection
   over a `#0e1415` background) blended down to a ~7-RGB-point difference —
