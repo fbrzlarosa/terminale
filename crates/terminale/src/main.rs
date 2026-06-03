@@ -530,14 +530,51 @@ fn main() -> Result<()> {
         }
     }
 
-    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .compact()
-        .init();
+    // The config is loaded BEFORE the tracing subscriber so `[logging]` can
+    // shape the file layer; the load outcome is logged right after `init()`.
+    let loaded = Config::load_or_init_at(cli.config.clone());
 
-    let (config, config_path) = match Config::load_or_init_at(cli.config.clone()) {
+    // Console layer: always on, follows `--log-level` / TERMINALE_LOG.
+    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        use tracing_subscriber::Layer as _;
+        let console = tracing_subscriber::fmt::layer()
+            .with_target(false)
+            .compact()
+            .with_filter(filter);
+        // Optional rolling file layer (`<config dir>/logs/terminale.log.<date>`).
+        // This is the whole reason file logging exists: a GUI launch has no
+        // console, so without it a freeze or crash leaves nothing to inspect.
+        // `LOG_FILE_GUARD` keeps the non-blocking writer alive for the process
+        // lifetime — dropping it would silently stop the file output.
+        static LOG_FILE_GUARD: std::sync::OnceLock<tracing_appender::non_blocking::WorkerGuard> =
+            std::sync::OnceLock::new();
+        let file_layer = match &loaded {
+            Ok((cfg, path)) if cfg.logging.file_enabled => path.parent().map(|dir| {
+                let logs = dir.join("logs");
+                cleanup_old_logs(&logs, cfg.logging.retention_days);
+                let (writer, guard) = tracing_appender::non_blocking(
+                    tracing_appender::rolling::daily(&logs, "terminale.log"),
+                );
+                let _ = LOG_FILE_GUARD.set(guard);
+                let file_filter = EnvFilter::try_new(&cfg.logging.file_level)
+                    .unwrap_or_else(|_| EnvFilter::new("info"));
+                tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .with_writer(writer)
+                    .with_filter(file_filter)
+            }),
+            _ => None,
+        };
+        tracing_subscriber::registry()
+            .with(console)
+            .with(file_layer)
+            .init();
+    }
+
+    let (config, config_path) = match loaded {
         Ok((c, p)) => {
             tracing::info!(path = %p.display(), "config loaded");
             (c, p)
@@ -720,6 +757,34 @@ fn main() -> Result<()> {
     };
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+/// Delete `terminale.log*` files in `dir` older than `retention_days`.
+/// Best-effort: every I/O error is swallowed — log housekeeping must never
+/// be able to break startup.
+fn cleanup_old_logs(dir: &std::path::Path, retention_days: u32) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            u64::from(retention_days) * 24 * 3600,
+        ))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("terminale.log") {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Trim `lines` in place to its newest `cap` entries (the vector is
@@ -14588,6 +14653,23 @@ mod tests {
         let mut lines = mk(&["a"]);
         cap_scrollback(&mut lines, 0);
         assert!(lines.is_empty());
+    }
+
+    // ── cleanup_old_logs ──────────────────────────────────────────────────────
+
+    #[test]
+    fn cleanup_old_logs_keeps_fresh_and_foreign_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fresh = dir.path().join("terminale.log.2026-06-03");
+        let foreign = dir.path().join("notes.txt");
+        std::fs::write(&fresh, "log").expect("write fresh");
+        std::fs::write(&foreign, "keep").expect("write foreign");
+        // Freshly-created files are NEVER older than the cutoff.
+        cleanup_old_logs(dir.path(), 7);
+        assert!(fresh.exists(), "fresh log must survive cleanup");
+        assert!(foreign.exists(), "non-log files must never be touched");
+        // A missing directory is a silent no-op.
+        cleanup_old_logs(&dir.path().join("does-not-exist"), 7);
     }
 
     // ── configs_identical: new-field coverage ─────────────────────────────────

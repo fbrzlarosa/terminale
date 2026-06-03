@@ -2454,6 +2454,10 @@ fn search_index() -> &'static [SearchEntry] {
         // section_about
         SearchEntry {
             section: Section::About,
+            label: "Diagnostics",
+        },
+        SearchEntry {
+            section: Section::About,
             label: "Config file",
         },
         // section_quick_select

@@ -109,6 +109,70 @@ impl SettingsWindow {
             );
         });
 
+        // ── Diagnostics (file logging) ──
+        ui.add_space(10.0);
+        card(ui, |ui| {
+            let pre = ui.min_rect();
+            ui.label(
+                egui::RichText::new("Diagnostics")
+                    .strong()
+                    .color(egui::Color32::from_rgb(220, 230, 255)),
+            );
+            self.highlight_row(ui, ui.min_rect().union(pre), Section::About, "Diagnostics");
+            sublabel(
+                ui,
+                "A rolling daily log file next to the config, so a freeze or crash leaves \
+                 evidence even when terminale is launched without a console.",
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                field_label(ui, "Write log file");
+                let on = self.config.logging.file_enabled;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.logging.file_enabled = !on;
+                    self.dirty = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                field_label(ui, "File log level");
+                egui::ComboBox::from_id_salt("log_file_level_combo")
+                    .selected_text(self.config.logging.file_level.clone())
+                    .width(140.0)
+                    .show_ui(ui, |ui| {
+                        for level in ["error", "warn", "info", "debug", "trace"] {
+                            if ui
+                                .selectable_label(self.config.logging.file_level == level, level)
+                                .clicked()
+                            {
+                                self.config.logging.file_level = level.to_owned();
+                                self.dirty = true;
+                            }
+                        }
+                    });
+            });
+            ui.horizontal(|ui| {
+                field_label(ui, "Keep logs for");
+                let r = ui.add(
+                    egui::DragValue::new(&mut self.config.logging.retention_days)
+                        .range(1..=365)
+                        .suffix(" days"),
+                );
+                if r.changed() {
+                    self.dirty = true;
+                }
+            });
+            sublabel(
+                ui,
+                "Enable/level apply on the next launch; older files are pruned at startup.",
+            );
+            ui.add_space(6.0);
+            if ui.button("Open logs folder").clicked() {
+                if let Some(parent) = self.config_path.parent() {
+                    let _ = open::that_detached(parent.join("logs"));
+                }
+            }
+        });
+
         ui.add_space(10.0);
         card(ui, |ui| {
             let pre_rect = ui.min_rect();

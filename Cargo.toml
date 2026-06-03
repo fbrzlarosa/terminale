@@ -86,6 +86,9 @@ thiserror = "2"
 color-eyre = "0.6"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# Rolling diagnostic log file (non-blocking writer). A GUI launch has no
+# console, so without a file a freeze/crash leaves nothing to inspect.
+tracing-appender = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 

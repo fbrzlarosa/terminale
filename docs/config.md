@@ -89,6 +89,20 @@ allow_keybindings     = true   # let plugins register shortcuts
 
 See [`plugins.md`](plugins.md) for the plugin API and the permission model.
 
+### `[logging]`
+
+```toml
+[logging]
+file_enabled   = true          # rolling daily file in <config dir>/logs/
+file_level     = "info"        # error | warn | info | debug | trace (or a
+                               # tracing directive like "terminale=debug")
+retention_days = 7             # older files are pruned at startup (1–365)
+```
+
+The file exists so a freeze or crash leaves evidence even when terminale is
+launched without a console. Enable/level apply on the next launch; the
+console log (when launched from a shell) independently follows `--log-level`.
+
 ### `[terminal.image_protocols]`
 
 Inline images render out of the box — these toggles exist to *disable* a

@@ -34,6 +34,7 @@ pub mod font;
 pub mod gpu;
 pub mod integration;
 pub mod keybinds;
+pub mod logging;
 pub mod plugins;
 pub mod profiles_config;
 pub mod quake;
@@ -78,6 +79,7 @@ pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
     MouseBinding, ShortcutsConfig,
 };
+pub use logging::LoggingConfig;
 pub use plugins::PluginsConfig;
 pub use profiles_config::ProfilesConfig;
 pub use quake::{quake_dock_rect, QuakeAnimation, QuakeConfig, QuakeDisplay, QuakeEdge};
@@ -214,6 +216,8 @@ pub struct Config {
     pub resource_indicators: ResourceIndicatorsConfig,
     /// Built-in self-updater (check GitHub releases, stage updates safely).
     pub updates: UpdatesConfig,
+    /// Diagnostic file logging (rolling daily file next to the config).
+    pub logging: LoggingConfig,
 }
 
 impl Config {
@@ -247,6 +251,7 @@ impl Config {
         self.resource_indicators.validate()?;
         self.updates.validate()?;
         self.plugins.validate()?;
+        self.logging.validate()?;
         Ok(())
     }
 

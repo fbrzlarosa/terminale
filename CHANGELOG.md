@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Added
+- Diagnostic file logging: terminale now writes a rolling daily log file to
+  `<config dir>/logs/terminale.log.<date>` (GUI launches have no console, so
+  freezes/crashes previously left nothing to inspect). New `[logging]` config
+  section — `file_enabled` (default on), `file_level` (default `info`),
+  `retention_days` (default 7) — plus a Diagnostics card in Settings → About
+  with an "Open logs folder" button
 - Expanded Lua plugin API: `get_selection()`, `get_scrollback(n)`,
   `get_visible_text()` (synchronous, copy-based snapshot reads) and
   `register_keybinding(combo, fn)`. Content reads are a privacy opt-in
