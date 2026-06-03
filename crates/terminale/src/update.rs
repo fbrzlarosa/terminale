@@ -98,7 +98,9 @@ pub fn download_and_stage() -> Result<Option<String>> {
     let actual = sha256_of(&archive)?;
     if expected.is_empty() || !actual.eq_ignore_ascii_case(&expected) {
         bail!(
-            "checksum mismatch for {} (expected {expected:?}, got {actual}) — refusing to install",
+            "checksum mismatch for {} (expected {expected:?}, got {actual}) — refusing to \
+             install. If the release was published minutes ago its assets may still be \
+             uploading; retry shortly",
             asset.name
         );
     }

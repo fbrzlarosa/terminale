@@ -278,7 +278,14 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          # `--draft` (hand-added, covered by allow-dirty = ["ci"]): the release
+          # must NOT be visible while assets are still uploading. A user whose
+          # self-updater fired mid-upload downloaded a partial archive and got a
+          # checksum-mismatch refusal; drafts are invisible to the public API,
+          # so the updater (and /releases/latest) only ever see a complete
+          # release. The `publish-release` job flips the draft off at the very
+          # end, after the .dmg upload and the notes patch.
+          gh release create "${{ needs.plan.outputs.tag }}" --draft --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
 
   # Build the macOS GUI download ourselves. cargo-dist 0.28 only ships a bare
   # Unix binary (its tarball / the shell installer / Homebrew), which on macOS
@@ -378,6 +385,28 @@ jobs:
           else
             echo "nothing to change"
           fi
+
+  # Flip the draft off only when every job that attaches or edits release
+  # assets has finished (hand-added; covered by allow-dirty = ["ci"]). Until
+  # this runs, the release is invisible to the public API — the in-app
+  # updater and /releases/latest can never observe a half-uploaded release.
+  # Publishes even when the .dmg job failed: a release without the macOS GUI
+  # download beats a draft stuck invisible forever.
+  publish-release:
+    needs:
+      - plan
+      - host
+      - macos-app-dmg
+      - patch-release-notes
+    if: ${{ always() && needs.plan.outputs.publishing == 'true' && needs.host.result == 'success' }}
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Publish the release
+        run: |
+          gh release edit "${{ needs.plan.outputs.tag }}" --repo "${{ github.repository }}" --draft=false
+          echo "release ${{ needs.plan.outputs.tag }} published"
 
   publish-homebrew-formula:
     needs:
