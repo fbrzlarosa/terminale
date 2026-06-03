@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-06-03
+
+### Fixed
+- macOS: the downloaded `.dmg` no longer opens as **"damaged"** on Apple
+  Silicon. The `.app` bundle is now ad-hoc code-signed during packaging
+  (`codesign --force --deep --sign -`): the linker already signs the inner
+  binary, but with no bundle-level signature Gatekeeper saw a mismatched
+  (tampered-looking) signature and blocked the app outright — fatal on arm64,
+  which requires signed code to run. This is not notarization (first launch
+  still needs right-click → Open), but it removes the dead-end "damaged" error
+  on both the aarch64 and x86_64 downloads
+
 ## [0.1.14]
 
 ### Fixed
@@ -339,7 +351,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.14...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...HEAD
+[0.1.15]: https://github.com/fbrzlarosa/terminale/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/fbrzlarosa/terminale/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/fbrzlarosa/terminale/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/fbrzlarosa/terminale/compare/v0.1.11...v0.1.12
