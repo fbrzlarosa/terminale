@@ -6262,7 +6262,7 @@ dependencies = [
 
 [[package]]
 name = "terminale"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6315,7 +6315,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ai"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6330,7 +6330,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-config"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "argon2 0.5.3",
  "chacha20poly1305",
@@ -6349,7 +6349,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-core"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -6363,7 +6363,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-plugin"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "mlua",
  "parking_lot",
@@ -6375,7 +6375,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-render"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -6396,7 +6396,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ssh"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6411,7 +6411,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-term"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "alacritty_terminal",
  "image",
@@ -6425,7 +6425,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ui"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "arboard",
  "global-hotkey",
@@ -8399,7 +8399,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.17"
+version = "0.1.18"
 dependencies = [
  "anyhow",
  "clap",

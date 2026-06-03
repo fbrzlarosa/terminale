@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.18]
+
 ### Fixed
 - **In-app updates now work for MSI installs.** The updater tried to replace
   the binary in place, which fails without elevation when terminale lives
@@ -466,7 +468,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/fbrzlarosa/terminale/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/fbrzlarosa/terminale/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/fbrzlarosa/terminale/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/fbrzlarosa/terminale/compare/v0.1.14...v0.1.15
