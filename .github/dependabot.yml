@@ -17,6 +17,24 @@ updates:
     commit-message:
       prefix: "chore(deps)"
       include: scope
+    ignore:
+      # The egui stack (egui, egui-wgpu, egui-winit, epaint_default_fonts) is
+      # pinned to 0.29 on purpose: egui-wgpu >= 0.31 requires a wgpu newer than
+      # the wgpu 22 the whole renderer (terminale-render + glyphon 0.6) is
+      # built on. Bumping egui means a coordinated egui+wgpu+glyphon migration
+      # of the render stack -- tracked as a planned upgrade, not a dep bump.
+      - dependency-name: egui
+      - dependency-name: egui-wgpu
+      - dependency-name: egui-winit
+      - dependency-name: epaint_default_fonts
+      # wgpu/glyphon move together with egui above.
+      - dependency-name: wgpu
+      - dependency-name: glyphon
+      # sysinfo >= 0.39 raises its MSRV to Rust 1.95; the toolchain is pinned
+      # to 1.90 (rust-toolchain.toml) and sysinfo only backs the CPU/RAM
+      # meter. Re-evaluate when the toolchain pin moves past 1.95.
+      - dependency-name: sysinfo
+        versions: [">=0.39"]
 
   - package-ecosystem: github-actions
     directory: /
