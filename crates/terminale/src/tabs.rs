@@ -98,6 +98,65 @@ fn build_tab_bar_items(
 
 pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
     let maximized = state.window.is_maximized();
+    // ── Change detection ──
+    // This runs every frame; rebuilding the items costs one emulator lock +
+    // a label String per tab. Fingerprint every rendered input instead and
+    // skip the rebuild when nothing observable moved. Labels derive from
+    // (user_title, profile, custom_title, cwd, crashed) — cwd and the
+    // program title only change through `Emulator::advance`, which the
+    // content generation covers with a single cheap lock read.
+    let tab_busy_pre: Vec<bool> = if state.tab_activity_spinner {
+        state
+            .tabs
+            .iter()
+            .map(|t| t.panes.values().any(crate::osc_handlers::pane_is_busy))
+            .collect()
+    } else {
+        vec![false; state.tabs.len()]
+    };
+    let fingerprint = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        maximized.hash(&mut h);
+        state.active_tab.hash(&mut h);
+        state.tab_activity_spinner.hash(&mut h);
+        tab_busy_pre.hash(&mut h);
+        // Spinner glyph only matters while something is actually busy.
+        if tab_busy_pre.iter().any(|b| *b) {
+            state.spinner_frame.hash(&mut h);
+        }
+        if let Some(r) = state.renaming.as_ref() {
+            r.tab_idx.hash(&mut h);
+            r.buffer.hash(&mut h);
+        }
+        state.tab_groups.len().hash(&mut h);
+        for g in &state.tab_groups {
+            g.id.hash(&mut h);
+            g.color.hash(&mut h);
+            g.name.hash(&mut h);
+        }
+        state.tabs.len().hash(&mut h);
+        for t in &state.tabs {
+            t.user_title.hash(&mut h);
+            t.profile_name.hash(&mut h);
+            t.custom_title.hash(&mut h);
+            t.crashed.hash(&mut h);
+            t.unread.hash(&mut h);
+            t.pinned.hash(&mut h);
+            t.user_color.hash(&mut h);
+            t.auto_color.hash(&mut h);
+            t.auto_badge.hash(&mut h);
+            t.user_icon.hash(&mut h);
+            t.icon.hash(&mut h);
+            t.group.hash(&mut h);
+            t.emulator.lock().generation().hash(&mut h);
+        }
+        h.finish()
+    };
+    if fingerprint == state.tab_bar_fingerprint && state.renderer.tab_bar_mut().is_some() {
+        return;
+    }
+    state.tab_bar_fingerprint = fingerprint;
     // While renaming a tab, the edited tab shows its live buffer + a caret
     // instead of its normal label. For group renames the live buffer is
     // handled by group_label_for (called inside the item-build loops).
@@ -114,18 +173,10 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
         .as_ref()
         .map(|r| (r.tab_idx, r.target, r.buffer.clone()));
 
-    // Pre-compute per-tab busy flags so the spinner prefix can be injected
-    // without holding any emulator lock inside the label closure.
-    // A tab is busy when at least one of its panes is busy.
-    let tab_busy: Vec<bool> = if state.tab_activity_spinner {
-        state
-            .tabs
-            .iter()
-            .map(|t| t.panes.values().any(crate::osc_handlers::pane_is_busy))
-            .collect()
-    } else {
-        vec![false; state.tabs.len()]
-    };
+    // Per-tab busy flags (already computed for the fingerprint above) so the
+    // spinner prefix can be injected without holding any emulator lock
+    // inside the label closure. A tab is busy when at least one pane is.
+    let tab_busy: Vec<bool> = tab_busy_pre;
 
     let spinner_prefix = crate::SPINNER_FRAMES[state.spinner_frame % crate::SPINNER_FRAMES.len()];
 

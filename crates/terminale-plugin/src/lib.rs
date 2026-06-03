@@ -258,6 +258,29 @@ impl PluginHost {
         *self.snapshot.lock() = snap;
     }
 
+    /// Incremental variant of [`Self::set_pane_snapshot`]: always refreshes
+    /// the cheap fields (selection, read permission) but only replaces the
+    /// expensive content copies (scrollback + visible text) when `content`
+    /// is `Some`. The app passes `None` when the emulator's content
+    /// generation hasn't changed since the last publish — extracting up to
+    /// `scrollback_read_cap` lines into owned `String`s on every event-loop
+    /// wake is significant on a busy terminal, and the existing copy is
+    /// provably identical.
+    pub fn update_pane_snapshot(
+        &self,
+        selection: Option<String>,
+        allow_scrollback_read: bool,
+        content: Option<(Vec<String>, String)>,
+    ) {
+        let mut snap = self.snapshot.lock();
+        snap.selection = selection;
+        snap.allow_scrollback_read = allow_scrollback_read;
+        if let Some((scrollback, visible)) = content {
+            snap.scrollback = scrollback;
+            snap.visible = visible;
+        }
+    }
+
     /// Live-apply the `plugins.allow_keybindings` setting. When `false`,
     /// `register_keybinding` becomes a logged no-op (already-registered
     /// keybinds are disabled at the app's dispatch layer).

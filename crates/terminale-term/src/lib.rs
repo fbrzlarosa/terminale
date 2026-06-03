@@ -308,6 +308,13 @@ pub struct Emulator {
     /// `ESC` or `ESC _` without the trailing `G`). Prepended to the next
     /// chunk before the APC scanner runs.
     apc_intro_prefix: Vec<u8>,
+    /// Monotonic counter bumped by every mutation that can change rendered
+    /// output (`advance`, `resize`, palette changes, buffer clears, …).
+    /// Renderers compare it against the value they last snapshotted to skip
+    /// the per-frame O(cells) grid copy + hash when nothing changed — e.g.
+    /// during cursor-blink or background-FX driven redraws of an idle
+    /// terminal. See [`Self::generation`].
+    generation: u64,
 }
 
 /// Maximum time a `CSI ?2026h` synchronized-output frame may be open before
@@ -367,7 +374,22 @@ impl Emulator {
             apc_graphics_in_ctrl: false,
             apc_graphics_cursor_abs: 0,
             apc_intro_prefix: Vec::new(),
+            generation: 0,
         }
+    }
+
+    /// Monotonic content generation — bumped by every mutation that can
+    /// change rendered output. Equal values across two reads guarantee the
+    /// grid (content, colors, images) is byte-identical, so a renderer may
+    /// reuse its previous snapshot wholesale.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Bump the content generation (see [`Self::generation`]).
+    fn bump_generation(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Latest current-working-directory announced by the shell via OSC 7
@@ -529,6 +551,7 @@ impl Emulator {
     /// Called automatically by [`Self::set_palette`] (theme switch) and
     /// available to the host for hard resets (e.g. after a RIS sequence).
     pub fn reset_dynamic_colors(&mut self) {
+        self.bump_generation();
         for slot in self.palette_overrides.iter_mut() {
             *slot = None;
         }
@@ -563,6 +586,7 @@ impl Emulator {
     /// scrollback (only the visible screen is retained); history beyond the
     /// new limit is dropped. Other terminal options stay at their defaults.
     pub fn set_scrollback(&mut self, lines: usize) {
+        self.bump_generation();
         self.term.set_options(Config {
             scrolling_history: lines,
             ..Config::default()
@@ -578,6 +602,8 @@ impl Emulator {
 
     /// Feed bytes from the PTY into the parser.
     pub fn advance(&mut self, bytes: &[u8]) {
+        // Any byte can mutate the grid/colors/images — invalidate snapshots.
+        self.bump_generation();
         // Pre-scan for cwd announcements (OSC 7 file://… and OSC 9;9
         // ConPTY-style). alacritty's parser doesn't expose either as
         // an Event, and shells emit them often enough that we want the
@@ -796,6 +822,7 @@ impl Emulator {
     /// Pair it with sending `\x0c` to the PTY so the shell redraws its
     /// prompt against the now-empty buffer.
     pub fn clear_buffer_to_blank(&mut self) {
+        self.bump_generation();
         use alacritty_terminal::index::Line;
         let grid = self.term.grid_mut();
         let rows = grid.screen_lines() as i32;
@@ -811,6 +838,7 @@ impl Emulator {
 
     /// Resize the emulator to a new (cols, rows).
     pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.bump_generation();
         let (old_cols, old_rows) = self.size();
         let cursor_before = self.cursor();
         // Snap display_offset to 0 if we're already at the live edge before
@@ -1741,12 +1769,19 @@ fn extract_line_text(grid: &Grid<Cell>, abs_line: i32, cols: usize) -> String {
     s.trim_end().to_string()
 }
 
+/// Maximum number of distinct OSC 1337 user variables retained per pane.
+/// Untrusted output could otherwise grow the map without bound by emitting
+/// `SetUserVar` with ever-new names for the life of the session.
+const USER_VARS_CAP: usize = 256;
+
 /// Scan `bytes` for `OSC 1337 ; SetUserVar=NAME=BASE64VALUE ST` sequences
 /// and store the decoded values in `vars`.
 ///
 /// Per the OSC 1337 spec the value is base64-encoded UTF-8. We decode it
 /// inline; any decode error silently drops the variable (preferable to
-/// panicking on a malformed shell integration script).
+/// panicking on a malformed shell integration script). Updates to existing
+/// names always land; NEW names are dropped once [`USER_VARS_CAP`] distinct
+/// variables exist (bounding memory against hostile output).
 fn sniff_osc_1337(bytes: &[u8], vars: &mut HashMap<String, String>) {
     let mut i = 0;
     while i + 5 <= bytes.len() {
@@ -1792,7 +1827,16 @@ fn sniff_osc_1337(bytes: &[u8], vars: &mut HashMap<String, String>) {
                     // Decode base64; silently skip malformed values.
                     if let Ok(decoded) = base64_decode(b64) {
                         if let Ok(s) = String::from_utf8(decoded) {
-                            vars.insert(name.to_string(), s);
+                            // Cap distinct names; updates to known names pass.
+                            if vars.len() < USER_VARS_CAP || vars.contains_key(name) {
+                                vars.insert(name.to_string(), s);
+                            } else {
+                                tracing::debug!(
+                                    name,
+                                    cap = USER_VARS_CAP,
+                                    "OSC 1337 SetUserVar dropped: per-pane cap reached"
+                                );
+                            }
                         }
                     }
                 }
@@ -3479,6 +3523,28 @@ mod tests {
     fn osc_1337_missing_var_is_none() {
         let emu = Emulator::new(80, 24);
         assert_eq!(emu.user_var("nonexistent"), None);
+    }
+
+    /// Hostile output minting ever-new variable names must hit the cap
+    /// (no unbounded memory growth), while updates to existing names keep
+    /// working even at the cap.
+    #[test]
+    fn osc_1337_user_var_count_is_capped() {
+        let mut emu = Emulator::new(80, 24);
+        for i in 0..(USER_VARS_CAP + 50) {
+            // "x" in base64 = "eA=="
+            let seq = format!("\x1b]1337;SetUserVar=var{i}=eA==\x07");
+            emu.advance(seq.as_bytes());
+        }
+        assert_eq!(emu.user_var("var0"), Some("x"), "early vars retained");
+        assert_eq!(
+            emu.user_var(&format!("var{}", USER_VARS_CAP + 10)),
+            None,
+            "names past the cap must be dropped"
+        );
+        // Updating an existing name still works at the cap. "y" = "eQ==".
+        emu.advance(b"\x1b]1337;SetUserVar=var0=eQ==\x07");
+        assert_eq!(emu.user_var("var0"), Some("y"));
     }
 
     #[test]

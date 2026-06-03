@@ -731,6 +731,7 @@ fn main() -> Result<()> {
         quake_hotkey_id,
         quake_binding_registered,
         plugins,
+        plugin_snap_key: None,
         config_save_due: None,
         sgr_demo_reseed_at: if std::env::var_os("TERMINALE_DEMO_PALETTE")
             .is_some_and(|v| v == "sgr")
@@ -1075,6 +1076,12 @@ struct TerminaleApp {
     /// Lua plugin host. `None` when disabled in config or when no Lua
     /// runtime could be initialised (rare).
     plugins: Option<terminale_plugin::PluginHost>,
+    /// `(emulator ptr, content generation, read cap)` of the scrollback/
+    /// visible-text copy last published to the plugin host. When unchanged,
+    /// the per-tick snapshot publish skips the content extraction entirely
+    /// (up to `scrollback_read_cap` lines copied into owned strings on every
+    /// event-loop wake otherwise). `None` = next publish re-extracts.
+    plugin_snap_key: Option<(usize, u64, usize)>,
     /// `Some(deadline)` while a live config edit is pending a debounced
     /// write to disk. We coalesce bursts of slider drags into a single
     /// write that fires after the user pauses for ~600 ms.
@@ -1410,21 +1417,51 @@ impl TabState {
         }
     }
 
-    /// Borrow the currently-focused pane. Panics if the invariant
-    /// (`focused` always names an entry in `panes`) is violated — that
-    /// would be a programming error in the tree-edit code, not a runtime
-    /// condition.
+    /// Borrow the currently-focused pane.
+    ///
+    /// Invariant: `focused` always names an entry in `panes`. A violation is
+    /// a bug in the tree-edit code — but this accessor sits on the per-frame
+    /// hot path (it backs `Deref`), so in release we degrade to the first
+    /// pane instead of turning a tree-edit regression into a guaranteed
+    /// crash on the very next frame. Debug builds still assert loudly.
+    /// Only an empty pane map (a much stronger invariant: a tab cannot
+    /// exist without panes) still panics.
     fn focused_pane(&self) -> &Pane {
-        self.panes
-            .get(&self.focused)
-            .expect("focused pane must exist")
+        debug_assert!(
+            self.panes.contains_key(&self.focused),
+            "focused pane id {:?} missing from panes",
+            self.focused
+        );
+        self.panes.get(&self.focused).unwrap_or_else(|| {
+            self.panes
+                .values()
+                .next()
+                .expect("a tab always has at least one pane")
+        })
     }
 
-    /// Mutably borrow the currently-focused pane.
+    /// Mutably borrow the currently-focused pane. Same degradation contract
+    /// as [`Self::focused_pane`], but here the breach can be healed: focus
+    /// is re-pointed at the first pane so follow-up frames are consistent.
     fn focused_pane_mut(&mut self) -> &mut Pane {
+        debug_assert!(
+            self.panes.contains_key(&self.focused),
+            "focused pane id {:?} missing from panes",
+            self.focused
+        );
+        if !self.panes.contains_key(&self.focused) {
+            if let Some(first) = self.panes.keys().copied().next() {
+                tracing::error!(
+                    stale = self.focused,
+                    healed = first,
+                    "focused pane id missing from panes; re-pointing to first pane"
+                );
+                self.focused = first;
+            }
+        }
         self.panes
             .get_mut(&self.focused)
-            .expect("focused pane must exist")
+            .expect("a tab always has at least one pane")
     }
 
     /// Split the focused leaf in the given `direction`. The freshly-
@@ -2052,6 +2089,11 @@ struct TermWindow {
     /// Mirror of `config.terminal.os_notification_rate_limit` — max
     /// notifications per rolling 10 s window (`0` = unlimited).
     os_notification_rate_limit: u32,
+    /// Fingerprint of every input `refresh_tab_bar` renders from (labels via
+    /// emulator generation, active/unread/pinned/colors/groups, spinner
+    /// state, rename buffer, maximized). When unchanged the per-frame
+    /// rebuild — per-tab emulator locks + label `String`s — is skipped.
+    tab_bar_fingerprint: u64,
     /// `Some(pane_id)` while the pointer is over a pane-header close-X.
     /// Drives cursor-icon swap and the ✕ hover tint.
     pane_header_close_hover: Option<PaneId>,
@@ -2751,6 +2793,7 @@ impl TerminaleApp {
             occluded: false,
             os_notifications: self.config.terminal.os_notifications,
             os_notification_rate_limit: self.config.terminal.os_notification_rate_limit,
+            tab_bar_fingerprint: 0,
             pane_header_close_hover: None,
             last_header_click: None,
             pane_header_press: None,
@@ -7970,35 +8013,42 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 let allow_read = self.config.plugins.allow_scrollback_read;
                 let read_cap = self.config.plugins.scrollback_read_cap;
                 let allow_kb = self.config.plugins.allow_keybindings;
-                let snap = self
+                // Selection is cheap and refreshed every tick; the scrollback
+                // and visible-text copies are only re-extracted when the
+                // focused emulator's content generation moved (`None` content
+                // tells the host to keep its — provably identical — copy).
+                let mut selection: Option<String> = None;
+                let mut content: Option<(Vec<String>, String)> = Some((Vec::new(), String::new()));
+                let mut new_key: Option<(usize, u64, usize)> = None;
+                if let Some(state) = self
                     .windows
                     .iter()
                     .find(|w| w.window_focused)
                     .or_else(|| self.windows.first())
-                    .map_or_else(terminale_plugin::PaneSnapshot::default, |state| {
-                        let selection = crate::tabs::selection_text(state);
-                        let (scrollback, visible) = if allow_read {
-                            state
-                                .tabs
-                                .get(state.active_tab)
-                                .map_or_else(Default::default, |tab| {
-                                    let emu = tab.emulator.lock();
-                                    let mut lines = emu.buffer_lines_text();
-                                    cap_scrollback(&mut lines, read_cap);
-                                    (lines, emu.visible_lines_text().join("\n"))
-                                })
-                        } else {
-                            (Vec::new(), String::new())
-                        };
-                        terminale_plugin::PaneSnapshot {
-                            selection,
-                            scrollback,
-                            visible,
-                            allow_scrollback_read: allow_read,
+                {
+                    selection = crate::tabs::selection_text(state);
+                    if allow_read {
+                        if let Some(tab) = state.tabs.get(state.active_tab) {
+                            let emu = tab.emulator.lock();
+                            let key = (
+                                std::sync::Arc::as_ptr(&tab.emulator) as usize,
+                                emu.generation(),
+                                read_cap,
+                            );
+                            if self.plugin_snap_key == Some(key) {
+                                content = None;
+                            } else {
+                                let mut lines = emu.buffer_lines_text();
+                                cap_scrollback(&mut lines, read_cap);
+                                content = Some((lines, emu.visible_lines_text().join("\n")));
+                            }
+                            new_key = Some(key);
                         }
-                    });
+                    }
+                }
+                self.plugin_snap_key = new_key;
                 if let Some(host) = self.plugins.as_ref() {
-                    host.set_pane_snapshot(snap);
+                    host.update_pane_snapshot(selection, allow_read, content);
                     host.set_allow_keybindings(allow_kb);
                     host.set_hook_budget_ms(self.config.plugins.hook_budget_ms);
                 }

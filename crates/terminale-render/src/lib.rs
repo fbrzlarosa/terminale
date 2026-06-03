@@ -596,10 +596,19 @@ pub struct Renderer {
     /// underlines while the focused pane goes through the main render
     /// path. Cleared after each `render_panes` call.
     extra_pane_quads: Vec<Quad>,
-    /// Extra text buffers (positioned in physical px) to be appended to
-    /// the next `render(emu)` frame's per-row text pass — the glyphs
-    /// for non-focused panes' grids.
-    extra_pane_text_buffers: Vec<(Buffer, [f32; 2])>,
+    /// Shaped-row text cache for NON-focused panes, keyed by `pane_id`.
+    /// Value = (input hash, shaped per-row buffers positioned in physical
+    /// px). Same soundness contract as [`Self::cached_focused_text`]: the
+    /// hash covers every input the row-building loop reads, so a hit means
+    /// the buffers are identical to what a rebuild would produce. Without
+    /// this, every non-focused pane re-shaped every visible row on every
+    /// frame — the dominant steady-state cost in split layouts.
+    extra_pane_text_cache: std::collections::HashMap<u32, (u64, Vec<(Buffer, [f32; 2])>)>,
+    /// Pane ids queued by the current `render_panes` call, in draw order.
+    /// The text `prepare` pass draws exactly these entries from the cache;
+    /// afterwards entries not in this list are evicted (closed panes,
+    /// other tabs) so the cache cannot grow unbounded.
+    extra_pane_cache_seen: Vec<u32>,
     /// Focus-border quads drawn LAST on the main layer — after all pane
     /// backgrounds AND divider strokes — so neither a neighbour pane's bg
     /// nor an adjacent divider can overpaint any side of the indicator.
@@ -633,7 +642,7 @@ pub struct Renderer {
     pane_header_quads: Vec<Quad>,
     /// Glyphon text buffers for pane header labels and close-X glyphs.
     /// Positions are in **physical** pixels. Cleared after each frame's
-    /// text `prepare`, alongside `extra_pane_text_buffers`.
+    /// text `prepare`.
     pane_header_text_buffers: Vec<(Buffer, [f32; 2])>,
     /// Frame-level cache of the focused pane's shaped row text. Rebuilding
     /// (and re-shaping) every visible row on every redraw is the dominant
@@ -1917,7 +1926,8 @@ impl Renderer {
             pending_body_x: None,
             pending_body_y: None,
             extra_pane_quads: Vec::new(),
-            extra_pane_text_buffers: Vec::new(),
+            extra_pane_text_cache: std::collections::HashMap::new(),
+            extra_pane_cache_seen: Vec::new(),
             focus_border_quads: Vec::new(),
             pane_dim_quads: Vec::new(),
             divider_quads: Vec::new(),
@@ -2106,7 +2116,8 @@ impl Renderer {
             pending_body_x: None,
             pending_body_y: None,
             extra_pane_quads: Vec::new(),
-            extra_pane_text_buffers: Vec::new(),
+            extra_pane_text_cache: std::collections::HashMap::new(),
+            extra_pane_cache_seen: Vec::new(),
             focus_border_quads: Vec::new(),
             pane_dim_quads: Vec::new(),
             divider_quads: Vec::new(),
@@ -2306,7 +2317,8 @@ impl Renderer {
             pending_body_x: None,
             pending_body_y: None,
             extra_pane_quads: Vec::new(),
-            extra_pane_text_buffers: Vec::new(),
+            extra_pane_text_cache: std::collections::HashMap::new(),
+            extra_pane_cache_seen: Vec::new(),
             focus_border_quads: Vec::new(),
             pane_dim_quads: Vec::new(),
             divider_quads: Vec::new(),
@@ -5828,28 +5840,17 @@ impl Renderer {
             }
         }
 
-        // Per-row text buffers — same shape as the main render's text
-        // loop, with positions offset by the pane's rect.
-        let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
-        let family_name = self.font_family.clone();
-        let bold_family_name = self.font_bold_family.clone();
-        let italic_family_name = self.font_italic_family.clone();
-        let bold_italic_family_name = self.font_bold_italic_family.clone();
-        let shaping = if self.ligatures {
-            Shaping::Advanced
-        } else {
-            Shaping::Basic
-        };
+        // Procedural box-drawing / block-element quads. Emitted OUTSIDE the
+        // (cached) text pass below: quads are rebuilt every frame, while the
+        // shaped text may be reused from the cache — keeping them in the text
+        // loop would make box glyphs vanish on every cache hit.
         let builtin_box_drawing_pane = self.builtin_box_drawing;
-        for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-            let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
-            let mut last_attr: Option<([u8; 3], bool, bool)> = None;
-            let mut current = String::new();
-            for (col_idx, snap) in row_cells.iter().enumerate() {
-                let effective_ch = if builtin_box_drawing_pane
-                    && box_drawing::is_in_range(snap.ch)
-                    && !snap.hidden
-                {
+        if builtin_box_drawing_pane {
+            for (row_idx, row_cells) in grid_cells.iter().enumerate() {
+                for (col_idx, snap) in row_cells.iter().enumerate() {
+                    if snap.hidden || !box_drawing::is_in_range(snap.ch) {
+                        continue;
+                    }
                     if let Some(rects) = box_drawing::box_rects(snap.ch) {
                         let cell_x = pane_x + pad_px + col_idx as f32 * cw_px;
                         let cell_y = pane_y + row_idx as f32 * ch_px;
@@ -5865,11 +5866,78 @@ impl Renderer {
                                 r.alpha,
                             ));
                         }
-                        ' '
-                    } else {
-                        snap.ch
                     }
-                } else if snap.ch == '\0' {
+                }
+            }
+        }
+
+        // ── Per-row text, cached per pane (same contract as the focused
+        // cache): hash every input the row-building loop reads; a hit means
+        // the previously shaped buffers are identical, so the full re-shape
+        // of every visible row — the dominant cost — is skipped.
+        self.extra_pane_cache_seen.push(spec.pane_id);
+        let pane_hash = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            self.font_size.to_bits().hash(&mut h);
+            self.line_height.to_bits().hash(&mut h);
+            self.font_family.hash(&mut h);
+            self.font_bold_family.hash(&mut h);
+            self.font_italic_family.hash(&mut h);
+            self.font_bold_italic_family.hash(&mut h);
+            self.ligatures.hash(&mut h);
+            builtin_box_drawing_pane.hash(&mut h);
+            cols.hash(&mut h);
+            self.cell_width.to_bits().hash(&mut h);
+            self.cell_height.to_bits().hash(&mut h);
+            pane_x.to_bits().hash(&mut h);
+            pane_y.to_bits().hash(&mut h);
+            pad_px.to_bits().hash(&mut h);
+            ch_px.to_bits().hash(&mut h);
+            grid_cells.len().hash(&mut h);
+            for row_cells in &grid_cells {
+                row_cells.len().hash(&mut h);
+                for snap in row_cells {
+                    snap.hidden.hash(&mut h);
+                    snap.ch.hash(&mut h);
+                    snap.fg.hash(&mut h);
+                    snap.bold.hash(&mut h);
+                    snap.italic.hash(&mut h);
+                }
+            }
+            h.finish()
+        };
+        if self
+            .extra_pane_text_cache
+            .get(&spec.pane_id)
+            .is_some_and(|(h, bufs)| *h == pane_hash && !bufs.is_empty())
+        {
+            return;
+        }
+
+        let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
+        let family_name = self.font_family.clone();
+        let bold_family_name = self.font_bold_family.clone();
+        let italic_family_name = self.font_italic_family.clone();
+        let bold_italic_family_name = self.font_bold_italic_family.clone();
+        let shaping = if self.ligatures {
+            Shaping::Advanced
+        } else {
+            Shaping::Basic
+        };
+        let mut pane_text: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
+        for (row_idx, row_cells) in grid_cells.iter().enumerate() {
+            let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
+            let mut last_attr: Option<([u8; 3], bool, bool)> = None;
+            let mut current = String::new();
+            for snap in row_cells {
+                // Box-drawing cells get their geometry from the quad pass
+                // above; substitute a space so no font glyph paints over it.
+                let suppress_for_box = builtin_box_drawing_pane
+                    && !snap.hidden
+                    && box_drawing::is_in_range(snap.ch)
+                    && box_drawing::box_rects(snap.ch).is_some();
+                let effective_ch = if suppress_for_box || snap.ch == '\0' {
                     ' '
                 } else {
                     snap.ch
@@ -5937,9 +6005,10 @@ impl Renderer {
                 shaping,
             );
             let y = pane_y + row_idx as f32 * ch_px;
-            self.extra_pane_text_buffers
-                .push((buf, [pane_x + pad_px, y]));
+            pane_text.push((buf, [pane_x + pad_px, y]));
         }
+        self.extra_pane_text_cache
+            .insert(spec.pane_id, (pane_hash, pane_text));
     }
 
     /// Acquire the next swapchain frame, recovering from a lost/outdated
@@ -5995,7 +6064,7 @@ impl Renderer {
         // pane's rect_px corner so the focused pane draws inside its
         // sub-rect instead of across the full surface. Non-focused
         // panes' grids land in `self.extra_pane_quads` /
-        // `self.extra_pane_text_buffers` (populated by
+        // `self.extra_pane_text_cache` (populated by
         // `render_panes`) and get appended below.
         let body_x_origin = self.pending_body_x;
         // For a single-pane tab (pending_body_y == None) shift the grid
@@ -7621,15 +7690,19 @@ impl Renderer {
 
         // ── Prepare glyphon ──
         // The focused pane's (possibly cached) rows chain with the
-        // non-focused panes' text buffers and the pane header titles —
-        // both set up per-frame by `render_panes` with rect-px-offset /
-        // physical positions, so they slot into the same text pass. They
-        // are NOT folded into the cache (they'd go stale across frames);
-        // they are cleared after `prepare` consumes them.
+        // non-focused panes' (per-pane cached) rows and the pane header
+        // titles. Non-focused panes draw exactly the entries listed in
+        // `extra_pane_cache_seen` (queued by this frame's `render_panes`);
+        // header titles are rebuilt per-frame and cleared after `prepare`.
         let text_areas_iter = self
             .cached_focused_text
             .iter()
-            .chain(self.extra_pane_text_buffers.iter())
+            .chain(
+                self.extra_pane_cache_seen
+                    .iter()
+                    .filter_map(|id| self.extra_pane_text_cache.get(id))
+                    .flat_map(|(_hash, bufs)| bufs.iter()),
+            )
             .chain(self.pane_header_text_buffers.iter())
             .map(|(buf, pos)| TextArea {
                 buffer: buf,
@@ -7730,12 +7803,14 @@ impl Renderer {
             &mut self.swash_cache,
         )?;
 
-        // Drain the per-frame pane buffers now that `prepare` consumed
-        // them — `render_panes` rebuilds both on the next frame. (They
-        // were previously drained by `append`ing into the focused pane's
-        // text vec; the cache keeps that vec across frames, so the drain
-        // is explicit now.)
-        self.extra_pane_text_buffers.clear();
+        // Drain the per-frame buffers now that `prepare` consumed them.
+        // Header titles are rebuilt by `render_panes` every frame; the
+        // non-focused panes' shaped text stays in `extra_pane_text_cache`
+        // across frames — only entries for panes that were NOT part of this
+        // frame are evicted (closed panes / background tabs), so the cache
+        // cannot grow unbounded.
+        let seen = std::mem::take(&mut self.extra_pane_cache_seen);
+        self.extra_pane_text_cache.retain(|id, _| seen.contains(id));
         self.pane_header_text_buffers.clear();
 
         // Overlay text (command palette) — its own prepared batch so it
