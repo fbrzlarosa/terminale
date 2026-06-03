@@ -71,15 +71,32 @@ impl SettingsWindow {
                  and stage it (applies on next launch).",
             );
             ui.add_space(6.0);
-            if ui.button("Check for updates now").clicked() {
-                // Runs in the background so the UI never blocks; result is logged
-                // and the staged binary applies on the next launch.
-                std::thread::spawn(|| match crate::update::download_and_stage() {
-                    Ok(Some(v)) => {
-                        tracing::info!(version = %v, "update staged; restart to apply");
+            // Disabled while a check is already running so the user can't spawn
+            // a pile of concurrent threads by clicking repeatedly.
+            let checking = self.update_rx.is_some();
+            let label = if checking {
+                "Checking…"
+            } else {
+                "Check for updates now"
+            };
+            if ui.add_enabled(!checking, egui::Button::new(label)).clicked() {
+                // Runs in the background so the UI never blocks; the result is
+                // sent back over a channel and surfaced as a visible status
+                // line by `build_ui` (in addition to being logged).
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.update_rx = Some(rx);
+                self.status = Some((StatusKind::Success, "Checking for updates…".to_owned()));
+                std::thread::spawn(move || {
+                    let result = crate::update::download_and_stage().map_err(|e| format!("{e:#}"));
+                    match &result {
+                        Ok(Some(v)) => {
+                            tracing::info!(version = %v, "update staged; restart to apply");
+                        }
+                        Ok(None) => tracing::info!("terminale is up to date"),
+                        Err(e) => tracing::warn!(error = %e, "manual update failed"),
                     }
-                    Ok(None) => tracing::info!("terminale is up to date"),
-                    Err(e) => tracing::warn!(?e, "manual update failed"),
+                    // Receiver may be gone if the window closed mid-check; ignore.
+                    let _ = tx.send(result);
                 });
             }
             sublabel(

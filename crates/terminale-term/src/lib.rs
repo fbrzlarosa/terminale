@@ -1092,8 +1092,18 @@ impl Emulator {
 
     /// Cursor shape the focused app currently wants (DECSCUSR / VT520).
     /// `None` means "Hidden" — render no cursor at all.
+    ///
+    /// A `None` is returned both when the app picked the explicit Hidden
+    /// DECSCUSR shape *and* when it hid the cursor via DECTCEM (`ESC[?25l`,
+    /// the `SHOW_CURSOR` mode). `Term::cursor_style()` does not fold the
+    /// `SHOW_CURSOR` mode into its result, so we check it here — otherwise a
+    /// TUI that hides the real cursor and draws its own (vim, fzf, the Claude
+    /// Code prompt, …) would show two cursors at once.
     #[must_use]
     pub fn cursor_shape(&self) -> Option<AppCursorShape> {
+        if !self.term.mode().contains(TermMode::SHOW_CURSOR) {
+            return None;
+        }
         let s = self.term.cursor_style();
         match s.shape {
             alacritty_terminal::vte::ansi::CursorShape::Hidden => None,
@@ -3082,6 +3092,29 @@ mod tests {
             }
         });
         assert_eq!(found, vec!['h', 'e', 'l', 'l', 'o']);
+    }
+
+    #[test]
+    fn dectcem_hides_and_shows_cursor_shape() {
+        let mut emu = Emulator::new(80, 24);
+        // Cursor is visible by default.
+        assert!(
+            emu.cursor_shape().is_some(),
+            "a fresh emulator must show a cursor"
+        );
+        // DECTCEM hide (ESC [ ? 25 l) → no cursor at all, so a TUI that draws
+        // its own (vim, fzf, the Claude Code prompt) doesn't show two.
+        emu.advance(b"\x1b[?25l");
+        assert!(
+            emu.cursor_shape().is_none(),
+            "ESC[?25l must hide the terminal cursor"
+        );
+        // DECTCEM show (ESC [ ? 25 h) → cursor returns.
+        emu.advance(b"\x1b[?25h");
+        assert!(
+            emu.cursor_shape().is_some(),
+            "ESC[?25h must restore the terminal cursor"
+        );
     }
 
     #[test]

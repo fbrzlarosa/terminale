@@ -220,6 +220,13 @@ pub struct SettingsWindow {
     /// section so per-visit caches (the workspace list) can refresh once on
     /// entry rather than every frame.
     last_section: Section,
+    /// Receiver for the background "Check for updates now" thread. The update
+    /// runs off the UI thread (network + disk); it reports back here so the
+    /// About section can show a visible result instead of only logging. `Some`
+    /// while a check is in flight; drained and reset to `None` once it lands.
+    /// The payload is `Ok(Some(version))` staged, `Ok(None)` up to date, or
+    /// `Err(message)` on failure.
+    update_rx: Option<std::sync::mpsc::Receiver<Result<Option<String>, String>>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -385,6 +392,7 @@ impl SettingsWindow {
             cached_workspaces: Vec::new(),
             workspace_cache_dirty: true,
             last_section: Section::Profiles,
+            update_rx: None,
         };
 
         // Pre-render one frame into the swap chain while the window is still
@@ -802,6 +810,35 @@ impl SettingsWindow {
 
     fn build_ui(&mut self, ctx: &egui::Context) {
         let mut save_now = false;
+
+        // Drain the background update check (started by "Check for updates
+        // now"). While it's in flight we keep repainting so the result lands
+        // promptly; once it arrives we turn it into a visible status line.
+        if let Some(rx) = &self.update_rx {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.status = Some(match result {
+                        Ok(Some(v)) => (
+                            StatusKind::Success,
+                            format!("Update {v} downloaded — restart terminale to apply."),
+                        ),
+                        Ok(None) => {
+                            (StatusKind::Success, "terminale is up to date.".to_owned())
+                        }
+                        Err(e) => (StatusKind::Error, format!("Update failed: {e}")),
+                    });
+                    self.update_rx = None;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    // Still running — keep the frame loop alive so we notice
+                    // completion without waiting for the next input event.
+                    ctx.request_repaint();
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.update_rx = None;
+                }
+            }
+        }
 
         // ── Custom title bar ──
         self.build_title_bar(ctx);
