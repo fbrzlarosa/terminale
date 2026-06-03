@@ -150,7 +150,7 @@ arboard = "3"
 open = "5"
 # System resource sampling (CPU + memory) for the bottom resource-indicator strip.
 # Cross-platform; we disable the default networks/disks/components probes we don't use.
-sysinfo = { version = "0.32", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 # Cross-platform desktop notifications (Windows toast / macOS NSUserNotification /
 # Linux libnotify). On Windows it uses the Win32 ShellNotify API; on Linux it uses
 # DBus (the `d` feature); on macOS it calls the NSUserNotificationCenter API.
