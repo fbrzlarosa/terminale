@@ -578,8 +578,8 @@ fn main() -> Result<()> {
                 // 388 MB of noise in a single day and buried the lines that
                 // actually mattered when diagnosing a crash.
                 let directives = quiet_noisy_crates(&cfg.logging.file_level);
-                let file_filter = EnvFilter::try_new(&directives)
-                    .unwrap_or_else(|_| EnvFilter::new("info"));
+                let file_filter =
+                    EnvFilter::try_new(&directives).unwrap_or_else(|_| EnvFilter::new("info"));
                 tracing_subscriber::fmt::layer()
                     .with_ansi(false)
                     .with_writer(writer)
@@ -14897,7 +14897,10 @@ mod tests {
     #[test]
     fn quiet_noisy_crates_defaults_empty_base_to_info() {
         let d = quiet_noisy_crates("  ");
-        assert!(d.starts_with("info,"), "blank base must default to info: {d}");
+        assert!(
+            d.starts_with("info,"),
+            "blank base must default to info: {d}"
+        );
         assert!(EnvFilter::try_new(&d).is_ok());
     }
 
