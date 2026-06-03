@@ -311,7 +311,7 @@ pub(crate) fn macos_dock_window(
     margin_px: u32,
     animate: bool,
 ) -> bool {
-    use objc2::msg_send;
+    use objc2::{class, msg_send};
     use objc2::runtime::{AnyObject, Bool};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use terminale_config::QuakeEdge;
@@ -381,8 +381,17 @@ pub(crate) fn macos_dock_window(
     if ns_window.is_null() {
         return false;
     }
-    // SAFETY: `-screen` returns the window's NSScreen or nil.
-    let ns_screen: *mut AnyObject = unsafe { msg_send![ns_window, screen] };
+    // `-screen` returns nil when the window isn't on-screen yet — e.g. the
+    // `set_visible(true)` issued just before this call hasn't been flushed by
+    // the window server. Don't bail in that case: returning false drops the
+    // caller onto the winit `set_outer_position` path, whose macOS menu-bar
+    // double-count is exactly the "empty strip above the dock" bug. Fall back
+    // to the main screen so the dock still lands flush.
+    // SAFETY: `-screen` and `+[NSScreen mainScreen]` return an NSScreen* or nil.
+    let mut ns_screen: *mut AnyObject = unsafe { msg_send![ns_window, screen] };
+    if ns_screen.is_null() {
+        ns_screen = unsafe { msg_send![class!(NSScreen), mainScreen] };
+    }
     if ns_screen.is_null() {
         return false;
     }
