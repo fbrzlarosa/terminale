@@ -8257,9 +8257,18 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // ~150-field `configs_identical` diff run once per settings repaint
         // instead of on every `about_to_wait` tick while the panel is open.
         if let Some(s) = self.settings.as_mut() {
-            if s.take_config_maybe_changed() {
+            if s.take_config_maybe_changed()
+                && !configs_identical(&self.config, s.current_config())
+            {
+                // Only now, when something actually differs, do we pay for the
+                // full `Config` clone (every Vec — profiles, ssh hosts,
+                // keybinds, snippets…). Previously this clone ran on *every*
+                // settings repaint, i.e. ~60×/s of heap churn while merely
+                // scrolling the panel, even though scrolling never edits the
+                // config. Diffing against the borrow first keeps the clone on
+                // the rare frame where a control was actually touched.
                 let new_cfg = s.current_config().clone();
-                if !configs_identical(&self.config, &new_cfg) {
+                {
                     let theme_changed = self.config.appearance.theme != new_cfg.appearance.theme;
                     let font_changed = self.config.font.family != new_cfg.font.family
                         || self.config.font.bold_family != new_cfg.font.bold_family
