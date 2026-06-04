@@ -531,19 +531,28 @@ fn macos_dock_anim(
     unsafe impl objc2::Encode for NsPoint {
         const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
             "CGPoint",
-            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+            &[
+                <f64 as objc2::Encode>::ENCODING,
+                <f64 as objc2::Encode>::ENCODING,
+            ],
         );
     }
     unsafe impl objc2::Encode for NsSize {
         const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
             "CGSize",
-            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+            &[
+                <f64 as objc2::Encode>::ENCODING,
+                <f64 as objc2::Encode>::ENCODING,
+            ],
         );
     }
     unsafe impl objc2::Encode for NsRect {
         const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
             "CGRect",
-            &[<NsPoint as objc2::Encode>::ENCODING, <NsSize as objc2::Encode>::ENCODING],
+            &[
+                <NsPoint as objc2::Encode>::ENCODING,
+                <NsSize as objc2::Encode>::ENCODING,
+            ],
         );
     }
 
@@ -581,19 +590,49 @@ fn macos_dock_anim(
     let dock = match edge {
         QuakeEdge::Top => {
             let h = vh * frac;
-            NsRect { origin: NsPoint { x: vx, y: vy + vh - h - m }, size: NsSize { width: vw, height: h } }
+            NsRect {
+                origin: NsPoint {
+                    x: vx,
+                    y: vy + vh - h - m,
+                },
+                size: NsSize {
+                    width: vw,
+                    height: h,
+                },
+            }
         }
         QuakeEdge::Bottom => {
             let h = vh * frac;
-            NsRect { origin: NsPoint { x: vx, y: vy + m }, size: NsSize { width: vw, height: h } }
+            NsRect {
+                origin: NsPoint { x: vx, y: vy + m },
+                size: NsSize {
+                    width: vw,
+                    height: h,
+                },
+            }
         }
         QuakeEdge::Left => {
             let w = vw * frac;
-            NsRect { origin: NsPoint { x: vx + m, y: vy }, size: NsSize { width: w, height: vh } }
+            NsRect {
+                origin: NsPoint { x: vx + m, y: vy },
+                size: NsSize {
+                    width: w,
+                    height: vh,
+                },
+            }
         }
         QuakeEdge::Right => {
             let w = vw * frac;
-            NsRect { origin: NsPoint { x: vx + vw - w - m, y: vy }, size: NsSize { width: w, height: vh } }
+            NsRect {
+                origin: NsPoint {
+                    x: vx + vw - w - m,
+                    y: vy,
+                },
+                size: NsSize {
+                    width: w,
+                    height: vh,
+                },
+            }
         }
         QuakeEdge::Off => return false,
     };
@@ -603,24 +642,57 @@ fn macos_dock_anim(
         QuakeAnimation::Scale => {
             let cx = dock.origin.x + dock.size.width / 2.0;
             let cy = dock.origin.y + dock.size.height / 2.0;
-            NsRect { origin: NsPoint { x: cx - 1.0, y: cy - 1.0 }, size: NsSize { width: 2.0, height: 2.0 } }
+            NsRect {
+                origin: NsPoint {
+                    x: cx - 1.0,
+                    y: cy - 1.0,
+                },
+                size: NsSize {
+                    width: 2.0,
+                    height: 2.0,
+                },
+            }
         }
         _ => match edge {
             QuakeEdge::Top => NsRect {
-                origin: NsPoint { x: dock.origin.x, y: dock.origin.y + dock.size.height - 1.0 },
-                size: NsSize { width: dock.size.width, height: 1.0 },
+                origin: NsPoint {
+                    x: dock.origin.x,
+                    y: dock.origin.y + dock.size.height - 1.0,
+                },
+                size: NsSize {
+                    width: dock.size.width,
+                    height: 1.0,
+                },
             },
             QuakeEdge::Bottom => NsRect {
-                origin: NsPoint { x: dock.origin.x, y: dock.origin.y },
-                size: NsSize { width: dock.size.width, height: 1.0 },
+                origin: NsPoint {
+                    x: dock.origin.x,
+                    y: dock.origin.y,
+                },
+                size: NsSize {
+                    width: dock.size.width,
+                    height: 1.0,
+                },
             },
             QuakeEdge::Left => NsRect {
-                origin: NsPoint { x: dock.origin.x, y: dock.origin.y },
-                size: NsSize { width: 1.0, height: dock.size.height },
+                origin: NsPoint {
+                    x: dock.origin.x,
+                    y: dock.origin.y,
+                },
+                size: NsSize {
+                    width: 1.0,
+                    height: dock.size.height,
+                },
             },
             QuakeEdge::Right => NsRect {
-                origin: NsPoint { x: dock.origin.x + dock.size.width - 1.0, y: dock.origin.y },
-                size: NsSize { width: 1.0, height: dock.size.height },
+                origin: NsPoint {
+                    x: dock.origin.x + dock.size.width - 1.0,
+                    y: dock.origin.y,
+                },
+                size: NsSize {
+                    width: 1.0,
+                    height: dock.size.height,
+                },
             },
             QuakeEdge::Off => return false,
         },
@@ -631,12 +703,15 @@ fn macos_dock_anim(
         if showing {
             // Place collapsed (no animation) while hidden, reveal, then animate
             // to the flush dock rect.
-            let _: () = msg_send![ns_window, setFrame: collapsed, display: Bool::NO, animate: Bool::NO];
+            let _: () =
+                msg_send![ns_window, setFrame: collapsed, display: Bool::NO, animate: Bool::NO];
             window.set_visible(true);
-            let _: () = msg_send![ns_window, setFrame: dock, display: Bool::YES, animate: Bool::YES];
+            let _: () =
+                msg_send![ns_window, setFrame: dock, display: Bool::YES, animate: Bool::YES];
         } else {
             // Animate down to collapsed, then hide.
-            let _: () = msg_send![ns_window, setFrame: collapsed, display: Bool::YES, animate: Bool::YES];
+            let _: () =
+                msg_send![ns_window, setFrame: collapsed, display: Bool::YES, animate: Bool::YES];
             window.set_visible(false);
         }
     }
