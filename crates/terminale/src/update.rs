@@ -129,12 +129,50 @@ pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
     };
     let out = tmp.path().join("extracted");
     std::fs::create_dir_all(&out)?;
-    self_update::Extract::from_source(&archive)
-        .extract_file(&out, bin)
-        .with_context(|| format!("extract {bin} from {}", asset.name))?;
-    self_replace::self_replace(out.join(bin)).context("atomically replace the running binary")?;
+
+    let candidates = archive_bin_candidates(&asset.name, bin);
+
+    // Whichever candidate matches, the file lands at `out.join(candidate)`:
+    // both the tar (`unpack_in`) and zip backends preserve the entry's full
+    // path relative to the output dir.
+    let mut extracted: Option<std::path::PathBuf> = None;
+    let mut last_err = None;
+    for cand in &candidates {
+        match self_update::Extract::from_source(&archive).extract_file(&out, cand) {
+            Ok(()) => {
+                extracted = Some(out.join(cand));
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    let extracted = extracted.ok_or_else(|| {
+        let tried = candidates.join(", ");
+        match last_err {
+            Some(e) => anyhow!("extract {bin} from {} (tried: {tried}): {e}", asset.name),
+            None => anyhow!("extract {bin} from {} (tried: {tried})", asset.name),
+        }
+    })?;
+    self_replace::self_replace(extracted).context("atomically replace the running binary")?;
 
     Ok(UpdateOutcome::Staged(latest.version.clone()))
+}
+
+/// Candidate archive-internal paths for the binary, in priority order.
+///
+/// cargo-dist's layout is not uniform: the unix `.tar.gz` nests the binary
+/// under a top-level directory named after the archive stem
+/// (`terminale-x86_64-apple-darwin/terminale`), while the Windows `.zip` keeps
+/// it flat at the root (`terminale.exe`). `self_update`'s `extract_file`
+/// matches the entry path *exactly*, so we try the nested path first and fall
+/// back to the bare name — a single code path covering both layouts (and a
+/// future cargo-dist change in either direction) without guessing.
+fn archive_bin_candidates(asset_name: &str, bin: &str) -> [String; 2] {
+    let stem = asset_name
+        .strip_suffix(".tar.gz")
+        .or_else(|| asset_name.strip_suffix(".zip"))
+        .unwrap_or(asset_name);
+    [format!("{stem}/{bin}"), bin.to_string()]
 }
 
 /// Can this process create files in the directory the running binary lives
@@ -360,6 +398,28 @@ mod tests {
         assert!(
             !url.contains("api.github.com"),
             "asset downloads must never go through the rate-limited API host"
+        );
+    }
+
+    #[test]
+    fn archive_bin_candidates_cover_both_cargo_dist_layouts() {
+        // unix `.tar.gz`: the binary is nested under the archive stem, so the
+        // first (nested) candidate is the one that matches.
+        assert_eq!(
+            archive_bin_candidates("terminale-x86_64-apple-darwin.tar.gz", "terminale"),
+            [
+                "terminale-x86_64-apple-darwin/terminale".to_string(),
+                "terminale".to_string(),
+            ],
+        );
+        // Windows `.zip`: the binary sits flat at the root, so the second
+        // (bare-name) candidate is the one that matches.
+        assert_eq!(
+            archive_bin_candidates("terminale-x86_64-pc-windows-msvc.zip", "terminale.exe"),
+            [
+                "terminale-x86_64-pc-windows-msvc/terminale.exe".to_string(),
+                "terminale.exe".to_string(),
+            ],
         );
     }
 
