@@ -1012,6 +1012,7 @@ pub(crate) fn split_focused_pane(state: &mut RunningState, direction: SplitDir, 
         size.height,
         state.proxy.clone(),
         state.scrollback_lines,
+        state.shell_integration,
     );
     // Capture the program label for the session_start hook before the pane
     // is moved into the tab (the profile name was used to build it).
