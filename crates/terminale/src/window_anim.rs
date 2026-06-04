@@ -290,31 +290,107 @@ pub(crate) fn apply_window_rect(window: &Window, rect: terminale_config::WindowR
     window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
 
-/// macOS: dock the window to a screen edge using the **native**
-/// `NSWindow.setFrame` against `NSScreen.visibleFrame`.
-///
-/// winit's `set_outer_position` is unusable for docking here: it double-counts
-/// the menu-bar height (a window asked for y=0 lands ~2× the menu-bar height
-/// below the top) and it can't place a window in the menu-bar band at all, so a
-/// top/left/right dock always shows an empty strip above the window. Going
-/// straight to AppKit with the screen's *visible* frame (which already excludes
-/// the menu bar and the Dock) places the window flush. `animate` runs AppKit's
-/// built-in frame animation — smooth, unlike winit per-frame repositioning.
-///
-/// Returns `false` (caller should fall back to the winit path) when the edge is
-/// `Off`, the handle isn't AppKit, or the NSWindow/NSScreen can't be read.
+/// macOS: stop AppKit from auto-repositioning the window away from a flush
+/// top-dock. AppKit runs every window's frame through
+/// `-constrainFrameRect:toScreen:` so it can't overlap the menu bar — but for a
+/// window already placed flush at the top of the *visible* frame it
+/// double-counts the menu-bar band and drops the window one bar-height lower,
+/// leaving an empty strip between the menu bar and the window. Overriding the
+/// method with the identity (return the requested rect unchanged) keeps the
+/// dock flush. The override is installed once, class-wide, on the window's
+/// winit class, and is harmless for non-docked windows (terminale windows are
+/// borderless with their own chrome, so the menu-bar avoidance buys nothing).
 #[cfg(target_os = "macos")]
-pub(crate) fn macos_dock_window(
-    window: &Window,
-    edge: terminale_config::QuakeEdge,
-    size_percent: f32,
-    margin_px: u32,
-    animate: bool,
-) -> bool {
-    use objc2::runtime::{AnyObject, Bool};
+fn macos_disable_frame_constraining(window: &Window) {
+    use objc2::runtime::{AnyClass, AnyObject, Sel};
+    use objc2::{msg_send, sel};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+
+    if DONE.load(Ordering::SeqCst) {
+        return;
+    }
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    // SAFETY: AppKit handle's `ns_view` is a live `NSView*`; `-window` gives its
+    // owning `NSWindow*` (or nil).
+    let ns_window: *mut AnyObject = unsafe {
+        let view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+        msg_send![view, window]
+    };
+    if ns_window.is_null() {
+        return;
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CgPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CgSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CgRect {
+        origin: CgPoint,
+        size: CgSize,
+    }
+
+    // Replacement implementation: return the requested rect verbatim.
+    extern "C-unwind" fn constrain_identity(
+        _this: *mut AnyObject,
+        _cmd: Sel,
+        frame: CgRect,
+        _screen: *mut AnyObject,
+    ) -> CgRect {
+        frame
+    }
+
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    // SAFETY: `-class` yields the window's (winit) class; we replace its
+    // `constrainFrameRect:toScreen:` with `constrain_identity`, whose signature
+    // and the supplied Objective-C type encoding both match
+    // `(NSRect, NSScreen*) -> NSRect`.
+    unsafe {
+        let cls: *mut AnyClass = msg_send![ns_window, class];
+        let sel = sel!(constrainFrameRect:toScreen:);
+        let imp: objc2::runtime::Imp = std::mem::transmute(
+            constrain_identity
+                as extern "C-unwind" fn(*mut AnyObject, Sel, CgRect, *mut AnyObject) -> CgRect,
+        );
+        let types = c"{CGRect={CGPoint=dd}{CGSize=dd}}@:{CGRect={CGPoint=dd}{CGSize=dd}}@";
+        let _ = objc2::ffi::class_replaceMethod(cls, sel, imp, types.as_ptr());
+    }
+}
+
+/// macOS: the work-area insets of the window's screen, in **physical pixels**,
+/// as `(top, bottom, left, right)`.
+///
+/// `top` is the menu-bar height; one of the other three is the Dock when it is
+/// shown on that edge. Computed from `NSScreen.frame` − `NSScreen.visibleFrame`
+/// (Cocoa points) scaled by the backing factor. Quake dock geometry subtracts
+/// these from the winit monitor rect so a Top/Left/Right dock lands flush under
+/// the menu bar and a Bottom dock clears the Dock — without AppKit's own frame
+/// constraining (which we disable, see [`macos_disable_frame_constraining`]).
+///
+/// Returns `None` when the handle isn't AppKit or no screen can be read.
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_screen_insets(window: &Window) -> Option<(i32, i32, i32, i32)> {
+    use objc2::runtime::AnyObject;
     use objc2::{class, msg_send};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-    use terminale_config::QuakeEdge;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -363,6 +439,114 @@ pub(crate) fn macos_dock_window(
         );
     }
 
+    let Ok(handle) = window.window_handle() else {
+        return None;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return None;
+    };
+    // SAFETY: on AppKit the handle's `ns_view` is a valid `NSView*` for the
+    // window's lifetime; `-window` returns its owning `NSWindow*` (or nil).
+    let ns_window: *mut AnyObject = unsafe {
+        let view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+        msg_send![view, window]
+    };
+    if ns_window.is_null() {
+        return None;
+    }
+    // `-screen` returns nil when the window isn't on-screen yet (e.g. just before
+    // `set_visible(true)` is flushed); fall back to the main screen so docking
+    // still gets sane insets.
+    // SAFETY: `-screen` and `+[NSScreen mainScreen]` return an NSScreen* or nil.
+    let mut ns_screen: *mut AnyObject = unsafe { msg_send![ns_window, screen] };
+    if ns_screen.is_null() {
+        ns_screen = unsafe { msg_send![class!(NSScreen), mainScreen] };
+    }
+    if ns_screen.is_null() {
+        return None;
+    }
+    // Both in Cocoa points, origin bottom-left. `visibleFrame` already excludes
+    // the menu bar (top) and the Dock; `frame` is the whole screen.
+    // SAFETY: `-frame`/`-visibleFrame` return an NSRect; `-backingScaleFactor` a CGFloat.
+    let full: NsRect = unsafe { msg_send![ns_screen, frame] };
+    let vis: NsRect = unsafe { msg_send![ns_screen, visibleFrame] };
+    let scale: f64 = unsafe { msg_send![ns_screen, backingScaleFactor] };
+    let scale = if scale > 0.0 { scale } else { 1.0 };
+    // Insets in Cocoa points (top measured from the top edge).
+    let top = (full.origin.y + full.size.height) - (vis.origin.y + vis.size.height);
+    let bottom = vis.origin.y - full.origin.y;
+    let left = vis.origin.x - full.origin.x;
+    let right = (full.origin.x + full.size.width) - (vis.origin.x + vis.size.width);
+    #[allow(clippy::cast_possible_truncation)]
+    let px = |v: f64| (v * scale).round() as i32;
+    Some((px(top), px(bottom), px(left), px(right)))
+}
+
+/// macOS: animate a docked Quake show/hide using AppKit's **native** frame
+/// animation (compositor-driven, smooth) instead of the per-frame winit pump
+/// (which resizes the wgpu surface every frame and stutters on macOS).
+///
+/// The window animates between a *collapsed* rect at the dock edge and the
+/// flush dock rect (computed from `NSScreen.visibleFrame`, so it lands under the
+/// menu bar / clears the Dock). `Slide`/`Bounce` collapse along the dock axis;
+/// `Scale` collapses to a point at the dock centre. `setFrame:display:animate:`
+/// blocks for the (short) animation, which is fine for a toggle. Returns `false`
+/// when the AppKit handle/screen can't be read so the caller can fall back.
+///
+/// `Fade`/`None` are NOT handled here (the caller drives those: alpha pump and
+/// instant placement respectively).
+#[cfg(target_os = "macos")]
+fn macos_dock_anim(
+    window: &Window,
+    edge: terminale_config::QuakeEdge,
+    size_percent: f32,
+    margin_px: u32,
+    kind: terminale_config::QuakeAnimation,
+    showing: bool,
+) -> bool {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use terminale_config::{QuakeAnimation, QuakeEdge};
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsPoint {
+        x: f64,
+        y: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsSize {
+        width: f64,
+        height: f64,
+    }
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct NsRect {
+        origin: NsPoint,
+        size: NsSize,
+    }
+    // SAFETY: layouts match Cocoa's CGPoint/CGSize/CGRect.
+    unsafe impl objc2::Encode for NsPoint {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGPoint",
+            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+        );
+    }
+    unsafe impl objc2::Encode for NsSize {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGSize",
+            &[<f64 as objc2::Encode>::ENCODING, <f64 as objc2::Encode>::ENCODING],
+        );
+    }
+    unsafe impl objc2::Encode for NsRect {
+        const ENCODING: objc2::Encoding = objc2::Encoding::Struct(
+            "CGRect",
+            &[<NsPoint as objc2::Encode>::ENCODING, <NsSize as objc2::Encode>::ENCODING],
+        );
+    }
+
     if matches!(edge, QuakeEdge::Off) {
         return false;
     }
@@ -372,8 +556,7 @@ pub(crate) fn macos_dock_window(
     let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
         return false;
     };
-    // SAFETY: on AppKit the handle's `ns_view` is a valid `NSView*` for the
-    // window's lifetime; `-window` returns its owning `NSWindow*` (or nil).
+    // SAFETY: AppKit handle's `ns_view` is a live `NSView*`; `-window` its NSWindow*.
     let ns_window: *mut AnyObject = unsafe {
         let view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
         msg_send![view, window]
@@ -381,13 +564,6 @@ pub(crate) fn macos_dock_window(
     if ns_window.is_null() {
         return false;
     }
-    // `-screen` returns nil when the window isn't on-screen yet — e.g. the
-    // `set_visible(true)` issued just before this call hasn't been flushed by
-    // the window server. Don't bail in that case: returning false drops the
-    // caller onto the winit `set_outer_position` path, whose macOS menu-bar
-    // double-count is exactly the "empty strip above the dock" bug. Fall back
-    // to the main screen so the dock still lands flush.
-    // SAFETY: `-screen` and `+[NSScreen mainScreen]` return an NSScreen* or nil.
     let mut ns_screen: *mut AnyObject = unsafe { msg_send![ns_window, screen] };
     if ns_screen.is_null() {
         ns_screen = unsafe { msg_send![class!(NSScreen), mainScreen] };
@@ -395,67 +571,74 @@ pub(crate) fn macos_dock_window(
     if ns_screen.is_null() {
         return false;
     }
-    // `visibleFrame` is Cocoa coords: origin bottom-left, y grows up, and it
-    // already excludes the menu bar (top) and the Dock.
-    // SAFETY: `-visibleFrame` returns an NSRect (4×f64).
+    // SAFETY: `-visibleFrame` returns an NSRect (Cocoa points, bottom-left).
     let vf: NsRect = unsafe { msg_send![ns_screen, visibleFrame] };
     let (vx, vy, vw, vh) = (vf.origin.x, vf.origin.y, vf.size.width, vf.size.height);
     let frac = f64::from(size_percent).clamp(0.1, 1.0);
     let m = f64::from(margin_px);
-    let rect = match edge {
+    // Flush dock rect (Cocoa coords) — mirrors `quake_dock_rect` against the
+    // *visible* frame so it sits under the menu bar / clears the Dock.
+    let dock = match edge {
         QuakeEdge::Top => {
             let h = vh * frac;
-            // Flush under the menu bar = top of the visible band, minus margin.
-            NsRect {
-                origin: NsPoint {
-                    x: vx,
-                    y: vy + vh - h - m,
-                },
-                size: NsSize {
-                    width: vw,
-                    height: h,
-                },
-            }
+            NsRect { origin: NsPoint { x: vx, y: vy + vh - h - m }, size: NsSize { width: vw, height: h } }
         }
         QuakeEdge::Bottom => {
             let h = vh * frac;
-            NsRect {
-                origin: NsPoint { x: vx, y: vy + m },
-                size: NsSize {
-                    width: vw,
-                    height: h,
-                },
-            }
+            NsRect { origin: NsPoint { x: vx, y: vy + m }, size: NsSize { width: vw, height: h } }
         }
         QuakeEdge::Left => {
             let w = vw * frac;
-            NsRect {
-                origin: NsPoint { x: vx + m, y: vy },
-                size: NsSize {
-                    width: w,
-                    height: vh,
-                },
-            }
+            NsRect { origin: NsPoint { x: vx + m, y: vy }, size: NsSize { width: w, height: vh } }
         }
         QuakeEdge::Right => {
             let w = vw * frac;
-            NsRect {
-                origin: NsPoint {
-                    x: vx + vw - w - m,
-                    y: vy,
-                },
-                size: NsSize {
-                    width: w,
-                    height: vh,
-                },
-            }
+            NsRect { origin: NsPoint { x: vx + vw - w - m, y: vy }, size: NsSize { width: w, height: vh } }
         }
         QuakeEdge::Off => return false,
     };
-    // SAFETY: setFrame:display:animate: is a standard NSWindow method.
+    // Collapsed rect at the dock edge (Slide/Bounce) or a point at the centre
+    // (Scale). The window animates between this and `dock`.
+    let collapsed = match kind {
+        QuakeAnimation::Scale => {
+            let cx = dock.origin.x + dock.size.width / 2.0;
+            let cy = dock.origin.y + dock.size.height / 2.0;
+            NsRect { origin: NsPoint { x: cx - 1.0, y: cy - 1.0 }, size: NsSize { width: 2.0, height: 2.0 } }
+        }
+        _ => match edge {
+            QuakeEdge::Top => NsRect {
+                origin: NsPoint { x: dock.origin.x, y: dock.origin.y + dock.size.height - 1.0 },
+                size: NsSize { width: dock.size.width, height: 1.0 },
+            },
+            QuakeEdge::Bottom => NsRect {
+                origin: NsPoint { x: dock.origin.x, y: dock.origin.y },
+                size: NsSize { width: dock.size.width, height: 1.0 },
+            },
+            QuakeEdge::Left => NsRect {
+                origin: NsPoint { x: dock.origin.x, y: dock.origin.y },
+                size: NsSize { width: 1.0, height: dock.size.height },
+            },
+            QuakeEdge::Right => NsRect {
+                origin: NsPoint { x: dock.origin.x + dock.size.width - 1.0, y: dock.origin.y },
+                size: NsSize { width: 1.0, height: dock.size.height },
+            },
+            QuakeEdge::Off => return false,
+        },
+    };
+
+    // SAFETY: standard NSWindow frame setters; `Bool` matches the ObjC BOOL.
     unsafe {
-        let _: () =
-            msg_send![ns_window, setFrame: rect, display: Bool::YES, animate: Bool::new(animate)];
+        if showing {
+            // Place collapsed (no animation) while hidden, reveal, then animate
+            // to the flush dock rect.
+            let _: () = msg_send![ns_window, setFrame: collapsed, display: Bool::NO, animate: Bool::NO];
+            window.set_visible(true);
+            let _: () = msg_send![ns_window, setFrame: dock, display: Bool::YES, animate: Bool::YES];
+        } else {
+            // Animate down to collapsed, then hide.
+            let _: () = msg_send![ns_window, setFrame: collapsed, display: Bool::YES, animate: Bool::YES];
+            window.set_visible(false);
+        }
     }
     true
 }
@@ -782,7 +965,33 @@ pub(crate) fn set_window_alpha(window: &Window, alpha: u8) {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+/// macOS: set the whole-window opacity via `-[NSWindow setAlphaValue:]`, so the
+/// Quake `Fade` animation works on the dock the same way `SetLayeredWindowAttributes`
+/// drives it on Windows.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_window_alpha(window: &Window, alpha: u8) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(appkit) = handle.as_raw() else {
+        return;
+    };
+    let a = f64::from(alpha) / 255.0;
+    // SAFETY: the AppKit handle's `ns_view` is a live `NSView*`; `-window` gives
+    // its `NSWindow*`, and `-setAlphaValue:` is a standard NSWindow setter.
+    unsafe {
+        let view: *mut AnyObject = appkit.ns_view.as_ptr().cast();
+        let ns_window: *mut AnyObject = msg_send![view, window];
+        if !ns_window.is_null() {
+            let _: () = msg_send![ns_window, setAlphaValue: a];
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 
 // ── refresh_quake_last_monitor ────────────────────────────────────────────────
@@ -950,17 +1159,6 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     state.modifiers = winit::keyboard::ModifiersState::empty();
 
     if state.quake_visible {
-        // macOS dock modes are positioned natively (see the show path); hide
-        // them with a plain `set_visible(false)` rather than the winit slide,
-        // which would reposition frame-by-frame with the menu-bar coordinate
-        // bug and stutter. The next show re-docks from the visible frame.
-        #[cfg(target_os = "macos")]
-        if quake_cfg.edge != terminale_config::QuakeEdge::Off {
-            state.quake_visible = false;
-            state.quake_anim = None;
-            state.window.set_visible(false);
-            return;
-        }
         // Hiding — snapshot the exact geometry so the next show is a 1:1
         // restore. `outer_position` may fail on some platforms; fall back to
         // any saved rect, else origin.
@@ -1010,6 +1208,26 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
             }
         }
         state.quake_visible = false;
+
+        // macOS geometric animations: collapse via AppKit's native frame
+        // animation (smooth), then hide. `Fade`/`None` fall through.
+        #[cfg(target_os = "macos")]
+        if quake_cfg.edge != terminale_config::QuakeEdge::Off
+            && animated
+            && dur.as_millis() > 0
+            && !matches!(quake_cfg.animation, QuakeAnimation::Fade)
+            && macos_dock_anim(
+                &state.window,
+                quake_cfg.edge,
+                quake_cfg.size_percent,
+                quake_cfg.margin_px,
+                quake_cfg.animation,
+                false,
+            )
+        {
+            state.quake_anim = None;
+            return;
+        }
 
         if animated && dur.as_millis() > 0 {
             // Slide/Bounce: collapse the window onto the dock edge (reveal in
@@ -1087,26 +1305,52 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     // window modes including docked Quake.
     apply_window_level(&state.window, state.always_on_top);
 
-    // macOS dock modes (top/bottom/left/right): position natively against the
-    // screen's visible frame. winit's `set_outer_position` double-counts the
-    // menu bar, leaving an empty strip above the window; AppKit's `setFrame`
-    // places it flush and animates smoothly. Free-floating (`Off`) keeps the
-    // winit path below.
+    // macOS dock modes: the dock geometry is computed against the screen work
+    // area (see `compute_quake_target`/`dock_work_area`), so the shared winit
+    // animation path below positions the window flush — but only once AppKit's
+    // menu-bar frame constraining is disabled (it otherwise drops the window a
+    // bar-height, the empty-strip bug). Also activate so a Quake show triggered
+    // from another app takes keyboard focus.
     #[cfg(target_os = "macos")]
     if quake_cfg.edge != terminale_config::QuakeEdge::Off {
-        state.window.set_visible(true);
+        macos_disable_frame_constraining(&state.window);
         macos_activate();
-        let want_anim = animated && dur.as_millis() > 0;
-        if macos_dock_window(
-            &state.window,
-            quake_cfg.edge,
-            quake_cfg.size_percent,
-            quake_cfg.margin_px,
-            want_anim,
-        ) {
-            state.quake_anim = None;
-            state.window.focus_window();
-            return;
+    }
+
+    // macOS geometric animations (Slide/Bounce/Scale) run through AppKit's
+    // native, compositor-driven frame animation — smooth, unlike the per-frame
+    // winit pump which resizes the wgpu surface every frame and stutters here.
+    // AppKit doesn't redraw the wgpu surface during its (synchronous) animation,
+    // so we first render one full-size frame into the (still hidden) surface;
+    // the animation then expands that live content instead of revealing blank.
+    // `Fade` (cheap alpha ramp) and `None` (instant) fall through to the shared
+    // path below.
+    #[cfg(target_os = "macos")]
+    if quake_cfg.edge != terminale_config::QuakeEdge::Off
+        && animated
+        && dur.as_millis() > 0
+        && !matches!(quake_cfg.animation, QuakeAnimation::Fade)
+    {
+        if let Some((rect, _)) = target_and_mon {
+            let (_, _, rw, rh) = rect;
+            // Pre-render the docked content while hidden (no flash): place at the
+            // flush dock rect, size the surface + grid, draw one frame.
+            apply_window_rect(&state.window, rect, true);
+            state.renderer.resize(rw, rh);
+            crate::resize_all_tabs(state, rw, rh);
+            crate::render_main(state);
+            if macos_dock_anim(
+                &state.window,
+                quake_cfg.edge,
+                quake_cfg.size_percent,
+                quake_cfg.margin_px,
+                quake_cfg.animation,
+                true,
+            ) {
+                state.quake_anim = None;
+                state.window.focus_window();
+                return;
+            }
         }
     }
 
@@ -1269,9 +1513,41 @@ pub(crate) fn compute_quake_target(
     );
     let pos = mon.position();
     let size = mon.size();
-    let mon_rect: terminale_config::MonitorRect = (pos.x, pos.y, size.width, size.height);
-    terminale_config::quake_dock_rect(mon_rect, cfg.edge, cfg.size_percent, cfg.margin_px)
-        .map(|r| (r, Some(mon_rect)))
+    let full_rect: terminale_config::MonitorRect = (pos.x, pos.y, size.width, size.height);
+    // Dock against the screen's WORK AREA so the window sits flush under the
+    // macOS menu bar (Top/Left/Right) and clears the Dock (Bottom). On other
+    // platforms the work area is the full monitor rect.
+    let dock_area = dock_work_area(&state.window, full_rect);
+    terminale_config::quake_dock_rect(dock_area, cfg.edge, cfg.size_percent, cfg.margin_px)
+        .map(|r| (r, Some(dock_area)))
+}
+
+/// The monitor rect to dock against. On macOS this is the screen's work area
+/// (menu bar + Dock excluded), so geometry-based docking lands flush; elsewhere
+/// it's the full monitor rect unchanged.
+#[cfg(target_os = "macos")]
+fn dock_work_area(
+    window: &Window,
+    full: terminale_config::MonitorRect,
+) -> terminale_config::MonitorRect {
+    let (mx, my, mw, mh) = full;
+    if let Some((t, b, l, r)) = macos_screen_insets(window) {
+        #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+        let nw = (mw as i32 - l - r).max(1) as u32;
+        #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
+        let nh = (mh as i32 - t - b).max(1) as u32;
+        (mx + l, my + t, nw, nh)
+    } else {
+        full
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn dock_work_area(
+    _window: &Window,
+    full: terminale_config::MonitorRect,
+) -> terminale_config::MonitorRect {
+    full
 }
 
 // ── pump_quake_anim ───────────────────────────────────────────────────────────
