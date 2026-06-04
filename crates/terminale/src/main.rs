@@ -29,6 +29,7 @@ mod palette;
 mod panes;
 mod password_prompt;
 mod paste_guard;
+mod process_job;
 mod quick_select;
 mod resources;
 mod settings_window;
@@ -602,6 +603,14 @@ fn main() -> Result<()> {
             .with(file_layer)
             .init();
     }
+
+    // Confine the process tree to a kill-on-close Job Object so the ConPTY
+    // console hosts (`OpenConsole.exe`) we spawn can never outlive us — not
+    // even on a force-kill or a crash where `Session::drop` never runs.
+    // Placed AFTER the CLI early-returns (`--update` etc.) so one-shot
+    // commands that hand off to a long-lived installer aren't confined, and
+    // after tracing init so its log lines are captured. No-op off Windows.
+    process_job::confine_to_job();
 
     let (config, config_path) = match loaded {
         Ok((c, p)) => {

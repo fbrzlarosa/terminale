@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **ConPTY console hosts (`OpenConsole.exe`) can no longer outlive a crash.**
+  Each terminal pane runs its shell through a pseudo-console backed by an
+  `OpenConsole.exe` host. A clean tab close reaps it, but a hard exit — a
+  force-kill, a panic-abort, a GPU-driver crash — left the host orphaned, and
+  an orphaned host whose pipe peer has vanished busy-loops at ~100% of one
+  core, accumulating one per killed instance. The process now confines itself
+  to a Windows Job Object with kill-on-close, so the OS terminates every
+  console host the instant terminale goes down, no matter how. The MSI updater
+  explicitly breaks away from the job so an in-progress upgrade is never killed
+
 ## [0.1.19]
 
 ### Fixed

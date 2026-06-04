@@ -199,11 +199,22 @@ fn apply_via_installer(
 
     // Hand off to Windows Installer: it upgrades the managed install,
     // prompts for elevation itself, and asks to close the running app.
-    std::process::Command::new("msiexec")
-        .arg("/i")
-        .arg(&msi)
-        .spawn()
-        .context("launch msiexec for the downloaded installer")?;
+    //
+    // CREATE_BREAKAWAY_FROM_JOB (0x0100_0000): terminale confines itself to a
+    // kill-on-close Job Object so its ConPTY hosts can't outlive a crash (see
+    // `process_job`). msiexec MUST escape that job — otherwise quitting
+    // terminale to let the upgrade proceed would kill the installer mid-flight.
+    // The job is created with BREAKAWAY_OK, so this succeeds.
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        std::process::Command::new("msiexec")
+            .arg("/i")
+            .arg(&msi)
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .context("launch msiexec for the downloaded installer")?;
+    }
     Ok(UpdateOutcome::InstallerLaunched(latest.version.clone()))
 }
 
