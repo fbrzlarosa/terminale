@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.22]
+
+### Fixed
+- **The in-app updater can now actually install updates.** It asked for an
+  archive entry named exactly `terminale`, but the release tarballs nest the
+  unix binary under a stem directory (`terminale-x86_64-apple-darwin/terminale`)
+  while the Windows zip keeps it flat (`terminale.exe`), so extraction failed
+  with *"Could not find the required path in the archive"*. The updater now
+  tries both layouts. Note: because the broken updater shipped inside every
+  build up to and including 0.1.21, upgrading **to** this release still needs a
+  one-time manual download; auto-update works for every release after it.
+
 ## [0.1.21]
 
 ### Added
@@ -565,7 +577,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...HEAD
+[0.1.22]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/fbrzlarosa/terminale/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/fbrzlarosa/terminale/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/fbrzlarosa/terminale/compare/v0.1.18...v0.1.19
