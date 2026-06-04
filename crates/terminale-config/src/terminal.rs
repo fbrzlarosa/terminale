@@ -477,6 +477,21 @@ pub struct TerminalConfig {
     /// - `allow`: read the system clipboard, base64-encode it, and write the
     ///   response back to the PTY. Only use this for fully-trusted programs.
     pub clipboard_read: ClipboardReadPolicy,
+    /// When `true` (default), terminale injects a small startup hook into
+    /// recognised shells so they report their working directory as they move
+    /// around (`OSC 9;9`). This is what lets the **working directory** be
+    /// restored when a session is reopened, and what feeds the directory-jump
+    /// and status-bar `cwd` segments.
+    ///
+    /// It is required for shells that do not otherwise announce their cwd —
+    /// most importantly **PowerShell**, whose `Set-Location` does not update
+    /// the OS process directory, so there is no other way to know where it is.
+    /// For shells whose `cd` does update the process directory (cmd, bash,
+    /// zsh), terminale can read it from the OS as a fallback even with this
+    /// off. The injection is skipped when a profile already passes its own
+    /// `-Command`/`-File` (or equivalent), so it never overrides an explicit
+    /// launch. Default `true`.
+    pub shell_integration: bool,
     /// When `true` (default), each shell command is captured as a discrete
     /// block using OSC 133 shell integration marks. Requires the shell to emit
     /// `OSC 133;A/B/C/D` sequences. The blocks are the foundation for
@@ -575,6 +590,7 @@ impl Default for TerminalConfig {
             link_hover_tooltip: true,
             link_hover_delay_ms: 0,
             clipboard_read: ClipboardReadPolicy::default(),
+            shell_integration: true,
             command_blocks: true,
             max_command_blocks: 1000,
             edit_command_clears_line: true,

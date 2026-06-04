@@ -33,6 +33,7 @@ mod process_job;
 mod quick_select;
 mod resources;
 mod settings_window;
+mod shell_integration;
 mod shortcuts;
 mod ssh_tabs;
 mod status_bar;
@@ -1823,6 +1824,11 @@ struct TermWindow {
     /// Max scrollback lines per terminal. Mirrors `window.scrollback_lines`;
     /// applied live to every tab's emulator when changed in settings.
     scrollback_lines: usize,
+    /// Whether to inject cwd-reporting shell integration when spawning shells.
+    /// Mirrors `terminal.shell_integration`; consulted at spawn time so newly
+    /// opened tabs/panes pick up the current value (existing shells are
+    /// unaffected — re-launch to apply).
+    shell_integration: bool,
     /// Whether command-block capture is enabled. Mirrors `terminal.command_blocks`;
     /// applied live to every tab's emulator when changed in settings.
     command_blocks_enabled: bool,
@@ -2756,6 +2762,7 @@ impl TerminaleApp {
             smooth_scroll_remainder: 0.0,
             copy_on_select: self.config.window.copy_on_select,
             scrollback_lines: self.config.window.scrollback_lines,
+            shell_integration: self.config.terminal.shell_integration,
             command_blocks_enabled: self.config.terminal.command_blocks,
             max_command_blocks: self.config.terminal.max_command_blocks,
             word_separators: self.config.terminal.word_separators.clone(),
@@ -3979,6 +3986,7 @@ impl TerminaleApp {
             size.height,
             self.proxy.clone(),
             self.config.window.scrollback_lines,
+            self.config.terminal.shell_integration,
         );
         // Capture the program label before the tab is consumed.
         let program_name = profile
@@ -4116,6 +4124,7 @@ impl TerminaleApp {
         let scrollback = self.config.window.scrollback_lines;
         let cb_enabled = self.config.terminal.command_blocks;
         let cb_max = self.config.terminal.max_command_blocks;
+        let shell_integration = self.config.terminal.shell_integration;
 
         // Spawn each saved tab from the resolved plan.
         for (tab_title, init_leaf, split_leaves) in tab_plans {
@@ -4131,6 +4140,7 @@ impl TerminaleApp {
                 win_size.height,
                 state.proxy.clone(),
                 scrollback,
+                shell_integration,
             );
             new_tab.user_title = tab_title;
             if let Some(pane) = new_tab.panes.get_mut(&new_tab.focused) {
@@ -4151,6 +4161,7 @@ impl TerminaleApp {
                     win_size.height,
                     state.proxy.clone(),
                     scrollback,
+                    shell_integration,
                 );
                 let new_pane_id = new_tab.split_focused(dir, new_pane, side_b);
                 apply_restore_ratio(&mut new_tab.tree, new_pane_id, ratio, dir);
@@ -4868,6 +4879,10 @@ impl TerminaleApp {
                             emu.set_apc_graphics_enabled(apc_on);
                         }
                     }
+                    // Shell-integration injection toggle: consulted on the
+                    // next spawn (existing shells keep whatever they launched
+                    // with).
+                    state.shell_integration = cfg.terminal.shell_integration;
                     // Live-apply command-block capture settings.
                     {
                         let cb_enabled = cfg.terminal.command_blocks;
@@ -5168,6 +5183,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             size.height,
             self.proxy.clone(),
             self.config.window.scrollback_lines,
+            self.config.terminal.shell_integration,
         );
         // Build the initial tab bar (single tab, but still visible — gives
         // users a clear "+ to add" affordance).
@@ -8848,6 +8864,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                                 emu.set_apc_graphics_enabled(apc_on);
                             }
                         }
+                        state.shell_integration = cfg.terminal.shell_integration;
                         // Live-apply command-block capture settings.
                         {
                             let cb_enabled = cfg.terminal.command_blocks;
@@ -9443,6 +9460,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_tab(
     profile: Option<&Profile>,
     shell_override: Option<&str>,
@@ -9452,6 +9470,7 @@ fn spawn_tab(
     height_px: u32,
     proxy: EventLoopProxy<UserEvent>,
     scrollback: usize,
+    shell_integration: bool,
 ) -> TabState {
     TabState::new_single(spawn_pane(
         profile,
@@ -9462,6 +9481,7 @@ fn spawn_tab(
         height_px,
         proxy,
         scrollback,
+        shell_integration,
     ))
 }
 
@@ -9478,8 +9498,9 @@ fn spawn_pane(
     height_px: u32,
     proxy: EventLoopProxy<UserEvent>,
     scrollback: usize,
+    shell_integration: bool,
 ) -> Pane {
-    let spec = build_spawn_spec(profile, shell_override);
+    let spec = build_spawn_spec(profile, shell_override, shell_integration);
     let notifier: terminale_core::DataNotifier = Arc::new(move || {
         // Coalesce wakeups: under output floods the reader produces thousands
         // of chunks per second, but one queued `PtyDataReady` already drains
@@ -10050,8 +10071,12 @@ fn default_shell() -> &'static str {
     }
 }
 
-fn build_spawn_spec(profile: Option<&Profile>, shell_override: Option<&str>) -> SpawnSpec {
-    match (profile, shell_override) {
+fn build_spawn_spec(
+    profile: Option<&Profile>,
+    shell_override: Option<&str>,
+    shell_integration: bool,
+) -> SpawnSpec {
+    let mut spec = match (profile, shell_override) {
         (_, Some(shell)) => SpawnSpec::just(shell),
         (Some(p), None) => SpawnSpec {
             // A profile may legitimately carry only a cwd/env (the
@@ -10068,7 +10093,16 @@ fn build_spawn_spec(profile: Option<&Profile>, shell_override: Option<&str>) -> 
             cwd: p.cwd.clone(),
         },
         (None, None) => SpawnSpec::just(default_shell()),
+    };
+    // Inject cwd reporting for shells that need it (PowerShell) so the working
+    // directory tracks and can be restored. No-op for shells we don't
+    // instrument or when the profile already drives its own command.
+    if shell_integration {
+        if let Some(args) = shell_integration::inject_cwd_reporting(&spec.command, &spec.args) {
+            spec.args = args;
+        }
     }
+    spec
 }
 
 // ── Workspace helpers ─────────────────────────────────────────────────────────
@@ -13466,7 +13500,7 @@ mod tests {
             cwd: Some(cwd.clone()),
             icon: None,
         };
-        let spec = build_spawn_spec(Some(&p), None);
+        let spec = build_spawn_spec(Some(&p), None, false);
         assert_eq!(spec.command, default_shell());
         assert_eq!(spec.cwd, Some(cwd));
 
@@ -13475,10 +13509,10 @@ mod tests {
             command: "zsh".into(),
             ..p.clone()
         };
-        assert_eq!(build_spawn_spec(Some(&p2), None).command, "zsh");
+        assert_eq!(build_spawn_spec(Some(&p2), None, false).command, "zsh");
 
         // No profile → default shell.
-        assert_eq!(build_spawn_spec(None, None).command, default_shell());
+        assert_eq!(build_spawn_spec(None, None, false).command, default_shell());
     }
 
     #[test]

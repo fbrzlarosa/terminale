@@ -29,6 +29,31 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Read the current working directory of process `pid` from the OS.
+///
+/// Used as a restore fallback for shells that don't announce their cwd via an
+/// escape sequence but whose `cd` updates the OS process directory (cmd, bash,
+/// zsh). Returns `None` when the process is gone, the OS won't report a cwd, or
+/// the path is empty. (PowerShell does not update its process directory on
+/// `Set-Location`, so this is meaningless for it — but the OSC-based path
+/// already covers PowerShell via injected shell integration.)
+fn os_process_cwd(pid: u32) -> Option<String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let pid = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[pid]),
+        true,
+        ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+    );
+    let cwd = sys.process(pid)?.cwd()?;
+    if cwd.as_os_str().is_empty() {
+        None
+    } else {
+        Some(cwd.display().to_string())
+    }
+}
+
 // ── Data types ────────────────────────────────────────────────────────────────
 
 /// Direction of a binary split — serialised so saved workspaces are portable.
@@ -182,10 +207,19 @@ pub(crate) fn capture_workspace_with_groups(
                 };
                 let profile = Some(pane.profile_name.clone());
                 let cwd = if restore_working_dirs {
+                    // Primary: the directory the shell announced via OSC 7 /
+                    // OSC 9;9 (works for PowerShell via injected shell
+                    // integration, and any shell that reports its cwd).
+                    // Fallback: read the shell process's cwd from the OS — this
+                    // catches cmd/bash/zsh, whose `cd` updates the process
+                    // directory even when they don't emit an escape sequence.
+                    // (Useless for PowerShell, but the OSC path already covers
+                    // it, so the fallback is only reached for the others.)
                     pane.emulator
                         .lock()
                         .current_dir()
                         .map(std::string::ToString::to_string)
+                        .or_else(|| pane.session.child_pid().and_then(os_process_cwd))
                 } else {
                     None
                 };

@@ -508,6 +508,7 @@ pub(crate) fn new_tab_inner(state: &mut RunningState, profile: Option<&Profile>)
         size.height,
         state.proxy.clone(),
         state.scrollback_lines,
+        state.shell_integration,
     );
     state.tabs.push(new);
     state.active_tab = state.tabs.len() - 1;
@@ -747,7 +748,7 @@ pub(crate) fn restart_focused_pane(
         },
     };
 
-    let spec = crate::build_spawn_spec(Some(&respawn), None);
+    let spec = crate::build_spawn_spec(Some(&respawn), None, state.shell_integration);
     let proxy = state.proxy.clone();
     let notifier: terminale_core::DataNotifier = std::sync::Arc::new(move || {
         let _ = proxy.send_event(crate::UserEvent::PtyDataReady);

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **Restoring a session now reopens each tab in the directory it was in.**
+  `window.restore_working_dirs` already existed, but it only worked for shells
+  that announce their working directory, which PowerShell does not — and
+  PowerShell's `Set-Location` doesn't update the OS process directory either,
+  so there was no way to know where it was. A new **shell integration** setting
+  (Settings → Terminal → *Report working directory*, on by default) injects a
+  tiny prompt hook into PowerShell so it reports its directory via `OSC 9;9`.
+  For shells whose `cd` does update the process directory (cmd, bash, zsh) the
+  directory is now read from the OS as a fallback at save time. Net effect:
+  with *Restore working dirs* on (Settings → Workspaces), reopening terminale
+  starts every restored tab back in its folder. The injection is skipped when
+  a profile already runs its own `-Command`/`-File`
+
 ## [0.1.20]
 
 ### Fixed

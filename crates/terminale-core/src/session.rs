@@ -449,6 +449,18 @@ impl Session {
             Backend::Remote { .. } => None,
         }
     }
+
+    /// OS process id of the local shell child, if this is a PTY session and the
+    /// child is still known. `None` for remote (SSH) sessions or once the
+    /// child handle can no longer report a pid. Useful for querying the
+    /// shell's working directory from the OS as a restore fallback.
+    #[must_use]
+    pub fn child_pid(&self) -> Option<u32> {
+        match &self.backend {
+            Backend::Pty { child, .. } => child.lock().process_id(),
+            Backend::Remote { .. } => None,
+        }
+    }
 }
 
 fn default_shell() -> String {

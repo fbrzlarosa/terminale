@@ -710,9 +710,44 @@ impl SettingsWindow {
 
         ui.add_space(6.0);
 
-        // ── Shell integration: command blocks ─────────────────────────────────
+        // ── Shell integration ─────────────────────────────────────────────────
         card(ui, |ui| {
             field_label(ui, "Shell integration");
+            sublabel(
+                ui,
+                "Report the working directory as you move around (OSC 9;9), so it can be \
+                 restored when a session is reopened (see Workspaces → Restore working dirs) \
+                 and feeds the cwd status-bar segment and directory jump. Injected into \
+                 PowerShell automatically — required there, since PowerShell's Set-Location \
+                 does not change the OS process directory. Skipped when a profile already runs \
+                 its own -Command/-File. Takes effect on newly opened tabs.",
+            );
+            ui.add_space(4.0);
+
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Report working directory");
+                let on = self.config.terminal.shell_integration;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.terminal.shell_integration = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Report working directory",
+            );
+
+            ui.add_space(4.0);
             sublabel(
                 ui,
                 "Capture each shell command as a discrete block using OSC 133 marks. \
