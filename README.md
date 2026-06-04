@@ -158,11 +158,15 @@ curl --proto '=https' --tlsv1.2 -LsSf \
   https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-installer.sh | sh
 ```
 
-**One-liner (Windows PowerShell)**
+**One-liner (Windows PowerShell)** — *recommended for automatic updates*
 
 ```powershell
 irm https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-installer.ps1 | iex
 ```
+
+This installs per-user into `%LOCALAPPDATA%\terminale` (a writable location), so
+the in-app updater can replace the binary **silently in the background** and
+apply it on the next launch — no UAC prompt, no installer to click through.
 
 **Native installers** — grab the right one from
 [Releases](https://github.com/fbrzlarosa/terminale/releases):
@@ -173,6 +177,14 @@ irm https://github.com/fbrzlarosa/terminale/releases/latest/download/terminale-i
 | macOS Apple Silicon | `terminale-vX.Y.Z-aarch64-apple-darwin.dmg` |
 | macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.dmg` |
 | Linux x86_64 | `terminale-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
+
+> **Windows: MSI vs PowerShell installer.** The `.msi` is a **system-wide**
+> install under `Program Files` — good for managed/multi-user machines, but
+> because that location needs admin rights, updates can't apply silently: the
+> in-app updater downloads the new `.msi` and runs it (with the usual UAC
+> prompt). For **hands-off background updates**, use the per-user PowerShell
+> one-liner above instead. (Switching is a one-time reinstall: uninstall the
+> MSI build from *Add or remove programs*, then run the PowerShell one-liner.)
 
 The macOS download is a `.dmg`: open it, then drag **terminale.app** onto the
 `/Applications` shortcut. It then shows up in Launchpad and Spotlight with the

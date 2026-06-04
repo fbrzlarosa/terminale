@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+- **The PowerShell installer now installs per-user, enabling silent background
+  updates on Windows.** It installs into `%LOCALAPPDATA%\terminale` (a writable
+  location) instead of `~/.cargo`, so the in-app updater replaces the binary in
+  place and applies it on the next launch with no UAC prompt and no installer
+  to click through — the same hands-off update the portable builds already get.
+  The per-machine `.msi` (under `Program Files`) still needs elevation, so it
+  keeps the download-and-run-installer update path; the README now recommends
+  the PowerShell installer for anyone who wants automatic updates. The Unix
+  shell installer likewise moves to `$HOME/.terminale`
+
 ## [0.1.22]
 
 ### Fixed
