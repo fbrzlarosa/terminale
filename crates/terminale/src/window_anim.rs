@@ -812,26 +812,112 @@ pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
         return;
     }
     // Skip while a slide is in flight: every animation frame repositions the
-    // window, which fires `Moved`, which lands here — and `current_monitor()`
+    // window, which fires `Moved`, which lands here — and the monitor probe
     // is a non-trivial OS round-trip on macOS. Doing it 60×/s mid-slide just
     // adds stutter; the monitor can't change during the animation anyway, and
     // it's refreshed again on the next real `Moved`/`Focused`/`Resized`.
     if state.quake_anim.is_some() {
         return;
     }
-    let new_mon = state.window.current_monitor();
+    // Resolve the monitor by the window's own geometry rather than trusting
+    // `Window::current_monitor()`: on Windows the latter is unreliable for a
+    // window that has just crossed a monitor boundary or straddles two
+    // displays, which is exactly the moment we care about. If we can't resolve
+    // a monitor at all, KEEP the previous snapshot — never clobber a good
+    // value with `None` (doing so made `QuakeDisplay::Current` fall back to
+    // `current_monitor()` on the next show and reappear on the wrong screen).
+    let Some(new_mon) = monitor_for_window(&state.window) else {
+        return;
+    };
     // Only write when the handle has actually changed (name-based comparison
     // because `MonitorHandle` does not implement `PartialEq`).
-    let new_name = new_mon
-        .as_ref()
-        .and_then(winit::monitor::MonitorHandle::name);
+    let new_name = new_mon.name();
     let old_name = state
         .quake_last_monitor
         .as_ref()
         .and_then(winit::monitor::MonitorHandle::name);
     if new_name != old_name {
-        state.quake_last_monitor = new_mon;
+        state.quake_last_monitor = Some(new_mon);
     }
+}
+
+// ── monitor_for_window / monitor_index_for_point ──────────────────────────────
+
+/// Resolve the monitor the window currently sits on **by geometry** — the
+/// monitor whose physical-pixel rect contains the window's centre point.
+///
+/// This is more reliable than [`winit::window::Window::current_monitor`] on
+/// Windows, where that call can report the wrong display (or `None`) for a
+/// window that has just moved across a monitor boundary or straddles two
+/// displays. Falls back to `current_monitor()` when the window rect can't be
+/// read or there are no enumerable monitors.
+pub(crate) fn monitor_for_window(window: &Window) -> Option<winit::monitor::MonitorHandle> {
+    let monitors: Vec<_> = window.available_monitors().collect();
+    if monitors.is_empty() {
+        return window.current_monitor();
+    }
+    let Ok(pos) = window.outer_position() else {
+        return window.current_monitor();
+    };
+    let size = window.inner_size();
+    #[allow(clippy::cast_possible_wrap)]
+    let center = (
+        pos.x + (size.width / 2) as i32,
+        pos.y + (size.height / 2) as i32,
+    );
+    let rects: Vec<(i32, i32, u32, u32)> = monitors
+        .iter()
+        .map(|m| {
+            let p = m.position();
+            let s = m.size();
+            (p.x, p.y, s.width, s.height)
+        })
+        .collect();
+    monitor_index_for_point(&rects, center)
+        .map(|i| monitors[i].clone())
+        .or_else(|| window.current_monitor())
+}
+
+/// Index of the monitor whose physical-pixel rect `(x, y, w, h)` contains
+/// `point`. When no rect strictly contains the point (the window centre sits
+/// in a gap or just outside any display), returns the monitor whose centre is
+/// nearest, so the result is always a real display. `None` only for an empty
+/// slice.
+///
+/// Pure function: no `RunningState`/winit dependency, unit-testable.
+#[must_use]
+pub(crate) fn monitor_index_for_point(
+    monitors: &[(i32, i32, u32, u32)],
+    point: (i32, i32),
+) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    let (px, py) = point;
+    // Prefer a strict containment hit (half-open rect: [x, x+w) × [y, y+h)).
+    for (i, &(mx, my, mw, mh)) in monitors.iter().enumerate() {
+        #[allow(clippy::cast_possible_wrap)]
+        if px >= mx && px < mx + mw as i32 && py >= my && py < my + mh as i32 {
+            return Some(i);
+        }
+    }
+    // No containment — pick the monitor whose centre is nearest the point.
+    let mut best = 0usize;
+    let mut best_d = i64::MAX;
+    for (i, &(mx, my, mw, mh)) in monitors.iter().enumerate() {
+        #[allow(clippy::cast_possible_wrap)]
+        let cx = mx + (mw / 2) as i32;
+        #[allow(clippy::cast_possible_wrap)]
+        let cy = my + (mh / 2) as i32;
+        let dx = i64::from(px - cx);
+        let dy = i64::from(py - cy);
+        let d = dx * dx + dy * dy;
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
+    }
+    Some(best)
 }
 
 // ── toggle_quake ─────────────────────────────────────────────────────────────
@@ -917,7 +1003,11 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
         // and would report the wrong monitor; the previous snapshot is the
         // accurate one in that case.
         if state.quake_anim.is_none() {
-            state.quake_last_monitor = state.window.current_monitor();
+            // Geometry-based resolution (robust on Windows); never clobber a
+            // good snapshot with `None`.
+            if let Some(m) = monitor_for_window(&state.window) {
+                state.quake_last_monitor = Some(m);
+            }
         }
         state.quake_visible = false;
 
@@ -1127,6 +1217,7 @@ pub(crate) fn compute_quake_target(
             state
                 .quake_last_monitor
                 .clone()
+                .or_else(|| monitor_for_window(&state.window))
                 .or_else(|| state.window.current_monitor())
                 .or_else(|| state.window.primary_monitor())
                 .or_else(|| monitors.first().cloned())

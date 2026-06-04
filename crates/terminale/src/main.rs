@@ -13327,6 +13327,34 @@ mod tests {
     }
 
     #[test]
+    fn monitor_index_for_point_picks_containing_rect() {
+        // Two side-by-side 1920×1080 monitors; primary at origin, second to
+        // its right.
+        let mons = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        // A point well inside the left monitor.
+        assert_eq!(monitor_index_for_point(&mons, (960, 540)), Some(0));
+        // A point well inside the right monitor.
+        assert_eq!(monitor_index_for_point(&mons, (2880, 540)), Some(1));
+        // Left edge of the right monitor is inclusive (half-open rect).
+        assert_eq!(monitor_index_for_point(&mons, (1920, 10)), Some(1));
+        // Right edge of the left monitor is exclusive → belongs to the right.
+        assert_eq!(monitor_index_for_point(&mons, (1919, 10)), Some(0));
+    }
+
+    #[test]
+    fn monitor_index_for_point_falls_back_to_nearest() {
+        // A point in a gap above both monitors resolves to the nearest centre,
+        // never `None`.
+        let mons = [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)];
+        // Above the left monitor → nearest is index 0.
+        assert_eq!(monitor_index_for_point(&mons, (200, -500)), Some(0));
+        // Above the right monitor → nearest is index 1.
+        assert_eq!(monitor_index_for_point(&mons, (3000, -500)), Some(1));
+        // Empty slice → None.
+        assert_eq!(monitor_index_for_point(&[], (0, 0)), None);
+    }
+
+    #[test]
     fn tab_label_prefers_program_title() {
         // A program-set OSC title wins over profile + cwd.
         assert_eq!(

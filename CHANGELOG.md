@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Quake on a secondary monitor no longer snaps back to the first screen.**
+  With the Quake display set to *Window's monitor* (`display = "current"`),
+  the monitor the window lives on is now resolved by geometry — the display
+  whose rectangle contains the window's centre — instead of trusting the OS
+  `current_monitor()` call, which on Windows can report the wrong display (or
+  none) right after the window crosses a monitor boundary. The snapshot is
+  also never overwritten with an empty result, so a transient probe failure
+  can't make the next toggle reappear on the primary monitor. Note: with the
+  display set to *Primary* (`display = "primary"`) Quake docks on the primary
+  monitor by design — choose *Window's monitor* in Settings → Quake → Display
+  for the toggle to follow the window across screens
+
 ## [0.1.19]
 
 ### Fixed
