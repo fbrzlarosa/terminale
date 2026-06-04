@@ -205,6 +205,12 @@ fn apply_via_installer(
     // `process_job`). msiexec MUST escape that job — otherwise quitting
     // terminale to let the upgrade proceed would kill the installer mid-flight.
     // The job is created with BREAKAWAY_OK, so this succeeds.
+    //
+    // `#[cfg(windows)]`-gated because `CommandExt::creation_flags` lives in
+    // `std::os::windows` and would not compile elsewhere. The non-Windows path
+    // never reaches here — the `!cfg!(windows)` bail above returns first — but
+    // the body is still type-checked on every target, so the gate is required.
+    #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
         const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
