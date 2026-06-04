@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.21]
+
 ### Added
 - **Restoring a session now reopens each tab in the directory it was in.**
   `window.restore_working_dirs` already existed, but it only worked for shells
@@ -20,6 +22,25 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   with *Restore working dirs* on (Settings → Workspaces), reopening terminale
   starts every restored tab back in its folder. The injection is skipped when
   a profile already runs its own `-Command`/`-File`
+
+### Fixed
+- **macOS Quake dock no longer leaves an empty strip below the menu bar.**
+  AppKit's automatic frame constraining double-counted the menu bar and
+  dropped a flush top dock one bar-height lower, leaving a visible gap
+  between the menu bar and the window. terminale now overrides
+  `-constrainFrameRect:toScreen:` so the docked window stays exactly where it
+  is placed, and computes the dock geometry against the screen *work area* —
+  so Top/Left/Right docks sit flush under the menu bar and a Bottom dock
+  clears the Dock
+
+### Changed
+- **macOS Quake dock animations are smooth and show live content.** Slide,
+  Bounce and Scale now run through AppKit's native, compositor-driven frame
+  animation instead of the per-frame winit pump (which resized the wgpu
+  surface every frame and stuttered), pre-rendering one full-size frame so the
+  terminal content is visible as the window opens instead of appearing only
+  when the animation ends. Fade now works on macOS too, via
+  `NSWindow.setAlphaValue:`
 
 ## [0.1.20]
 
@@ -544,7 +565,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/fbrzlarosa/terminale/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/fbrzlarosa/terminale/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/fbrzlarosa/terminale/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/fbrzlarosa/terminale/compare/v0.1.17...v0.1.18
