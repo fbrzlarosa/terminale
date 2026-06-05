@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+- **Cleared the last open Dependabot alert** ([GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j),
+  low): `lru` 0.12.x, pulled in by the pinned `glyphon` 0.6 text renderer, has
+  an `IterMut` Stacked-Borrows unsoundness. glyphon never calls `iter_mut`, so
+  the unsound path was unreachable — but the vulnerable version sat in
+  `Cargo.lock`. glyphon 0.6.0 is now vendored (`vendor/glyphon`, applied via
+  `[patch.crates-io]`) with its `lru` requirement bumped to 0.16, moving the
+  lockfile to the patched `lru` 0.16.4. The vendor copy goes away with the
+  planned egui + wgpu + glyphon render-stack migration.
+
 ## [0.1.24]
 
 ### Fixed
