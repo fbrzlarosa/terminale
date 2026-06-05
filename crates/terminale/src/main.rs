@@ -756,6 +756,7 @@ fn main() -> Result<()> {
         profile: chosen_profile,
         shell_override: cli.shell,
         windows: Vec::new(),
+        active_window_id: None,
         resource_sampler: resources::ResourceSampler::new(),
         settings: None,
         context_menu: None,
@@ -1093,6 +1094,13 @@ struct TerminaleApp {
     /// Every open terminal window. The first is created in `resumed`; tab
     /// tear-out appends new ones. The process exits when this drops empty.
     windows: Vec<TermWindow>,
+    /// `WindowId` of the terminal window the OS most recently focused.
+    /// Updated on every `WindowEvent::Focused(true)` so App-level routes
+    /// (context-menu actions, AI "Inject", SSH picker) target the window
+    /// the user is actually working in, not the most recently created one.
+    /// `None` until the first focus event; may go stale when that window
+    /// closes — consumers fall back to the last window.
+    active_window_id: Option<WindowId>,
     /// Samples global CPU + memory for the bottom resource-indicator strip.
     /// Shared across all windows (system resources are process-global).
     resource_sampler: resources::ResourceSampler,
@@ -2535,15 +2543,22 @@ impl TerminaleApp {
         self.windows.iter().position(|w| w.window.id() == id)
     }
 
-    /// The most recently interacted-with terminal window — used by routes
-    /// that aren't tied to a specific `WindowId` (e.g. the global Quake
-    /// hotkey, AI "Inject"). Falls back to the first window. `None` only
-    /// before the first window is created.
+    /// Index of the most recently OS-focused terminal window — used by routes
+    /// that aren't tied to a specific `WindowId` (e.g. context-menu actions,
+    /// AI "Inject", the SSH picker). Tracked via `WindowEvent::Focused(true)`;
+    /// falls back to the last (most recently created) window when no focus
+    /// event has arrived yet or the focused window has since closed. `None`
+    /// only before the first window is created.
+    fn focused_window_index(&self) -> Option<usize> {
+        self.active_window_id
+            .and_then(|id| self.window_index(id))
+            .or_else(|| self.windows.len().checked_sub(1))
+    }
+
+    /// Mutable borrow of [`Self::focused_window_index`]'s window.
     fn focused_window_mut(&mut self) -> Option<&mut TermWindow> {
-        // The last window is the most recently created / torn-off one and a
-        // reasonable "active" target; winit gives us no cross-window focus
-        // query, so this heuristic is good enough for the few global routes.
-        self.windows.last_mut()
+        let idx = self.focused_window_index()?;
+        self.windows.get_mut(idx)
     }
 
     /// Open the SSH host at `host_idx` in the window at `window_idx`. If the
@@ -2637,10 +2652,11 @@ impl TerminaleApp {
         }
         let rt = self.runtime.handle().clone();
         let ssh_cfg = self.config.ssh.clone();
-        // Use the last window as the target (same heuristic as focused_window_mut).
-        let win_idx = self.windows.len().saturating_sub(1);
-        if let Some(state) = self.windows.get_mut(win_idx) {
-            open_ssh_tab(state, &host, Some(&outcome.secret), &ssh_cfg, &rt, win_idx);
+        // Target the most-recently-focused window (same as focused_window_mut).
+        if let Some(win_idx) = self.focused_window_index() {
+            if let Some(state) = self.windows.get_mut(win_idx) {
+                open_ssh_tab(state, &host, Some(&outcome.secret), &ssh_cfg, &rt, win_idx);
+            }
         }
     }
 
@@ -6376,7 +6392,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         let idx = (action_id - SSH_PICKER_BASE) as usize;
                         // Route to the most-recently-focused window; prompt for
                         // a credential in-window when one is needed.
-                        if let Some(win_idx) = self.windows.len().checked_sub(1) {
+                        if let Some(win_idx) = self.focused_window_index() {
                             self.open_or_prompt_ssh(event_loop, win_idx, idx);
                         }
                     } else if action_id >= TAB_ICON_PICKER_BASE {
@@ -6573,6 +6589,15 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         let Some(idx) = self.window_index(id) else {
             return;
         };
+
+        // Remember which terminal window the OS focused last, so App-level
+        // routes (handled above, without a meaningful `WindowId`) can target
+        // the window the user is actually working in. Auxiliary windows
+        // (settings, dialogs, context menu) return early before this point,
+        // so they never overwrite the terminal-window focus.
+        if matches!(event, WindowEvent::Focused(true)) {
+            self.active_window_id = Some(id);
+        }
 
         // CloseRequested closes only THIS window. The process exits only
         // when the last terminal window is gone. Honour `confirm_close` for
