@@ -1646,11 +1646,15 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
             // variant is now a reveal (size interpolates), so the final
             // frame must also resize.
             apply_window_rect(&state.window, to, true);
-            // Paint the final frame immediately — `request_redraw()` is a
-            // no-op on Windows for windows that don't hold foreground focus
-            // (with several Quake windows only ONE ends up focused), so the
-            // unfocused ones would otherwise show stale content until their
-            // Resized event lands.
+            // Paint the final frame immediately — on a window that doesn't
+            // hold foreground focus (with several Quake windows only ONE
+            // ends up focused) the Resized→request_redraw round-trip can be
+            // suppressed, leaving stale content. We know the final size, so
+            // size the surface directly instead of waiting for the event;
+            // the grid kept its resting size all along (== `to`), and the
+            // eventual Resized lands as a same-size no-op.
+            state.pending_resize = None;
+            state.renderer.resize(to.2, to.3);
             crate::render_main(state);
         } else {
             state.window.set_visible(false);
@@ -1709,6 +1713,15 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     // on Windows for windows that don't hold foreground focus, and a
     // multi-window Quake show focuses only ONE of them — the others would
     // skip every intermediate frame and pop in at the final rect.
+    //
+    // Mirror the RedrawRequested handler first: apply any coalesced surface
+    // resize from this animation's earlier Resized events, so the surface
+    // keeps tracking the animated window (that clip is the reveal). The PTY
+    // grid intentionally keeps its resting size mid-animation — see the
+    // pending_resize guard in main.rs.
+    if let Some(new_size) = state.pending_resize.take() {
+        state.renderer.resize(new_size.width, new_size.height);
+    }
     crate::render_main(state);
     // ~60 Hz frame cadence.
     Some(std::time::Duration::from_millis(16))
