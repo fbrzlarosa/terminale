@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Menu and context-menu actions now land on the window you're working in.**
+  With several windows open (e.g. one per monitor), actions chosen from a menu
+  — split pane, new tab with profile, SSH picker, AI inject — were applied to
+  the most recently created window instead of the one that opened the menu.
+  The app now tracks which terminal window the OS last focused and routes all
+  window-agnostic actions there.
+- **Quake mode now plays the slide-in animation on every window.** With
+  multiple Quake windows, only the one that grabbed foreground focus animated
+  in — the others popped into place instantly (the slide-out was fine). Each
+  animation frame is now painted directly instead of relying on
+  `request_redraw()`, which Windows ignores for freshly shown background
+  windows.
+
 ## [0.1.23]
 
 ### Added
