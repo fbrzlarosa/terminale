@@ -17,6 +17,9 @@ members = [
 #   "crates/terminale-ipc"       # v1.0 — multiplexer protocol
 #   "crates/terminale-sync"      # v2.0 — settings cloud sync
 default-members = ["crates/terminale"]
+# vendor/ holds patched third-party crates (see [patch.crates-io] below);
+# excluded so workspace-wide builds/lints don't process third-party code.
+exclude = ["vendor/glyphon"]
 
 [workspace.package]
 version = "0.1.24"
@@ -319,3 +322,11 @@ x86_64-apple-darwin = "macos-latest"
 # `xtask` (`MAC_BUNDLE_ID`).
 
 
+
+# ── Patched third-party crates ────────────────────────────────────────────────
+# glyphon 0.6.0 vendored with its `lru` requirement bumped 0.12 → 0.16, so the
+# lockfile drops lru 0.12.x (GHSA-rhfx-m35p-ff5j, low — IterMut unsoundness;
+# unreachable through glyphon, but it kept a Dependabot alert open). Drop this
+# patch together with vendor/glyphon at the planned render-stack migration.
+[patch.crates-io]
+glyphon = { path = "vendor/glyphon" }

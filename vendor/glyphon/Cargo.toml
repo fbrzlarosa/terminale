@@ -1,0 +1,29 @@
+# Vendored copy of glyphon 0.6.0 (https://github.com/grovesNL/glyphon),
+# applied to the workspace via `[patch.crates-io]` in the root Cargo.toml.
+#
+# WHY: the upstream 0.6.0 release pins `lru = "^0.12.1"`, and lru < 0.16.3
+# carries GHSA-rhfx-m35p-ff5j (low — `IterMut` Stacked Borrows unsoundness).
+# glyphon never calls `iter_mut`, so the unsound path is unreachable here,
+# but the vulnerable version in Cargo.lock keeps a Dependabot alert open.
+# The only change vs upstream is the `lru` requirement: 0.12.1 → 0.16
+# (every LruCache API glyphon uses is identical across those versions).
+#
+# REMOVE THIS VENDOR DIR when the render stack migrates off glyphon 0.6
+# (the planned egui + wgpu + glyphon upgrade tracked in .github/dependabot.yml)
+# — newer glyphon releases already require a patched lru.
+
+[package]
+name = "glyphon"
+description = "Fast, simple 2D text rendering for wgpu"
+version = "0.6.0"
+edition = "2021"
+homepage = "https://github.com/grovesNL/glyphon.git"
+repository = "https://github.com/grovesNL/glyphon"
+license = "MIT OR Apache-2.0 OR Zlib"
+
+[dependencies]
+wgpu = { version = "22", default-features = false, features = ["wgsl"] }
+etagere = "0.2.10"
+cosmic-text = "0.12"
+lru = { version = "0.16", default-features = false }
+rustc-hash = "2.0"
