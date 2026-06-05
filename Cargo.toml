@@ -271,8 +271,18 @@ github-attestations = false
 allow-dirty = ["ci", "msi"]
 # Publish jobs to run in CI.
 publish-jobs = ["homebrew"]
-# Path that installers should place binaries in
-install-path = "CARGO_HOME"
+# Where the shell / PowerShell installers place the binary.
+#
+# A writable, per-user location is deliberate: it lets terminale's in-app
+# updater replace the binary in place silently (no UAC, no installer UI) and
+# apply on the next launch — see `crates/terminale/src/update.rs`. The
+# per-machine MSI installs under Program Files instead, which is NOT writable
+# without elevation, so MSI installs fall back to the manual installer path.
+# Recommend the PowerShell installer to anyone who wants silent auto-updates.
+#
+# Fallback list (first whose env var is defined wins): on Windows
+# `%LOCALAPPDATA%\terminale`; on Unix `$HOME/.terminale`.
+install-path = ["$LOCALAPPDATA/terminale", "$HOME/.terminale"]
 # Whether to install an updater program
 install-updater = false
 

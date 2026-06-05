@@ -19,9 +19,11 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Read as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const OWNER: &str = "fbrzlarosa";
 const REPO: &str = "terminale";
@@ -99,6 +101,20 @@ pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
     let latest = releases.first().context("no releases found")?;
     if !self_update::version::bump_is_greater(current_version(), &latest.version)? {
         return Ok(UpdateOutcome::UpToDate);
+    }
+
+    // macOS: when we're running from a `.app` bundle, update by swapping the
+    // WHOLE bundle, not the inner binary. Replacing just the Mach-O would
+    // invalidate the bundle's (ad-hoc) code signature and Gatekeeper would
+    // reject the app as "damaged". This path is taken before the generic
+    // writable-dir check below because the inner `Contents/MacOS` dir is itself
+    // writable, which would otherwise route us into the wrong (binary-swap)
+    // strategy.
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(bundle) = macos_app_bundle_path() {
+            return apply_macos_bundle_swap(latest, &bundle, interactive);
+        }
     }
 
     if !install_dir_is_writable() {
@@ -185,6 +201,15 @@ fn install_dir_is_writable() -> bool {
     let Some(dir) = exe.parent() else {
         return false;
     };
+    dir_is_writable(dir)
+}
+
+/// Can this process create (and remove) a file in `dir`? Real `create_new`
+/// probe — the only reliable test across Windows ACLs and Unix ownership/mount
+/// flags. Used both for the install dir and, on macOS, for the `.app` bundle's
+/// parent (e.g. `/Applications`, which admin users can write but standard users
+/// cannot).
+fn dir_is_writable(dir: &Path) -> bool {
     let probe = dir.join(format!(".terminale-update-probe-{}", std::process::id()));
     match std::fs::OpenOptions::new()
         .write(true)
@@ -198,6 +223,149 @@ fn install_dir_is_writable() -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// If `exe` lives inside a macOS application bundle
+/// (`…/Foo.app/Contents/MacOS/foo`), return the bundle directory
+/// (`…/Foo.app`). `None` for a bare binary anywhere else. Pure path logic —
+/// unit-testable on any OS (only wired into the updater on macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn app_bundle_from_exe(exe: &Path) -> Option<PathBuf> {
+    let macos = exe.parent()?; // …/Contents/MacOS
+    if macos.file_name()?.to_str()? != "MacOS" {
+        return None;
+    }
+    let contents = macos.parent()?; // …/Contents
+    if contents.file_name()?.to_str()? != "Contents" {
+        return None;
+    }
+    let app = contents.parent()?; // …/Foo.app
+    if app.extension()?.to_str()? != "app" {
+        return None;
+    }
+    Some(app.to_path_buf())
+}
+
+/// Release asset name for the zipped `.app` bundle of `target` (e.g.
+/// `terminale-aarch64-apple-darwin-app.zip`). Mirrors the name the release
+/// workflow uploads.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_app_asset_name(target: &str) -> String {
+    format!("terminale-{target}-app.zip")
+}
+
+/// The `.app` bundle we're running from, if any.
+#[cfg(target_os = "macos")]
+fn macos_app_bundle_path() -> Option<PathBuf> {
+    app_bundle_from_exe(&std::env::current_exe().ok()?)
+}
+
+/// Update a macOS `.app` install by downloading the new bundle and swapping it
+/// in place — no installer, no Gatekeeper prompt (the bundle we download
+/// ourselves carries no quarantine flag), and the running session is left
+/// untouched (the new bundle applies on the next launch, like every other
+/// platform's staged update).
+///
+/// Requires the bundle's parent directory to be writable (true for `/Applications`
+/// on an admin account, and always for `~/Applications`). When it isn't, there
+/// is no silent path, so we point the user at the `.dmg`.
+#[cfg(target_os = "macos")]
+fn apply_macos_bundle_swap(
+    latest: &self_update::update::Release,
+    bundle: &Path,
+    interactive: bool,
+) -> Result<UpdateOutcome> {
+    let parent = bundle
+        .parent()
+        .context("app bundle has no parent directory")?;
+    if !dir_is_writable(parent) {
+        if interactive {
+            bail!(
+                "terminale.app is in a location this account can't modify ({}). \
+                 Update by downloading the latest .dmg and dragging it over, or move \
+                 terminale.app into ~/Applications for silent auto-updates.",
+                parent.display()
+            );
+        }
+        return Ok(UpdateOutcome::InstallerRequired(latest.version.clone()));
+    }
+
+    let target = self_update::get_target();
+    let asset_name = macos_app_asset_name(target);
+    if !latest.assets.iter().any(|a| a.name == asset_name) {
+        bail!("no {asset_name} published for this release");
+    }
+
+    let tmp = tempfile::tempdir().context("create temp dir for download")?;
+    let zip = tmp.path().join(&asset_name);
+    download_and_verify(&latest.version, &asset_name, &latest.assets, &zip)?;
+
+    // Extract with `ditto`, which preserves the bundle's symlinks, permissions,
+    // and code signature (plain unzip can mangle all three).
+    let extracted = tmp.path().join("extracted");
+    std::fs::create_dir_all(&extracted)?;
+    ditto(&[
+        OsStr::new("-x"),
+        OsStr::new("-k"),
+        zip.as_os_str(),
+        extracted.as_os_str(),
+    ])
+    .context("extract the .app archive")?;
+    let new_app = extracted.join("terminale.app");
+    if !new_app.exists() {
+        bail!("archive {asset_name} did not contain terminale.app");
+    }
+    // We downloaded the bundle ourselves so it carries no quarantine flag, but
+    // strip it defensively in case a future download path is quarantine-aware.
+    let _ = std::process::Command::new("xattr")
+        .arg("-dr")
+        .arg("com.apple.quarantine")
+        .arg(&new_app)
+        .status();
+
+    // Stage the new bundle on the SAME volume as the target (the temp dir is on
+    // a different volume, so a cross-volume rename would fail). `ditto` keeps
+    // the signature intact on copy.
+    let pid = std::process::id();
+    let staged = parent.join(format!(".terminale-new-{pid}.app"));
+    let old = parent.join(format!(".terminale-old-{pid}.app"));
+    for p in [&staged, &old] {
+        if p.exists() {
+            std::fs::remove_dir_all(p).ok();
+        }
+    }
+    ditto(&[new_app.as_os_str(), staged.as_os_str()])
+        .context("stage the new bundle next to the install location")?;
+
+    // Swap: move the live bundle aside, move the new one in, drop the old.
+    // Same-volume renames are atomic and safe while the app runs (the live
+    // process keeps its already-mapped image). Roll back on any failure so the
+    // user is never left without an app.
+    std::fs::rename(bundle, &old).context("move the current app bundle aside")?;
+    match std::fs::rename(&staged, bundle) {
+        Ok(()) => {
+            std::fs::remove_dir_all(&old).ok();
+            Ok(UpdateOutcome::Staged(latest.version.clone()))
+        }
+        Err(e) => {
+            std::fs::rename(&old, bundle).ok();
+            std::fs::remove_dir_all(&staged).ok();
+            Err(e).context("install the new app bundle")
+        }
+    }
+}
+
+/// Run macOS `ditto` with the given args, failing on a non-zero exit.
+#[cfg(target_os = "macos")]
+fn ditto(args: &[&OsStr]) -> Result<()> {
+    let status = std::process::Command::new("ditto")
+        .args(args)
+        .status()
+        .context("run ditto (macOS)")?;
+    if !status.success() {
+        bail!("ditto failed (args: {args:?})");
+    }
+    Ok(())
 }
 
 /// Non-writable install: hand the update to the platform installer.
@@ -420,6 +588,46 @@ mod tests {
                 "terminale-x86_64-pc-windows-msvc/terminale.exe".to_string(),
                 "terminale.exe".to_string(),
             ],
+        );
+    }
+
+    #[test]
+    fn app_bundle_from_exe_detects_bundle() {
+        // Inside a bundle → returns the .app dir.
+        assert_eq!(
+            app_bundle_from_exe(Path::new(
+                "/Applications/terminale.app/Contents/MacOS/terminale"
+            )),
+            Some(PathBuf::from("/Applications/terminale.app"))
+        );
+        assert_eq!(
+            app_bundle_from_exe(Path::new(
+                "/Users/me/Applications/terminale.app/Contents/MacOS/terminale"
+            )),
+            Some(PathBuf::from("/Users/me/Applications/terminale.app"))
+        );
+        // Bare binaries / wrong layout → None.
+        assert_eq!(
+            app_bundle_from_exe(Path::new("/usr/local/bin/terminale")),
+            None
+        );
+        assert_eq!(
+            app_bundle_from_exe(Path::new("/home/me/.terminale/terminale")),
+            None
+        );
+        // A binary in a `MacOS` dir that isn't under `Contents/*.app` → None.
+        assert_eq!(app_bundle_from_exe(Path::new("/tmp/MacOS/terminale")), None);
+    }
+
+    #[test]
+    fn macos_app_asset_name_matches_release_naming() {
+        assert_eq!(
+            macos_app_asset_name("aarch64-apple-darwin"),
+            "terminale-aarch64-apple-darwin-app.zip"
+        );
+        assert_eq!(
+            macos_app_asset_name("x86_64-apple-darwin"),
+            "terminale-x86_64-apple-darwin-app.zip"
         );
     }
 

@@ -329,6 +329,18 @@ jobs:
           pkg=$(ls target/terminale-v*-${{ matrix.target }}.dmg)
           ( cd "$(dirname "$pkg")" && shasum -a 256 "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
           gh release upload "${{ needs.plan.outputs.tag }}" "$pkg" "$pkg.sha256" --clobber
+      - name: Upload zipped .app (+ checksum) for the in-app updater
+        # The in-app updater downloads this bundle archive and swaps
+        # terminale.app in place — silent, no Gatekeeper prompt (a bundle we
+        # download ourselves carries no quarantine flag), no installer. `ditto`
+        # preserves the bundle's symlinks, permissions and ad-hoc signature
+        # (plain `zip` would mangle them). Name mirrors `macos_app_asset_name`
+        # in crates/terminale/src/update.rs.
+        run: |
+          app="terminale-${{ matrix.target }}-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent target/terminale.app "target/$app"
+          ( cd target && shasum -a 256 "$app" > "$app.sha256" )
+          gh release upload "${{ needs.plan.outputs.tag }}" "target/$app" "target/$app.sha256" --clobber
 
   # `host` writes the release notes before `macos-app-dmg` uploads its
   # assets, so cargo-dist's "Download" table never mentions the .dmg files.
