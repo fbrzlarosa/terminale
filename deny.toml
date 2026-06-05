@@ -20,19 +20,6 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack: no constant-time rsa release exists; prefer ed25519 keys" },
     # `paste` unmaintained — transitive via wgpu-hal's macOS `metal` backend.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained: transitive via wgpu metal; revisit on wgpu bump" },
-    # `serial` unmaintained — transitive via portable-pty.
-    { id = "RUSTSEC-2017-0008", reason = "serial unmaintained: transitive via portable-pty; revisit on bump" },
-    # `lru` unsound IterMut — transitive via glyphon; the unsound path isn't
-    # reachable from our usage. The real fix is glyphon ≥0.11 (lru ≥0.16.3),
-    # which is coupled to a wgpu+egui major bump — deferred to a dedicated
-    # upgrade pass. NB: cargo-deny currently does NOT match this advisory
-    # (advisory-not-detected); the entry is load-bearing only for
-    # cargo-audit, which does flag lru 0.12.5.
-    { id = "RUSTSEC-2026-0002", reason = "lru unsound IterMut: transitive via glyphon; fix = glyphon/wgpu/egui major bump" },
-    # `number_prefix` unmaintained — transitive via self_update → indicatif 0.17
-    # (entered the tree with the 0.1.7 self-update feature). Cosmetic byte-size
-    # formatting only; indicatif 0.18 drops it — revisit when self_update bumps.
-    { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained: transitive via self_update/indicatif; revisit on bump" },
 ]
 
 [licenses]
