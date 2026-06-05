@@ -19,6 +19,8 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "macos")]
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -303,10 +305,10 @@ fn apply_macos_bundle_swap(
     let extracted = tmp.path().join("extracted");
     std::fs::create_dir_all(&extracted)?;
     ditto(&[
-        "-x",
-        "-k",
-        &zip.to_string_lossy(),
-        &extracted.to_string_lossy(),
+        OsStr::new("-x"),
+        OsStr::new("-k"),
+        zip.as_os_str(),
+        extracted.as_os_str(),
     ])
     .context("extract the .app archive")?;
     let new_app = extracted.join("terminale.app");
@@ -316,7 +318,9 @@ fn apply_macos_bundle_swap(
     // We downloaded the bundle ourselves so it carries no quarantine flag, but
     // strip it defensively in case a future download path is quarantine-aware.
     let _ = std::process::Command::new("xattr")
-        .args(["-dr", "com.apple.quarantine", &new_app.to_string_lossy()])
+        .arg("-dr")
+        .arg("com.apple.quarantine")
+        .arg(&new_app)
         .status();
 
     // Stage the new bundle on the SAME volume as the target (the temp dir is on
@@ -330,7 +334,7 @@ fn apply_macos_bundle_swap(
             std::fs::remove_dir_all(p).ok();
         }
     }
-    ditto(&[&new_app.to_string_lossy(), &staged.to_string_lossy()])
+    ditto(&[new_app.as_os_str(), staged.as_os_str()])
         .context("stage the new bundle next to the install location")?;
 
     // Swap: move the live bundle aside, move the new one in, drop the old.
@@ -353,7 +357,7 @@ fn apply_macos_bundle_swap(
 
 /// Run macOS `ditto` with the given args, failing on a non-zero exit.
 #[cfg(target_os = "macos")]
-fn ditto(args: &[&str]) -> Result<()> {
+fn ditto(args: &[&OsStr]) -> Result<()> {
     let status = std::process::Command::new("ditto")
         .args(args)
         .status()
