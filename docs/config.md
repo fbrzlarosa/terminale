@@ -103,6 +103,16 @@ The file exists so a freeze or crash leaves evidence even when terminale is
 launched without a console. Enable/level apply on the next launch; the
 console log (when launched from a shell) independently follows `--log-level`.
 
+### `[terminal]`
+
+```toml
+[terminal]
+ctrl_c_copies_selection = true # Ctrl+C with text selected copies it instead of
+                               # interrupting (like Tabby / Windows Terminal);
+                               # the selection clears on copy, so a second
+                               # Ctrl+C interrupts as usual. false = always ^C
+```
+
 ### `[terminal.image_protocols]`
 
 Inline images render out of the box — these toggles exist to *disable* a

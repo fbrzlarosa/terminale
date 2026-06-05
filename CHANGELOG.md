@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **Ctrl+C now copies when text is selected** — the smart-copy behaviour of
+  Tabby, Windows Terminal, and VS Code. With an active selection, a bare
+  Ctrl+C copies it to the clipboard (and clears the selection) instead of
+  sending the interrupt to the running program; pressing Ctrl+C again — or
+  with nothing selected — sends `^C`/SIGINT exactly as before. Explicit
+  Ctrl+C keybindings always take precedence. Configurable via
+  `terminal.ctrl_c_copies_selection` and **Settings → Terminal → "Ctrl+C
+  copies selection"** (default: on, applies live).
+
 ### Security
 - **Cleared the last open Dependabot alert** ([GHSA-rhfx-m35p-ff5j](https://github.com/advisories/GHSA-rhfx-m35p-ff5j),
   low): `lru` 0.12.x, pulled in by the pinned `glyphon` 0.6 text renderer, has
