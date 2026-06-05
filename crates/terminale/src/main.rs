@@ -7366,6 +7366,26 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.window.request_redraw();
                     return;
                 }
+                // Smart copy (Tabby / Windows Terminal behaviour): a bare
+                // Ctrl+C while text is selected copies it instead of sending
+                // ^C (SIGINT) to the running program. The selection is
+                // cleared on copy, so the NEXT Ctrl+C interrupts as usual —
+                // you're never locked out of the interrupt. With no selection
+                // the byte reaches the PTY untouched, and explicit
+                // keybindings (resolved above) always win over this fallback.
+                if self.config.terminal.ctrl_c_copies_selection
+                    && crate::shortcuts::is_bare_ctrl_c(
+                        &state.modifiers,
+                        physical_key,
+                        &logical_key,
+                    )
+                    && crate::tabs::selection_text(state).is_some()
+                {
+                    crate::tabs::copy_selection(state);
+                    state.renderer.set_selection(None);
+                    state.window.request_redraw();
+                    return;
+                }
                 // Track the typed line so an `ssh …` command can offer to
                 // save the host. Runs before `translate_key` consumes `text`.
                 track_input_line(state, &logical_key, text.clone());

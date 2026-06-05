@@ -376,6 +376,16 @@ pub struct TerminalConfig {
     /// splits on common shell and path punctuation while keeping `_`, `-`,
     /// `.`, and `/` joined so identifiers and paths select as a unit.
     pub word_separators: String,
+    /// When `true` (default), pressing a bare **Ctrl+C** while text is
+    /// selected copies the selection to the clipboard instead of sending
+    /// the interrupt (`^C` / SIGINT) to the running program — the same
+    /// behaviour as Tabby, Windows Terminal, and VS Code. The selection is
+    /// cleared on copy, so pressing Ctrl+C a second time interrupts as
+    /// usual. With no selection active, Ctrl+C always reaches the program
+    /// untouched. Explicit `Ctrl+C` keybindings (custom keybinds, shortcut
+    /// remaps) take precedence over this fallback. Set `false` to always
+    /// send the interrupt regardless of selection.
+    pub ctrl_c_copies_selection: bool,
     /// When detected URLs are underlined: `always` (persistent accent line
     /// under every URL), `hover` (only the link under the Ctrl-hover
     /// pointer — the default), or `never`. Default `hover` avoids a stray
@@ -574,6 +584,7 @@ impl Default for TerminalConfig {
             // `foo.bar`, `/etc/hosts`, and `my-var_name` select whole on
             // a double-click.
             word_separators: r#"()[]{}<>"'`,;:!?@#$%^&*=+|\ "#.into(),
+            ctrl_c_copies_selection: true,
             link_underline: LinkUnderline::default(),
             offer_save_ssh_hosts: true,
             live_pane_resize: true,
@@ -665,6 +676,27 @@ pub struct EditorConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ctrl_c_copies_selection ───────────────────────────────────────────────
+
+    #[test]
+    fn ctrl_c_copies_selection_defaults_on() {
+        assert!(TerminalConfig::default().ctrl_c_copies_selection);
+    }
+
+    #[test]
+    fn ctrl_c_copies_selection_roundtrip() {
+        let cfg = TerminalConfig {
+            ctrl_c_copies_selection: false,
+            ..TerminalConfig::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: TerminalConfig = toml::from_str(&toml).unwrap();
+        assert!(!back.ctrl_c_copies_selection);
+        // A config file written before the field existed keeps the default.
+        let legacy: TerminalConfig = toml::from_str("").unwrap();
+        assert!(legacy.ctrl_c_copies_selection);
+    }
 
     // ── ExitBehavior tests ────────────────────────────────────────────────────
 

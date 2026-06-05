@@ -138,6 +138,24 @@ pub(crate) fn pressed_key_name(
     None
 }
 
+/// `true` when the pressed combo is a bare **Ctrl+C** — Ctrl held, no other
+/// modifier, and the key resolving to `c` (layout-independent via
+/// [`pressed_key_name`]). Drives the smart-copy fallback in the keyboard
+/// handler: Ctrl+C with an active selection copies instead of interrupting.
+/// Explicit keybindings are resolved before that fallback ever runs, so a
+/// user-bound Ctrl+C always wins.
+pub(crate) fn is_bare_ctrl_c(
+    mods: &ModifiersState,
+    physical: PhysicalKey,
+    logical: &winit::keyboard::Key,
+) -> bool {
+    mods.control_key()
+        && !mods.shift_key()
+        && !mods.alt_key()
+        && !mods.super_key()
+        && pressed_key_name(physical, logical).is_some_and(|k| k.eq_ignore_ascii_case("c"))
+}
+
 // ── resolve_shortcut ─────────────────────────────────────────────────────────
 
 /// Match the pressed key + modifiers against every shortcut binding in
@@ -2096,8 +2114,8 @@ pub(crate) fn scroll_to_bytes(
 mod tests {
     use super::{
         binding_for, build_fix_prompt, build_scrollback_export_content, combo_shadows_user_binding,
-        extract_block_output_lines, extract_block_output_text, scrollback_export_filename,
-        translate_key,
+        extract_block_output_lines, extract_block_output_text, is_bare_ctrl_c,
+        scrollback_export_filename, translate_key,
     };
     use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};
 
@@ -2105,6 +2123,56 @@ mod tests {
 
     fn key_char(c: &str) -> Key {
         Key::Character(SmolStr::new(c))
+    }
+
+    // ── is_bare_ctrl_c (smart copy) ───────────────────────────────────────────
+
+    #[test]
+    fn bare_ctrl_c_matches() {
+        let phys = PhysicalKey::Code(KeyCode::KeyC);
+        assert!(is_bare_ctrl_c(
+            &ModifiersState::CONTROL,
+            phys,
+            &key_char("c")
+        ));
+        // Uppercase logical char (e.g. CapsLock on) still matches.
+        assert!(is_bare_ctrl_c(
+            &ModifiersState::CONTROL,
+            phys,
+            &key_char("C")
+        ));
+    }
+
+    #[test]
+    fn ctrl_c_with_extra_modifiers_does_not_match() {
+        let phys = PhysicalKey::Code(KeyCode::KeyC);
+        // Ctrl+Shift+C is the default copy binding — must NOT be treated
+        // as the smart-copy fallback (it resolves as a shortcut earlier).
+        assert!(!is_bare_ctrl_c(
+            &(ModifiersState::CONTROL | ModifiersState::SHIFT),
+            phys,
+            &key_char("C")
+        ));
+        assert!(!is_bare_ctrl_c(
+            &(ModifiersState::CONTROL | ModifiersState::ALT),
+            phys,
+            &key_char("c")
+        ));
+        // No Ctrl at all → plain typing.
+        assert!(!is_bare_ctrl_c(
+            &ModifiersState::empty(),
+            phys,
+            &key_char("c")
+        ));
+    }
+
+    #[test]
+    fn ctrl_with_other_key_does_not_match() {
+        assert!(!is_bare_ctrl_c(
+            &ModifiersState::CONTROL,
+            PhysicalKey::Code(KeyCode::KeyV),
+            &key_char("v")
+        ));
     }
 
     // ── combo_shadows_user_binding ────────────────────────────────────────────

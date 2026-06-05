@@ -178,6 +178,40 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                field_label(ui, "Ctrl+C copies selection");
+                let on = self.config.terminal.ctrl_c_copies_selection;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.terminal.ctrl_c_copies_selection = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Ctrl+C copies selection",
+            );
+            sublabel(
+                ui,
+                "With text selected, Ctrl+C copies it instead of interrupting the running \
+                 program (like Tabby and Windows Terminal). The selection clears on copy, so \
+                 a second Ctrl+C sends the interrupt as usual. Without a selection, Ctrl+C \
+                 always reaches the program.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Word separators");
                 let r = ui.add(
                     egui::TextEdit::singleline(&mut self.config.terminal.word_separators)
