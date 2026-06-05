@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **macOS now updates itself silently too — no paid signing required.** A
+  `.app` install previously had no in-app update path (the `.dmg` is a manual
+  drag-install). The updater now downloads the new bundle, verifies its
+  SHA-256, and swaps `terminale.app` in place — applying on the next launch
+  like every other platform, with the running session untouched. There's no
+  Gatekeeper prompt: a bundle the app downloads itself carries no quarantine
+  flag, and the ad-hoc signature already produced in CI satisfies Apple
+  Silicon. Needs the app's folder writable (`/Applications` for admins, always
+  for `~/Applications`); otherwise it points you at the `.dmg`. The first
+  install from the `.dmg` still shows the one-time unidentified-developer
+  prompt, but every update after that is automatic.
+
 ### Changed
 - **The PowerShell installer now installs per-user, enabling silent background
   updates on Windows.** It installs into `%LOCALAPPDATA%\terminale` (a writable
