@@ -1646,6 +1646,12 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
             // variant is now a reveal (size interpolates), so the final
             // frame must also resize.
             apply_window_rect(&state.window, to, true);
+            // Paint the final frame immediately — `request_redraw()` is a
+            // no-op on Windows for windows that don't hold foreground focus
+            // (with several Quake windows only ONE ends up focused), so the
+            // unfocused ones would otherwise show stale content until their
+            // Resized event lands.
+            crate::render_main(state);
         } else {
             state.window.set_visible(false);
         }
@@ -1698,9 +1704,12 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
         apply_window_rect(&state.window, cur, true);
     }
     // A pure reposition/alpha change doesn't always generate a paint on
-    // Windows, so the animation can look like it "jumps". Force a redraw
-    // each frame so it actually plays.
-    state.window.request_redraw();
+    // Windows, so the animation can look like it "jumps". Paint the frame
+    // immediately rather than via `request_redraw()`: the latter is a no-op
+    // on Windows for windows that don't hold foreground focus, and a
+    // multi-window Quake show focuses only ONE of them — the others would
+    // skip every intermediate frame and pop in at the final rect.
+    crate::render_main(state);
     // ~60 Hz frame cadence.
     Some(std::time::Duration::from_millis(16))
 }
