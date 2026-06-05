@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.25]
+
 ### Added
 - **Ctrl+C now copies when text is selected** — the smart-copy behaviour of
   Tabby, Windows Terminal, and VS Code. With an active selection, a bare
@@ -639,7 +641,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...HEAD
+[0.1.25]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...v0.1.22
