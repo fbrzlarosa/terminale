@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.23]
+
 ### Added
 - **macOS now updates itself silently too — no paid signing required.** A
   `.app` install previously had no in-app update path (the `.dmg` is a manual
@@ -601,7 +603,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...HEAD
+[0.1.23]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/fbrzlarosa/terminale/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/fbrzlarosa/terminale/compare/v0.1.19...v0.1.20
