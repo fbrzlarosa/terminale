@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.24]
+
 ### Fixed
 - **Menu and context-menu actions now land on the window you're working in.**
   With several windows open (e.g. one per monitor), actions chosen from a menu
@@ -617,7 +619,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/fbrzlarosa/terminale/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/fbrzlarosa/terminale/compare/v0.1.20...v0.1.21
