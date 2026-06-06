@@ -279,6 +279,28 @@ impl CellRect {
     }
 }
 
+/// Map a selection cell's viewport row, captured at `(sel_scroll,
+/// sel_history)`, to the viewport row where the SAME text line sits now, at
+/// `(scroll, history)`. Returns `None` when the line has moved above the
+/// viewport top (the caller bounds-checks the bottom edge against the grid).
+///
+/// Derivation: with `H` history lines above the live screen and the viewport
+/// panned up by `S`, the buffer line shown at viewport row `r` is
+/// `g = H - S + r`. Solving for the new row of the same `g` at `(S', H')`
+/// gives `r' = r + (S' - S) - (H' - H)` — scrolling deeper into history
+/// moves the text down the screen, new output arriving at the live bottom
+/// moves it up.
+fn reanchored_row(
+    row: u16,
+    sel_scroll: usize,
+    sel_history: usize,
+    scroll: usize,
+    history: usize,
+) -> Option<usize> {
+    let dy = scroll as i64 - sel_scroll as i64 - (history as i64 - sel_history as i64);
+    usize::try_from(i64::from(row) + dy).ok()
+}
+
 /// One menu item shown in the right-click overlay.
 #[derive(Debug, Clone)]
 pub struct MenuItem {
@@ -523,6 +545,18 @@ pub struct Renderer {
 
     padding_px: f32,
     selection: Option<CellRect>,
+    /// Viewport scroll offset captured when `selection` was last set. The
+    /// selection rect is viewport-relative AS OF that moment; together with
+    /// `selection_history` the draw pass re-anchors the highlight to the
+    /// TEXT as the viewport moves (scrolling) or the text itself moves
+    /// (new output growing the scrollback while at the live bottom).
+    selection_scroll: usize,
+    /// Scrollback history length captured when `selection` was last set.
+    selection_history: usize,
+    /// History length of the focused pane's emulator as of the last drawn
+    /// frame — the freshest value available when `set_selection` is called
+    /// between frames (mouse events).
+    last_history: usize,
     overlay: Option<MenuOverlay>,
     tab_bar: Option<TabBar>,
     /// Lower bound a tab shrinks to (logical px). Mirrors
@@ -1898,6 +1932,9 @@ impl Renderer {
             scale_factor,
             padding_px: PADDING_PX,
             selection: None,
+            selection_scroll: 0,
+            selection_history: 0,
+            last_history: 0,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2089,6 +2126,9 @@ impl Renderer {
             scale_factor,
             padding_px: PADDING_PX,
             selection: None,
+            selection_scroll: 0,
+            selection_history: 0,
+            last_history: 0,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2289,6 +2329,9 @@ impl Renderer {
             scale_factor,
             padding_px: PADDING_PX,
             selection: None,
+            selection_scroll: 0,
+            selection_history: 0,
+            last_history: 0,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -5250,8 +5293,30 @@ impl Renderer {
     }
 
     /// Replace (or clear) the current text selection rectangle.
+    ///
+    /// The rect is interpreted as viewport-relative **at this moment**: the
+    /// current scroll offset and scrollback length are snapshotted so the
+    /// draw pass (and [`Self::selection_scroll`] /
+    /// [`Self::selection_history`] consumers) can keep the highlight glued
+    /// to the text as the viewport scrolls or new output arrives.
     pub fn set_selection(&mut self, selection: Option<CellRect>) {
         self.selection = selection;
+        self.selection_scroll = self.scroll_lines;
+        self.selection_history = self.last_history;
+    }
+
+    /// Scroll offset snapshotted when the selection was last set. Pair with
+    /// [`Self::selection_history`] to map the viewport-relative selection
+    /// rect back to the text it covered (see `selection_text`).
+    #[must_use]
+    pub fn selection_scroll(&self) -> usize {
+        self.selection_scroll
+    }
+
+    /// Scrollback length snapshotted when the selection was last set.
+    #[must_use]
+    pub fn selection_history(&self) -> usize {
+        self.selection_history
     }
 
     /// Update window-focus state. Controls cursor style (solid bar when
@@ -6102,6 +6167,11 @@ impl Renderer {
                 let _ = col;
             }
         });
+        // Snapshot the scrollback length: the selection draw below re-anchors
+        // against it, and `set_selection` (called between frames on mouse
+        // events) snapshots it as the selection's reference point.
+        let history = emulator.history_size();
+        self.last_history = history;
 
         // ── Build background quads ──
         let mut quads: Vec<Quad> = Vec::new();
@@ -6549,18 +6619,35 @@ impl Renderer {
 
         // Selection highlight (drawn after bg so it tints them).
         if let Some(sel) = self.selection {
+            // The selection rect is viewport-relative AS OF the moment it was
+            // made. Re-anchor it to the text (see `reanchored_row`): the
+            // highlight stays glued to the selected text both while panning
+            // through history and while new output streams in at the live
+            // bottom. (Once the scrollback ring is full and rotating, H stops
+            // growing and the oldest selected text genuinely scrolls away —
+            // the highlight follows it off-screen.)
             for (col, row) in sel.cells() {
-                if usize::from(row) >= grid_cells.len() {
-                    continue;
+                let Some(row_s) = reanchored_row(
+                    row,
+                    self.selection_scroll,
+                    self.selection_history,
+                    self.scroll_lines,
+                    history,
+                ) else {
+                    continue; // shifted above the viewport
+                };
+                if row_s >= grid_cells.len() {
+                    continue; // shifted below the viewport
                 }
-                let row_len = grid_cells[row as usize].len();
+                let row_len = grid_cells[row_s].len();
                 let max_col = u16::try_from(row_len.saturating_sub(1)).unwrap_or(0);
                 if col > max_col {
                     continue;
                 }
+                #[allow(clippy::cast_precision_loss)]
                 let pos = [
                     body_x_origin + pad_px + f32::from(col) * cw_px,
-                    body_y_origin + f32::from(row) * ch_px,
+                    body_y_origin + row_s as f32 * ch_px,
                 ];
                 quads.push(Quad::new(
                     pos,
@@ -7321,7 +7408,7 @@ impl Renderer {
         // Scrollback position indicator — a thin scrollbar on the right edge
         // shown only while panning into history, so the user sees where they
         // are. Thumb size ∝ visible fraction; position ∝ how far up.
-        let history = emulator.history_size();
+        // (`history` snapshotted above, next to the grid-cell capture.)
         if self.scroll_lines > 0 && history > 0 {
             let total = (history + rows as usize).max(1) as f32;
             let track_top = top_pad_px;
@@ -8410,6 +8497,44 @@ fn compute_pill_geometry_pure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── reanchored_row (selection follows the text) ───────────────────────────
+
+    #[test]
+    fn selection_stays_put_when_nothing_moves() {
+        assert_eq!(reanchored_row(5, 0, 100, 0, 100), Some(5));
+    }
+
+    #[test]
+    fn scrolling_into_history_moves_selection_down() {
+        // Selected at the live bottom (S=0), then panned 3 lines up (S'=3):
+        // the selected text appears 3 rows lower on screen.
+        assert_eq!(reanchored_row(5, 0, 100, 3, 100), Some(8));
+    }
+
+    #[test]
+    fn scrolling_back_toward_live_moves_selection_up() {
+        // Selected while panned (S=10), then scrolled back down (S'=4).
+        assert_eq!(reanchored_row(8, 10, 100, 4, 100), Some(2));
+        // Far enough back that the line leaves through the top → None.
+        assert_eq!(reanchored_row(3, 10, 100, 0, 100), None);
+    }
+
+    #[test]
+    fn new_output_moves_selection_up() {
+        // At the live bottom, 4 new lines push the text up 4 rows.
+        assert_eq!(reanchored_row(6, 0, 100, 0, 104), Some(2));
+        // Enough output that it scrolls off the top → None.
+        assert_eq!(reanchored_row(6, 0, 100, 0, 110), None);
+    }
+
+    #[test]
+    fn pinned_scroll_during_output_is_stable() {
+        // Panned into history while output streams in: the terminal keeps
+        // the viewport pinned by growing S with H, so the same text stays
+        // at the same row and the selection must not move.
+        assert_eq!(reanchored_row(7, 10, 100, 15, 105), Some(7));
+    }
 
     #[test]
     fn cell_size_is_positive() {
