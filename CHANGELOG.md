@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+- **No more clicking through installers to update — on any OS.** Three
+  changes close the last gap (Windows MSI installs):
+  - **The Windows MSI is now a per-user package** (like VS Code's User
+    Installer): it installs under `%LOCALAPPDATA%\terminale` with no admin
+    rights, so the in-app updater swaps the binary silently in the background
+    — the same hands-off updates the PowerShell installer always had. The
+    installer refuses to run while a legacy system-wide copy exists (see
+    below) so the two can never silently coexist.
+  - **Legacy system-wide installs (pre-0.1.27 MSI under Program Files) now
+    update silently too**: the verified `.msi` runs with `/passive
+    /norestart` — no wizard, just the one unavoidable elevation consent and
+    a progress bar.
+  - **One-click escape from the legacy install**: **Settings → About →
+    "Switch to self-updating install"** downloads and verifies the latest
+    portable build, installs it per-user (Start-menu shortcut and user PATH
+    included), starts it, and removes the old system-wide copy — one final
+    elevation prompt, then silent updates forever. The offer only appears on
+    legacy Program Files installs; per-user installs (MSI or PowerShell)
+    never see it.
+
 ## [0.1.26]
 
 ### Added

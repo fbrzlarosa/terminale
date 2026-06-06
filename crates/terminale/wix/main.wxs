@@ -67,6 +67,15 @@
         Codepage='1252'
         Version='$(var.Version)'>
 
+        <!--
+          Per-USER package (like VS Code's "User Installer"): installs under
+          %LOCALAPPDATA%\terminale with NO elevation, which is what lets the
+          in-app updater replace the binary in place silently — no UAC, no
+          installer UI, ever again. The pre-0.1.27 MSI was per-machine
+          (Program Files); those installs upgrade via the in-app
+          "Switch to self-updating install" migration instead (see the
+          LaunchCondition below).
+        -->
         <Package Id='*'
             Keywords='Installer'
             Description='A native, cross-platform, GPU-accelerated terminal — Windows, macOS, Linux'
@@ -74,7 +83,8 @@
             InstallerVersion='450'
             Languages='1033'
             Compressed='yes'
-            InstallScope='perMachine'
+            InstallScope='perUser'
+            InstallPrivileges='limited'
             SummaryCodepage='1252'
             />
 
@@ -82,35 +92,44 @@
             Schedule='afterInstallInitialize'
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
+        <!--
+          A per-user package cannot remove a per-machine product (that needs
+          elevation), so an old system-wide install (pre-0.1.27, under
+          Program Files) would silently coexist with this one. Detect its exe
+          and refuse to install until it is gone — either via Settings → Apps
+          or the in-app "Switch to self-updating install" migration, which
+          performs this exact transition automatically.
+        -->
+        <Property Id='LEGACYMACHINEINSTALL'>
+            <DirectorySearch Id='LegacyPfDir' Path='[$(var.PlatformProgramFilesFolder)]terminale\bin' Depth='0'>
+                <FileSearch Id='LegacyPfExe' Name='terminale.exe'/>
+            </DirectorySearch>
+        </Property>
+        <Condition Message='A system-wide terminale installation was found under Program Files. Remove it first (Settings → Apps → terminale → Uninstall), or use "Switch to self-updating install" in terminale itself (Settings → About), then run this installer again.'>
+            <![CDATA[Installed OR NOT LEGACYMACHINEINSTALL]]>
+        </Condition>
+
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='terminale Installation'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
-            <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
+            <!--
+              Per-user layout: %LOCALAPPDATA%\terminale\bin — writable by the
+              user, so the in-app updater swaps the binary in place silently.
+              Components in a user-profile tree must carry HKCU registry
+              KeyPaths (MSI ICE38) instead of file KeyPaths.
+            -->
+            <Directory Id='LocalAppDataFolder' Name='LocalAppData'>
                 <Directory Id='APPLICATIONFOLDER' Name='terminale'>
-                    
-                    <!--
-                      Enabling the license sidecar file in the installer is a four step process:
-
-                      1. Uncomment the `Component` tag and its contents.
-                      2. Change the value for the `Source` attribute in the `File` tag to a path
-                         to the file that should be included as the license sidecar file. The path
-                         can, and probably should be, relative to this file.
-                      3. Change the value for the `Name` attribute in the `File` tag to the
-                         desired name for the file when it is installed alongside the `bin` folder
-                         in the installation directory. This can be omitted if the desired name is
-                         the same as the file name.
-                      4. Uncomment the `ComponentRef` tag with the Id attribute value of "License"
-                         further down in this file.
-                    -->
-                    <!--
-                    <Component Id='License' Guid='*'>
-                        <File Id='LicenseFile' Name='ChangeMe' DiskId='1' Source='C:\Path\To\File' KeyPath='yes'/>
-                    </Component>
-                    -->
-
                     <Directory Id='Bin' Name='bin'>
-                        <Component Id='Path' Guid='7C660AF0-C2EC-4112-A654-C4DC89569FA4' KeyPath='yes'>
+                        <Component Id='Path' Guid='7C660AF0-C2EC-4112-A654-C4DC89569FA4'>
+                            <RegistryValue
+                                Root='HKCU'
+                                Key='Software\terminale\install'
+                                Name='path_entry'
+                                Type='integer'
+                                Value='1'
+                                KeyPath='yes'/>
                             <Environment
                                 Id='PATH'
                                 Name='PATH'
@@ -118,15 +137,23 @@
                                 Permanent='no'
                                 Part='last'
                                 Action='set'
-                                System='yes'/>
+                                System='no'/>
                         </Component>
-                        <Component Id='binary0' Guid='*'>
+                        <Component Id='binary0' Guid='1B9C5E2D-6A47-4C3F-8B0A-2F1E3D4C5B6A'>
+                            <RegistryValue
+                                Root='HKCU'
+                                Key='Software\terminale\install'
+                                Name='binary'
+                                Type='integer'
+                                Value='1'
+                                KeyPath='yes'/>
                             <File
                                 Id='exe0'
                                 Name='terminale.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\terminale.exe'
-                                KeyPath='yes'/>
+                                Source='$(var.CargoTargetBinDir)\terminale.exe'/>
+                            <RemoveFolder Id='RemoveBin' Directory='Bin' On='uninstall'/>
+                            <RemoveFolder Id='RemoveAppFolder' Directory='APPLICATIONFOLDER' On='uninstall'/>
                         </Component>
                     </Directory>
                 </Directory>

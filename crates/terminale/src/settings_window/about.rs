@@ -47,8 +47,9 @@ impl SettingsWindow {
                 "terminale updates itself from GitHub releases. Downloads are verified \
                  (SHA-256) and the binary is replaced on disk without interrupting your \
                  session — the new version applies on the next launch (never a forced \
-                 restart). Installs managed by the Windows installer (MSI) hand off to it \
-                 instead: the verified installer is downloaded and launched for you.",
+                 restart). Legacy system-wide installs (MSI under Program Files) hand off \
+                 to Windows Installer in silent mode instead: no wizard, just the one \
+                 unavoidable elevation prompt.",
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -118,6 +119,73 @@ impl SettingsWindow {
                 "Runs in the background; restart terminale when it's done. For full control \
                  from a shell: `terminale --update`.",
             );
+
+            // ── One-time migration off the legacy per-machine MSI ───────────
+            // Shown EXCLUSIVELY when this process runs from a non-writable
+            // Program Files tree (the pre-0.1.27 system-wide MSI). Per-user
+            // MSI and PowerShell installs live under %LOCALAPPDATA% and never
+            // see this — they already self-update silently.
+            if crate::update::is_legacy_machine_install() {
+                ui.add_space(10.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new("Switch to the self-updating install")
+                        .strong()
+                        .color(egui::Color32::from_rgb(255, 210, 130)),
+                );
+                sublabel(
+                    ui,
+                    "This terminale was installed system-wide (Program Files), so every \
+                     update needs Windows Installer and an elevation prompt. Switch once to \
+                     the per-user install: the latest version is downloaded and verified, \
+                     installed under your user profile, and the old system-wide copy is \
+                     removed (one last elevation prompt — the last ever). From then on \
+                     updates apply silently in the background. Running sessions in this \
+                     window will close; terminale restarts automatically.",
+                );
+                ui.add_space(4.0);
+                let migrating = self.update_rx.is_some();
+                let label = if migrating {
+                    "Working…"
+                } else {
+                    "Switch now (restarts terminale)"
+                };
+                if ui
+                    .add_enabled(!migrating, egui::Button::new(label))
+                    .clicked()
+                {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    self.update_rx = Some(rx);
+                    self.status = Some((
+                        StatusKind::Success,
+                        "Downloading and switching to the per-user install…".to_owned(),
+                    ));
+                    std::thread::spawn(move || {
+                        #[cfg(windows)]
+                        match crate::update::migrate_to_user_install() {
+                            Ok(new_exe) => {
+                                tracing::info!(
+                                    exe = %new_exe.display(),
+                                    "migrated to the per-user install; exiting so the \
+                                     per-machine uninstall can proceed"
+                                );
+                                // The new copy is already running and msiexec
+                                // needs this exe released — leave immediately.
+                                std::process::exit(0);
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %format!("{e:#}"), "migration failed");
+                                let _ = tx.send(Err(format!("{e:#}")));
+                            }
+                        }
+                        #[cfg(not(windows))]
+                        {
+                            let _ = tx.send(Err("only applicable on Windows".to_owned()));
+                        }
+                    });
+                }
+            }
         });
 
         // ── Diagnostics (file logging) ──

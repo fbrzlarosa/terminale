@@ -191,6 +191,166 @@ fn archive_bin_candidates(asset_name: &str, bin: &str) -> [String; 2] {
     [format!("{stem}/{bin}"), bin.to_string()]
 }
 
+/// `true` when this process runs from the LEGACY per-machine MSI tree under
+/// `Program Files` — the only install type whose updates need elevation and
+/// `msiexec`. The per-user MSI and the PowerShell installer both live under
+/// `%LOCALAPPDATA%` (writable), so they never match: the in-app "switch to
+/// the self-updating install" offer is shown exclusively to legacy installs
+/// and can never appear on an already-migrated or per-user setup.
+#[must_use]
+pub fn is_legacy_machine_install() -> bool {
+    if !cfg!(windows) {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let in_program_files = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"]
+        .iter()
+        .any(|var| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .is_some_and(|pf| exe.starts_with(Path::new(&pf)))
+        });
+    in_program_files && !install_dir_is_writable()
+}
+
+/// Migrate a legacy per-machine MSI install to the self-updating per-user
+/// layout, so every future update is a silent in-place binary swap:
+///
+/// 1. download + SHA-256-verify the portable archive for this target,
+/// 2. install the binary under `%LOCALAPPDATA%\terminale\bin` (the same
+///    layout the per-user MSI uses),
+/// 3. point the Start-menu shortcut there and add the dir to the USER `PATH`
+///    (no elevation needed for either),
+/// 4. start the new copy, and launch a passive `msiexec /x` uninstall of the
+///    per-machine product (one final elevation consent — the last ever).
+///
+/// Returns the path of the newly installed binary. The caller must EXIT this
+/// process promptly afterwards so the uninstall finds no files in use.
+#[cfg(windows)]
+pub fn migrate_to_user_install() -> Result<std::path::PathBuf> {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    // ── 1. Download + verify the portable archive for this target ──────────
+    let releases = self_update::backends::github::ReleaseList::configure()
+        .repo_owner(OWNER)
+        .repo_name(REPO)
+        .build()?
+        .fetch()?;
+    let latest = releases.first().context("no releases found")?;
+    let target = self_update::get_target();
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
+    let asset = latest
+        .assets
+        .iter()
+        .find(|a| a.name.contains(target) && a.name.ends_with(".zip"))
+        .ok_or_else(|| anyhow!("no portable release asset matching target {target}"))?;
+    let tmp = tempfile::tempdir().context("create temp dir for download")?;
+    let archive = tmp.path().join(&asset.name);
+    download_and_verify(&latest.version, &asset.name, &latest.assets, &archive)?;
+
+    let out = tmp.path().join("extracted");
+    std::fs::create_dir_all(&out)?;
+    let candidates = archive_bin_candidates(&asset.name, "terminale.exe");
+    let mut extracted: Option<std::path::PathBuf> = None;
+    for cand in &candidates {
+        if self_update::Extract::from_source(&archive)
+            .extract_file(&out, cand)
+            .is_ok()
+        {
+            extracted = Some(out.join(cand));
+            break;
+        }
+    }
+    let extracted =
+        extracted.ok_or_else(|| anyhow!("extract terminale.exe from {}", asset.name))?;
+
+    // ── 2. Install under %LOCALAPPDATA%\terminale\bin ───────────────────────
+    let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA not set")?;
+    let bin_dir = std::path::PathBuf::from(local)
+        .join("terminale")
+        .join("bin");
+    std::fs::create_dir_all(&bin_dir).context("create per-user install dir")?;
+    let new_exe = bin_dir.join("terminale.exe");
+    std::fs::copy(&extracted, &new_exe).context("copy binary into the per-user install")?;
+
+    // ── 3. USER PATH entry + Start-menu shortcut (no elevation) ─────────────
+    // One PowerShell 5.1-compatible helper script: appends the bin dir to the
+    // user PATH only if missing (SetEnvironmentVariable broadcasts the change)
+    // and rewrites the Start-menu shortcut to the new target.
+    let script = format!(
+        "$dir = '{dir}'\n\
+         $exe = '{exe}'\n\
+         $p = [Environment]::GetEnvironmentVariable('Path', 'User')\n\
+         if ($null -eq $p) {{ $p = '' }}\n\
+         if (-not (($p -split ';') -contains $dir)) {{\n\
+             [Environment]::SetEnvironmentVariable('Path', ($p.TrimEnd(';') + ';' + $dir), 'User')\n\
+         }}\n\
+         $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) 'terminale.lnk'\n\
+         $ws = New-Object -ComObject WScript.Shell\n\
+         $sc = $ws.CreateShortcut($lnk)\n\
+         $sc.TargetPath = $exe\n\
+         $sc.WorkingDirectory = $dir\n\
+         $sc.Save()\n",
+        dir = bin_dir.display(),
+        exe = new_exe.display(),
+    );
+    let script_path = tmp.path().join("migrate.ps1");
+    std::fs::write(&script_path, &script).context("write migration helper script")?;
+    let status = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .context("run the PATH/shortcut helper")?;
+    if !status.success() {
+        tracing::warn!(
+            ?status,
+            "migration helper script failed; PATH/shortcut may be stale"
+        );
+    }
+
+    // ── 4. Product code of the per-machine MSI, for the uninstall ──────────
+    let product_code = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall' | \
+             Get-ItemProperty | Where-Object { $_.DisplayName -eq 'terminale' } | \
+             Select-Object -First 1 -ExpandProperty PSChildName",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
+
+    // ── 5. Start the new copy, then the passive uninstall ──────────────────
+    // Both must break away from terminale's kill-on-close Job Object (see
+    // apply_via_installer) so they survive this process exiting — which the
+    // caller does right after, freeing the Program Files exe for removal.
+    std::process::Command::new(&new_exe)
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+        .context("launch the migrated terminale")?;
+    if product_code.starts_with('{') {
+        std::process::Command::new("msiexec")
+            .args(["/x", &product_code, "/passive", "/norestart"])
+            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+            .spawn()
+            .context("launch msiexec to remove the per-machine install")?;
+    } else {
+        tracing::warn!(
+            "per-machine MSI product code not found; old install left in place \
+             (remove it from Settings → Apps)"
+        );
+    }
+    Ok(new_exe)
+}
+
 /// Can this process create files in the directory the running binary lives
 /// in? Probed with a real `create_new` + delete, which is the only reliable
 /// answer on Windows (ACLs) and Unix (mount flags, ownership) alike.
@@ -403,8 +563,11 @@ fn apply_via_installer(
     let msi = dir.join(&asset.name);
     download_and_verify(&latest.version, &asset.name, &latest.assets, &msi)?;
 
-    // Hand off to Windows Installer: it upgrades the managed install,
-    // prompts for elevation itself, and asks to close the running app.
+    // Hand off to Windows Installer in PASSIVE mode: no wizard, no clicks —
+    // just the standard elevation consent (unavoidable for a per-machine
+    // tree) and a progress bar. `/norestart` keeps it from scheduling a
+    // reboot; Windows' Restart Manager closes the running terminale to free
+    // its files and the upgrade completes unattended.
     //
     // CREATE_BREAKAWAY_FROM_JOB (0x0100_0000): terminale confines itself to a
     // kill-on-close Job Object so its ConPTY hosts can't outlive a crash (see
@@ -423,6 +586,8 @@ fn apply_via_installer(
         std::process::Command::new("msiexec")
             .arg("/i")
             .arg(&msi)
+            .arg("/passive")
+            .arg("/norestart")
             .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
             .spawn()
             .context("launch msiexec for the downloaded installer")?;
@@ -532,6 +697,14 @@ mod tests {
     #[test]
     fn current_version_is_set() {
         assert!(!current_version().is_empty());
+    }
+
+    /// Dev/test binaries live in `target/…`, never under `Program Files` —
+    /// the legacy-install probe must be false so the migration offer can
+    /// never appear outside a real per-machine MSI install.
+    #[test]
+    fn dev_build_is_not_a_legacy_machine_install() {
+        assert!(!is_legacy_machine_install());
     }
 
     /// Dev/test binaries live in `target/…`, which is always writable — the
