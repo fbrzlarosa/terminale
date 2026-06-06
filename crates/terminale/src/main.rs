@@ -6953,7 +6953,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     match resize_edge {
                         Some(dir) => cursor_icon_for_resize(dir),
                         None => {
-                            if state.modifiers.control_key() && url_under.is_some() {
+                            if scrollbar_hover {
+                                // Over the scrollbar band → the plain arrow,
+                                // like native scrollbars (the I-beam would
+                                // suggest text selection where there is none).
+                                winit::window::CursorIcon::Default
+                            } else if state.modifiers.control_key() && url_under.is_some() {
                                 winit::window::CursorIcon::Pointer
                             } else if crate::panes::pane_cell_at_pixel(state, pos_px).is_some() {
                                 // Over a pane's text grid → I-beam, the
