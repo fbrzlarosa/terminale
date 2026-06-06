@@ -881,6 +881,31 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                let r = ui.checkbox(
+                    &mut self.config.appearance.tab_drop_merge,
+                    "Merge on body drop",
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+                r
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Merge on body drop",
+            );
+            sublabel(
+                ui,
+                "Drop a dragged tab or pane onto a terminal body to merge it there as a split pane — a tinted zone previews which half it will occupy. Tabs merge across windows; panes can also be rearranged within their tab. Off = a body drop tears out a new window (classic behaviour).",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Close button style");
                 egui::ComboBox::from_id_salt("close_button_style_combo")
                     .selected_text(self.config.appearance.close_button_style.label())

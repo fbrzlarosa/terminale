@@ -628,6 +628,10 @@ pub struct Renderer {
     /// exists, even when the bar isn't visible — `Auto` mode needs the band
     /// for hover-reveal hit-testing). `None` = no scrollback.
     last_scrollbar: Option<ScrollbarGeom>,
+    /// Drop-zone highlight rect (physical px, `[x, y, w, h]`) shown while a
+    /// dragged tab / pane hovers a pane body — the half of the target pane
+    /// it would occupy on release. `None` = no merge drop in flight.
+    drop_zone: Option<[f32; 4]>,
     overlay: Option<MenuOverlay>,
     tab_bar: Option<TabBar>,
     /// Lower bound a tab shrinks to (logical px). Mirrors
@@ -2010,6 +2014,7 @@ impl Renderer {
             scrollbar_hover: false,
             scrollbar_active: false,
             last_scrollbar: None,
+            drop_zone: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2208,6 +2213,7 @@ impl Renderer {
             scrollbar_hover: false,
             scrollbar_active: false,
             last_scrollbar: None,
+            drop_zone: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2415,6 +2421,7 @@ impl Renderer {
             scrollbar_hover: false,
             scrollbar_active: false,
             last_scrollbar: None,
+            drop_zone: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -5430,6 +5437,14 @@ impl Renderer {
         self.last_scrollbar
     }
 
+    /// Replace (or clear) the merge drop-zone highlight: the half of a
+    /// target pane (physical px) a dragged tab / pane would occupy when
+    /// released. Drawn in the overlay layer as an accent-tinted rect with a
+    /// brighter frame.
+    pub fn set_drop_zone(&mut self, zone: Option<[f32; 4]>) {
+        self.drop_zone = zone;
+    }
+
     /// `true` when the scrollbar is currently visible to the user (geometry
     /// cached AND the mode + hover/drag/scroll state says it's drawn). The
     /// mouse handler gates grabs on this so an invisible bar never swallows
@@ -7599,6 +7614,20 @@ impl Renderer {
                     if engaged { 1.0 } else { 0.85 },
                 ));
             }
+        }
+
+        // Merge drop-zone highlight — the half of a target pane a dragged
+        // tab / pane would occupy on release. Accent tint + brighter frame,
+        // drawn in the overlay layer so it reads above the terminal text.
+        if let Some([zx, zy, zw, zh]) = self.drop_zone {
+            const ZONE_ACCENT: [u8; 3] = [0x7d, 0xa6, 0xff];
+            quads.push(Quad::new([zx, zy], [zw, zh], ZONE_ACCENT, 0.16));
+            let bt = (2.0 * scale).max(2.0);
+            // Frame strokes (top / bottom / left / right).
+            quads.push(Quad::new([zx, zy], [zw, bt], ZONE_ACCENT, 0.9));
+            quads.push(Quad::new([zx, zy + zh - bt], [zw, bt], ZONE_ACCENT, 0.9));
+            quads.push(Quad::new([zx, zy], [bt, zh], ZONE_ACCENT, 0.9));
+            quads.push(Quad::new([zx + zw - bt, zy], [bt, zh], ZONE_ACCENT, 0.9));
         }
 
         // Overlay text (label badges + palette rows + save-host toast labels)

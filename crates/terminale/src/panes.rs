@@ -32,42 +32,154 @@ pub(crate) fn split_in(
     new_id: PaneId,
     side_b: bool,
 ) -> PaneNode {
-    match node {
-        PaneNode::Leaf(id) if id == target => {
-            let (a, b) = if side_b {
-                (
-                    Box::new(PaneNode::Leaf(target)),
-                    Box::new(PaneNode::Leaf(new_id)),
-                )
-            } else {
-                (
-                    Box::new(PaneNode::Leaf(new_id)),
-                    Box::new(PaneNode::Leaf(target)),
-                )
-            };
-            PaneNode::Split {
-                direction,
-                ratio: 0.5,
-                a,
-                b,
+    graft_in(node, target, direction, PaneNode::Leaf(new_id), side_b)
+}
+
+/// Replace the leaf `target` in `node` with a `Split` of `target` and an
+/// arbitrary `subtree`. `side_b` decides which side the subtree lives on
+/// (`true` puts it on the b-side = right/bottom). Generalisation of
+/// [`split_in`] — grafting a whole pane tree is what powers "merge tab
+/// into split". When `target` is not found the tree is returned unchanged
+/// (and the subtree is dropped — callers must guard target existence when
+/// the subtree carries panes they care about).
+pub(crate) fn graft_in(
+    node: PaneNode,
+    target: PaneId,
+    direction: SplitDir,
+    subtree: PaneNode,
+    side_b: bool,
+) -> PaneNode {
+    // Thread the subtree through an Option so the recursion can MOVE it
+    // into the (single) graft point without cloning pane ids around.
+    fn go(
+        node: PaneNode,
+        target: PaneId,
+        direction: SplitDir,
+        subtree: &mut Option<PaneNode>,
+        side_b: bool,
+    ) -> PaneNode {
+        match node {
+            PaneNode::Leaf(id) if id == target => {
+                let Some(sub) = subtree.take() else {
+                    return PaneNode::Leaf(id);
+                };
+                let (a, b) = if side_b {
+                    (Box::new(PaneNode::Leaf(target)), Box::new(sub))
+                } else {
+                    (Box::new(sub), Box::new(PaneNode::Leaf(target)))
+                };
+                PaneNode::Split {
+                    direction,
+                    ratio: 0.5,
+                    a,
+                    b,
+                }
             }
-        }
-        PaneNode::Leaf(_) => node,
-        PaneNode::Split {
-            direction: d,
-            ratio,
-            a,
-            b,
-        } => {
-            let a = Box::new(split_in(*a, target, direction, new_id, side_b));
-            let b = Box::new(split_in(*b, target, direction, new_id, side_b));
+            PaneNode::Leaf(_) => node,
             PaneNode::Split {
                 direction: d,
                 ratio,
                 a,
                 b,
+            } => {
+                let a = Box::new(go(*a, target, direction, subtree, side_b));
+                let b = Box::new(go(*b, target, direction, subtree, side_b));
+                PaneNode::Split {
+                    direction: d,
+                    ratio,
+                    a,
+                    b,
+                }
             }
         }
+    }
+    let mut sub = Some(subtree);
+    go(node, target, direction, &mut sub, side_b)
+}
+
+/// Rewrite every leaf id in `node` through `map`. Ids missing from the map
+/// are left unchanged (callers build a complete map, so that's defensive).
+/// Used when grafting a foreign pane tree whose ids must be re-allocated
+/// into the destination tab's id space.
+pub(crate) fn remap_leaf_ids(
+    node: PaneNode,
+    map: &std::collections::HashMap<PaneId, PaneId>,
+) -> PaneNode {
+    match node {
+        PaneNode::Leaf(id) => PaneNode::Leaf(map.get(&id).copied().unwrap_or(id)),
+        PaneNode::Split {
+            direction,
+            ratio,
+            a,
+            b,
+        } => PaneNode::Split {
+            direction,
+            ratio,
+            a: Box::new(remap_leaf_ids(*a, map)),
+            b: Box::new(remap_leaf_ids(*b, map)),
+        },
+    }
+}
+
+// ── Drop-side geometry (drag a tab/pane onto a pane body) ───────────────────
+
+/// Which half of a drop-target pane the dragged item will occupy when a
+/// tab / pane is dropped onto a terminal body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DropSide {
+    /// Left half — vertical split, dragged item on the a-side.
+    Left,
+    /// Right half — vertical split, dragged item on the b-side.
+    Right,
+    /// Top half — horizontal split, dragged item on the a-side.
+    Top,
+    /// Bottom half — horizontal split, dragged item on the b-side.
+    Bottom,
+}
+
+impl DropSide {
+    /// The `(direction, side_b)` pair to feed the split/graft helpers so
+    /// the dragged item lands on this side of the target pane.
+    pub(crate) fn split(self) -> (SplitDir, bool) {
+        match self {
+            Self::Left => (SplitDir::Vertical, false),
+            Self::Right => (SplitDir::Vertical, true),
+            Self::Top => (SplitDir::Horizontal, false),
+            Self::Bottom => (SplitDir::Horizontal, true),
+        }
+    }
+
+    /// The half of `rect` (physical px, `(x, y, w, h)`) this side covers —
+    /// used to draw the drop-zone highlight during the drag.
+    pub(crate) fn half_rect(self, rect: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+        let (x, y, w, h) = rect;
+        match self {
+            Self::Left => (x, y, w / 2.0, h),
+            Self::Right => (x + w / 2.0, y, w / 2.0, h),
+            Self::Top => (x, y, w, h / 2.0),
+            Self::Bottom => (x, y + h / 2.0, w, h / 2.0),
+        }
+    }
+}
+
+/// Which [`DropSide`] of `rect` the point `(x, y)` falls toward: the offset
+/// from the rect centre is normalised per axis and the dominant axis wins,
+/// so the rect is effectively cut into four triangles by its diagonals —
+/// the standard editor drop-zone feel (VS Code, Zed).
+pub(crate) fn drop_side_for(rect: (f32, f32, f32, f32), x: f32, y: f32) -> DropSide {
+    let (rx, ry, rw, rh) = rect;
+    let nx = ((x - rx) / rw.max(1.0)).clamp(0.0, 1.0) - 0.5;
+    let ny = ((y - ry) / rh.max(1.0)).clamp(0.0, 1.0) - 0.5;
+    if nx.abs() >= ny.abs() {
+        if nx < 0.0 {
+            DropSide::Left
+        } else {
+            DropSide::Right
+        }
+    } else if ny < 0.0 {
+        DropSide::Top
+    } else {
+        DropSide::Bottom
     }
 }
 
@@ -1735,6 +1847,82 @@ pub(crate) fn find_resize_split_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── graft_in / remap_leaf_ids / drop_side_for ─────────────────────────────
+    // (uses the `leaf` / `leaf_ids` helpers defined at the bottom of this module)
+
+    #[test]
+    fn graft_subtree_on_b_side() {
+        // Tab with panes 0|1; graft a subtree (2/3) to the RIGHT of pane 1.
+        let tree = split_in(leaf(0), 0, SplitDir::Vertical, 1, true);
+        let subtree = split_in(leaf(2), 2, SplitDir::Horizontal, 3, true);
+        let grafted = graft_in(tree, 1, SplitDir::Vertical, subtree, true);
+        // Depth-first leaf order: 0, then 1, then the subtree 2/3.
+        assert_eq!(leaf_ids(&grafted), vec![0, 1, 2, 3]);
+        assert_eq!(count_leaves(&grafted), 4);
+    }
+
+    #[test]
+    fn graft_subtree_on_a_side_puts_it_first() {
+        let tree = leaf(0);
+        let grafted = graft_in(tree, 0, SplitDir::Horizontal, leaf(7), false);
+        // side_b = false → the subtree lands on the a (top/left) side.
+        assert_eq!(leaf_ids(&grafted), vec![7, 0]);
+    }
+
+    #[test]
+    fn graft_missing_target_leaves_tree_unchanged() {
+        let tree = split_in(leaf(0), 0, SplitDir::Vertical, 1, true);
+        let grafted = graft_in(tree, 99, SplitDir::Vertical, leaf(5), true);
+        assert_eq!(leaf_ids(&grafted), vec![0, 1]);
+    }
+
+    #[test]
+    fn split_in_still_grafts_single_leaf() {
+        // split_in delegates to graft_in — behaviour unchanged.
+        let tree = split_in(leaf(0), 0, SplitDir::Horizontal, 1, false);
+        assert_eq!(leaf_ids(&tree), vec![1, 0]);
+    }
+
+    #[test]
+    fn remap_rewrites_every_leaf() {
+        let tree = split_in(leaf(0), 0, SplitDir::Vertical, 1, true);
+        let map: std::collections::HashMap<PaneId, PaneId> =
+            [(0, 10), (1, 11)].into_iter().collect();
+        assert_eq!(leaf_ids(&remap_leaf_ids(tree, &map)), vec![10, 11]);
+    }
+
+    #[test]
+    fn drop_side_follows_dominant_axis() {
+        let r = (0.0, 0.0, 100.0, 100.0);
+        assert_eq!(drop_side_for(r, 10.0, 50.0), DropSide::Left);
+        assert_eq!(drop_side_for(r, 90.0, 50.0), DropSide::Right);
+        assert_eq!(drop_side_for(r, 50.0, 10.0), DropSide::Top);
+        assert_eq!(drop_side_for(r, 50.0, 90.0), DropSide::Bottom);
+        // Wide rect: a point near the top still reads Top when the
+        // normalised vertical offset dominates.
+        let wide = (0.0, 0.0, 400.0, 100.0);
+        assert_eq!(drop_side_for(wide, 200.0, 5.0), DropSide::Top);
+    }
+
+    #[test]
+    fn drop_side_split_mapping_matches_shortcuts() {
+        // Mirrors the SplitRight/SplitDown/SplitLeft/SplitUp actions'
+        // (direction, side_b) pairs in shortcuts.rs.
+        assert_eq!(DropSide::Right.split(), (SplitDir::Vertical, true));
+        assert_eq!(DropSide::Left.split(), (SplitDir::Vertical, false));
+        assert_eq!(DropSide::Bottom.split(), (SplitDir::Horizontal, true));
+        assert_eq!(DropSide::Top.split(), (SplitDir::Horizontal, false));
+    }
+
+    #[test]
+    fn half_rect_covers_the_named_half() {
+        let r = (10.0, 20.0, 100.0, 60.0);
+        assert_eq!(DropSide::Left.half_rect(r), (10.0, 20.0, 50.0, 60.0));
+        assert_eq!(DropSide::Right.half_rect(r), (60.0, 20.0, 50.0, 60.0));
+        assert_eq!(DropSide::Top.half_rect(r), (10.0, 20.0, 100.0, 30.0));
+        assert_eq!(DropSide::Bottom.half_rect(r), (10.0, 50.0, 100.0, 30.0));
+    }
 
     // ── cell_from_pane_origin ─────────────────────────────────────────────────
 

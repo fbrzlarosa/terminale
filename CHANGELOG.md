@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Added
+- **Merge a tab into another tab as a split.** Drag a tab (or a pane header)
+  onto a terminal body and a tinted drop zone shows which half
+  (left/right/top/bottom) of the pane under the cursor it will occupy;
+  release to graft it there, splits and all. Works across windows AND within
+  one window thanks to the Chrome-style lift below; panes can also be
+  re-arranged within their own tab the same way. There's a menu path too:
+  **right-click a tab → "Merge into tab"** picks the destination directly.
+  Configurable via `appearance.tab_drop_merge` and **Settings → Appearance →
+  "Merge on body drop"** (default: on; off restores the classic body-drop
+  tear-out).
+- **Chrome-style tab drag.** The moment a dragged tab leaves the tab bar it
+  is lifted out of its window: the bar closes the gap and the body shows the
+  next tab — so you can drop the dragged tab as a split in its own window
+  right away. Cross back into any tab bar and it re-inserts live at the
+  hovered slot, exactly like Chrome. (A window's only tab is never lifted.)
+- **Break a split pane out: "Move pane to new tab" / "Move pane to new
+  window"** in the right-click Split menu — the explicit reverse of merging.
+  The same operations remain available by dragging the pane's header strip
+  onto a tab bar (→ tab) or outside every window (→ window).
 - **The scrollback scrollbar is now interactive.** Grab the thumb and drag to
   pan through history, or click anywhere on the track to jump there. It widens
   on approach, and in the default `auto` mode it appears while scrolled **or
@@ -16,6 +35,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   `never`) and **Settings → Terminal → Scrollbar** (applies live).
 
 ### Fixed
+- **Dragging a split pane by its header now actually works.** The header
+  press intercept returned before the shared mouse handler ever tracked the
+  held button, and the drag promotion gate requires it — so a pane drag
+  could never arm. The press now records the held button itself; pane
+  headers can be dragged onto a tab bar (→ tab), outside (→ window), or
+  onto a pane body (→ split) as designed.
 - **The right-click context menu no longer jumps left when hovering a submenu
   on a multi-monitor setup.** The right-edge flip compared absolute screen
   coordinates against the monitor's width instead of its right edge, so on any
