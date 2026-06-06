@@ -223,6 +223,22 @@ struct TabDrag {
     animated: bool,
 }
 
+/// A whole tab physically REMOVED from its source window while a
+/// Chrome-style tab drag is over non-bar territory: the source bar closes
+/// the gap and the body underneath shows the next tab, so the dragged tab
+/// can be dropped as a split in its own window right away. Re-inserted live
+/// when the cursor re-enters a tab bar; consumed on release (merge, new
+/// window) or restored to its origin if anything goes sideways. Held
+/// App-level because the drag spans windows.
+struct LiftedTab {
+    /// The detached tab, sessions and all. `TabState` is self-contained.
+    tab: TabState,
+    /// Window the tab was lifted from, for restore-on-cancel.
+    origin: WindowId,
+    /// Index it occupied in the origin window at lift time.
+    origin_index: usize,
+}
+
 /// One `PtyDataReady` in flight is enough: `drain_pty_output` empties every
 /// channel, so per-chunk notifications past the first are pure overhead.
 /// Reader threads set this before posting; the handler clears it before
@@ -775,6 +791,7 @@ fn main() -> Result<()> {
         shell_override: cli.shell,
         windows: Vec::new(),
         active_window_id: None,
+        lifted_tab: None,
         resource_sampler: resources::ResourceSampler::new(),
         settings: None,
         context_menu: None,
@@ -1119,6 +1136,9 @@ struct TerminaleApp {
     /// `None` until the first focus event; may go stale when that window
     /// closes — consumers fall back to the last window.
     active_window_id: Option<WindowId>,
+    /// Chrome-style drag lift: the dragged tab while it is detached from
+    /// every tab bar (see [`LiftedTab`]). `Some` only mid-drag.
+    lifted_tab: Option<LiftedTab>,
     /// Samples global CPU + memory for the bottom resource-indicator strip.
     /// Shared across all windows (system resources are process-global).
     resource_sampler: resources::ResourceSampler,
@@ -3116,21 +3136,35 @@ impl TerminaleApp {
         // Place the new window where the cursor currently is, in screen px.
         let scale = src.window.scale_factor() as f32;
         let win_pos = src.window.outer_position().unwrap_or_default();
-        let cursor_screen = winit::dpi::PhysicalPosition::new(
-            win_pos.x + (src.pointer_logical.0 * scale) as i32 - 60,
-            win_pos.y + (src.pointer_logical.1 * scale) as i32 - 18,
+        let cursor_screen = (
+            win_pos.x + (src.pointer_logical.0 * scale) as i32,
+            win_pos.y + (src.pointer_logical.1 * scale) as i32,
         );
+        self.spawn_window_with_tab(event_loop, tab, cursor_screen);
+    }
 
-        // Share the existing wgpu device so we don't boot a second one.
+    /// Spawn a brand-new native window hosting `tab`, placed near
+    /// `cursor_screen` (physical px), sharing the wgpu device of an existing
+    /// window. Used by [`Self::tear_out`] and by a Chrome-lifted tab dropped
+    /// outside every window.
+    fn spawn_window_with_tab(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        tab: TabState,
+        cursor_screen: (i32, i32),
+    ) {
+        // Share an existing wgpu device so we don't boot a second one.
+        let Some(any) = self.windows.first() else {
+            return;
+        };
         let shared = (
-            src.renderer.instance(),
-            src.renderer.adapter(),
-            src.renderer.device(),
-            src.renderer.queue(),
+            any.renderer.instance(),
+            any.renderer.adapter(),
+            any.renderer.device(),
+            any.renderer.queue(),
         );
-
-        let mut new_win =
-            self.build_window(event_loop, Some(shared), Some(cursor_screen), vec![tab]);
+        let pos = winit::dpi::PhysicalPosition::new(cursor_screen.0 - 60, cursor_screen.1 - 18);
+        let mut new_win = self.build_window(event_loop, Some(shared), Some(pos), vec![tab]);
         new_win.active_tab = 0;
         if let Some(t) = new_win.tabs.last() {
             t.emulator.lock().set_palette(new_win.palette);
@@ -3420,6 +3454,31 @@ impl TerminaleApp {
         }
         let over = window_bar_at_screen(&bars, cursor_screen.0, cursor_screen.1);
 
+        // Chrome-style re-entry: a lifted tab crossing back into a tab bar
+        // is re-inserted LIVE at the hovered slot — the drag then continues
+        // as a plain in-bar drag of that (re-homed) tab.
+        if self.lifted_tab.is_some() {
+            if let Some(bar_win) = over {
+                let slot = self.drop_slot_in_window(bar_win, cursor_screen);
+                if let Some(w) = self.windows.iter_mut().find(|w| w.window.id() == bar_win) {
+                    // `lifted_tab` is Some (checked above) — take it now that
+                    // a live re-insert is guaranteed.
+                    if let Some(lift) = self.lifted_tab.take() {
+                        let dest = slot.min(w.tabs.len());
+                        w.tabs.insert(dest, lift.tab);
+                        w.active_tab = dest;
+                        refresh_tab_bar(w);
+                        w.window.request_redraw();
+                        drag.origin_window = bar_win;
+                        drag.tab_index = dest;
+                        if let DragPayload::Tab { ref mut tab_index } = drag.payload {
+                            *tab_index = dest;
+                        }
+                    }
+                }
+            }
+        }
+
         // Resolve the target + per-window drop indicator.
         drag.target = match over {
             Some(id) if id == drag.origin_window => {
@@ -3448,6 +3507,41 @@ impl TerminaleApp {
                 .merge_target_at(&drag, cursor_screen)
                 .unwrap_or(DropTarget::Detach),
         };
+
+        // Chrome-style lift: the moment a whole-tab drag leaves every tab
+        // bar, physically remove the tab from its source window — the bar
+        // closes the gap and the body shows the next tab, so the dragged tab
+        // can be dropped as a split in its own window immediately. Skipped
+        // for a window's only tab (nothing would be left to show, and the
+        // OS mouse capture lives on that window).
+        if matches!(drag.payload, DragPayload::Tab { .. })
+            && matches!(
+                drag.target,
+                DropTarget::Detach | DropTarget::MergeInto { .. }
+            )
+            && self.lifted_tab.is_none()
+        {
+            if let Some(src) = self
+                .windows
+                .iter_mut()
+                .find(|w| w.window.id() == drag.origin_window)
+            {
+                if src.tabs.len() > 1 && drag.tab_index < src.tabs.len() {
+                    let len_before = src.tabs.len();
+                    let tab = src.tabs.remove(drag.tab_index);
+                    src.active_tab =
+                        active_tab_after_detach(src.active_tab, drag.tab_index, len_before);
+                    src.renderer.set_selection(None);
+                    refresh_tab_bar(src);
+                    src.window.request_redraw();
+                    self.lifted_tab = Some(LiftedTab {
+                        tab,
+                        origin: drag.origin_window,
+                        origin_index: drag.tab_index,
+                    });
+                }
+            }
+        }
 
         self.tab_drag = Some(drag);
         // Keep the floating ghost window under the cursor BEFORE applying
@@ -3498,10 +3592,15 @@ impl TerminaleApp {
             if lx < 0 || ly < 0 || lx >= size.width as i32 || ly >= size.height as i32 {
                 continue;
             }
-            // A whole-tab drag keeps the dragged tab active in its origin
-            // window, so the origin body under the cursor is the dragged
-            // tab's OWN content — never a merge target.
-            if matches!(drag.payload, DragPayload::Tab { .. }) && id == drag.origin_window {
+            // Before the Chrome-lift kicks in, a whole-tab drag still has
+            // the dragged tab active in its origin window, so the origin
+            // body under the cursor is the dragged tab's OWN content — not
+            // a merge target. Once lifted, the body shows the NEXT tab and
+            // same-window merges become legitimate (that's the point).
+            if matches!(drag.payload, DragPayload::Tab { .. })
+                && id == drag.origin_window
+                && self.lifted_tab.is_none()
+            {
                 return None;
             }
             #[allow(clippy::cast_precision_loss)]
@@ -3884,6 +3983,30 @@ impl TerminaleApp {
         };
         match drag.payload.clone() {
             DragPayload::Tab { tab_index } => {
+                // A Chrome-lifted tab was already removed from its source —
+                // consume it directly. (Over a bar it gets re-inserted live
+                // in update_tab_drag, so lifted + Reorder/AttachTo can only
+                // happen if a move event was missed: restore it.)
+                if let Some(lift) = self.lifted_tab.take() {
+                    match drag.target {
+                        DropTarget::MergeInto {
+                            window,
+                            tab_index: dst_tab,
+                            pane,
+                            side,
+                        } => {
+                            self.graft_tab_state(lift.tab, window, dst_tab, pane, side);
+                        }
+                        DropTarget::Detach => {
+                            self.spawn_window_with_tab(event_loop, lift.tab, drag.cursor_screen);
+                        }
+                        DropTarget::Reorder(_) | DropTarget::AttachTo(..) => {
+                            self.restore_lifted(lift);
+                        }
+                    }
+                    self.clear_drag_visuals();
+                    return;
+                }
                 match drag.target {
                     DropTarget::Reorder(_) => {
                         // The live reorder already moved the tab; nothing to do.
@@ -4027,19 +4150,48 @@ impl TerminaleApp {
 
         // Locate the destination tab. Same-window: removing the source tab
         // above shifted every index after it down by one.
-        let Some(dst_idx) = self.window_index(dst_id) else {
-            return;
-        };
         let dst_tab_idx = if src_id == dst_id && src_tab_idx < dst_tab_idx {
             dst_tab_idx - 1
         } else {
             dst_tab_idx
         };
+        self.graft_tab_state(tab, dst_id, dst_tab_idx, target_pane, side);
+
+        // Close the source window if it has no tabs left.
+        if src_empty {
+            if let Some(i) = self.window_index(src_id) {
+                self.windows.remove(i);
+            }
+        }
+    }
+
+    /// Graft an already-detached `tab` into tab `dst_tab_idx` of window
+    /// `dst_id` as a split of `target_pane` on `side`. Sessions are never
+    /// dropped: if the destination tab (or window) vanished, the tab is
+    /// re-homed as a plain tab in the destination (or any surviving) window.
+    fn graft_tab_state(
+        &mut self,
+        tab: TabState,
+        dst_id: WindowId,
+        dst_tab_idx: usize,
+        target_pane: PaneId,
+        side: crate::panes::DropSide,
+    ) {
+        let Some(dst_idx) = self.window_index(dst_id) else {
+            // Destination window vanished mid-flight — re-home the tab
+            // into any surviving window rather than dropping sessions.
+            if let Some(w) = self.windows.first_mut() {
+                w.tabs.push(tab);
+                w.active_tab = w.tabs.len() - 1;
+                refresh_tab_bar(w);
+                w.window.request_redraw();
+            }
+            return;
+        };
         let dst = &mut self.windows[dst_idx];
         let palette = dst.palette;
         let Some(dst_tab) = dst.tabs.get_mut(dst_tab_idx) else {
-            // Destination vanished — fall back to re-attaching as a tab so
-            // the sessions are never dropped.
+            // Destination tab vanished — fall back to re-attaching as a tab.
             dst.tabs.push(tab);
             dst.active_tab = dst.tabs.len() - 1;
             refresh_tab_bar(dst);
@@ -4059,13 +4211,30 @@ impl TerminaleApp {
         dst.renderer.set_selection(None);
         dst.window.focus_window();
         dst.window.request_redraw();
+    }
 
-        // Close the source window if it has no tabs left.
-        if src_empty {
-            if let Some(i) = self.window_index(src_id) {
-                self.windows.remove(i);
-            }
-        }
+    /// Put a lifted tab back where it came from (drag cancelled / released
+    /// over nothing actionable while its origin still exists). Falls back to
+    /// any surviving window so sessions are never dropped.
+    fn restore_lifted(&mut self, lift: LiftedTab) {
+        let idx = self
+            .windows
+            .iter()
+            .position(|w| w.window.id() == lift.origin)
+            .or(if self.windows.is_empty() {
+                None
+            } else {
+                Some(0)
+            });
+        let Some(idx) = idx else {
+            return; // no windows left — nothing we can do
+        };
+        let w = &mut self.windows[idx];
+        let dest = lift.origin_index.min(w.tabs.len());
+        w.tabs.insert(dest, lift.tab);
+        w.active_tab = dest;
+        refresh_tab_bar(w);
+        w.window.request_redraw();
     }
 
     /// Merge a single dragged pane into tab `dst_tab_idx` of window `dst_id`
@@ -6770,6 +6939,36 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         if let Some(p) = self.config.profiles.profiles.get(idx).cloned() {
                             if let Some(state) = self.focused_window_mut() {
                                 new_tab_with_profile(state, &p);
+                            }
+                        }
+                    } else if action_id == MenuAction::BreakPaneToTab.as_u32() {
+                        // Break the focused pane out into a new tab in the
+                        // same window. App-level: it moves a pane across tabs.
+                        if let Some(win_idx) = self.focused_window_index() {
+                            let w = &self.windows[win_idx];
+                            let win_id = w.window.id();
+                            let tab_idx = w.active_tab;
+                            if let Some(pane_id) = w.tabs.get(tab_idx).map(|t| t.focused) {
+                                self.attach_pane(win_id, tab_idx, pane_id, win_id, win_id, None);
+                            }
+                        }
+                    } else if action_id == MenuAction::BreakPaneToWindow.as_u32() {
+                        // Break the focused pane out into a brand-new window,
+                        // placed near the window the pane came from.
+                        if let Some(win_idx) = self.focused_window_index() {
+                            let w = &self.windows[win_idx];
+                            let win_id = w.window.id();
+                            let tab_idx = w.active_tab;
+                            let pane_id = w.tabs.get(tab_idx).map(|t| t.focused);
+                            let pos = w.window.outer_position().unwrap_or_default();
+                            if let Some(pane_id) = pane_id {
+                                self.tear_out_pane(
+                                    event_loop,
+                                    win_id,
+                                    tab_idx,
+                                    pane_id,
+                                    (pos.x + 120, pos.y + 120),
+                                );
                             }
                         }
                     } else if action_id == MenuAction::RestartSession.as_u32() {
@@ -11436,6 +11635,12 @@ enum MenuAction {
     /// menu. The children route via the dynamic [`MERGE_TAB_BASE`] range
     /// (handled at App level); the parent itself never dispatches.
     MergeTabInto,
+    /// Break the focused pane out of its split into a new tab in the same
+    /// window. Dispatched at App level (it moves panes across tabs).
+    BreakPaneToTab,
+    /// Break the focused pane out of its split into a brand-new window.
+    /// Dispatched at App level (it needs the event loop to build a window).
+    BreakPaneToWindow,
 }
 
 impl MenuAction {
@@ -11486,6 +11691,8 @@ impl MenuAction {
             Self::ClearTabGroup => 38,
             Self::RestartSession => 39,
             Self::MergeTabInto => 40,
+            Self::BreakPaneToTab => 41,
+            Self::BreakPaneToWindow => 42,
         }
     }
     fn from_u32(v: u32) -> Option<Self> {
@@ -11531,6 +11738,8 @@ impl MenuAction {
             38 => Self::ClearTabGroup,
             39 => Self::RestartSession,
             40 => Self::MergeTabInto,
+            41 => Self::BreakPaneToTab,
+            42 => Self::BreakPaneToWindow,
             _ => return None,
         })
     }
@@ -11882,6 +12091,9 @@ fn dispatch_menu_action(state: &mut RunningState, action_id: u32) {
         // Submenu parent only — its children route via the dynamic
         // MERGE_TAB_BASE range, handled at App level (needs cross-tab moves).
         MenuAction::MergeTabInto => {}
+        // Handled at App level (cross-tab / cross-window pane moves) before
+        // this per-window dispatcher ever runs.
+        MenuAction::BreakPaneToTab | MenuAction::BreakPaneToWindow => {}
     }
     state.window.request_redraw();
 }
@@ -12003,6 +12215,37 @@ fn menu_items_all(state: &RunningState) -> Vec<(RichMenuItem, MenuAction)> {
                 submenu: None,
             },
             MenuAction::SplitUp,
+        ),
+        // Reverse ops: break the focused pane OUT of its split. Only
+        // meaningful (and enabled) when the active tab has more than one
+        // pane — a lone pane already IS its own tab.
+        (
+            RichMenuItem {
+                label: "Move pane to new tab".into(),
+                icon: None,
+                hotkey: None,
+                enabled: state
+                    .tabs
+                    .get(state.active_tab)
+                    .is_some_and(|t| crate::panes::count_leaves(&t.tree) > 1),
+                separator_before: true,
+                submenu: None,
+            },
+            MenuAction::BreakPaneToTab,
+        ),
+        (
+            RichMenuItem {
+                label: "Move pane to new window".into(),
+                icon: None,
+                hotkey: None,
+                enabled: state
+                    .tabs
+                    .get(state.active_tab)
+                    .is_some_and(|t| crate::panes::count_leaves(&t.tree) > 1),
+                separator_before: false,
+                submenu: None,
+            },
+            MenuAction::BreakPaneToWindow,
         ),
         (
             RichMenuItem {
@@ -14687,8 +14930,16 @@ mod tests {
             MenuAction::from_u32(40),
             Some(MenuAction::MergeTabInto)
         ));
-        // Values above the last static variant (40 = MergeTabInto) must not resolve.
-        assert!(MenuAction::from_u32(41).is_none());
+        assert!(matches!(
+            MenuAction::from_u32(41),
+            Some(MenuAction::BreakPaneToTab)
+        ));
+        assert!(matches!(
+            MenuAction::from_u32(42),
+            Some(MenuAction::BreakPaneToWindow)
+        ));
+        // Values above the last static variant (42 = BreakPaneToWindow) must not resolve.
+        assert!(MenuAction::from_u32(43).is_none());
     }
 
     /// Snap action ids round-trip correctly through MenuAction.
