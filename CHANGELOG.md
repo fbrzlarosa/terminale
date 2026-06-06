@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   secondary monitor every submenu hover shifted the whole menu. The flip now
   uses real edges and, when genuinely needed, keeps the base column anchored
   and opens the flyout on its left (like native OS menus).
+- **The focused-pane border no longer tints the terminal text.** In split
+  views the focus border was drawn inset INSIDE the pane, landing right under
+  the first and last text rows and columns. Each stroke is now centred on the
+  pane boundary — recolouring the divider band and the window padding instead
+  (iTerm2-style) — so the content area stays untouched. Same treatment for
+  the amber broadcast-input border.
 - **The text selection now follows the text.** Selecting and then scrolling
   (or new output arriving) left the highlight glued to fixed screen rows over
   different text — and copying returned whatever was under it now. The

@@ -5725,35 +5725,41 @@ impl Renderer {
                 // against sub-pixel rects from walk_pane_tree floor math.
                 let (rx, ry, rw, rh) = panes[focused_idx].rect_px;
                 let (fx, fy, fw, fh) = (rx.round(), ry.round(), rw.round(), rh.round());
-                // Inset by `t` px so the border never co-planar with the
-                // adjacent divider's visible rect (divider straddles the
-                // boundary by ±half_thick into both neighbours).
-                let i = t.ceil();
+                // Straddle the pane boundary: each stroke is centred ON the
+                // rect edge (half outside, half inside) instead of inset
+                // INSIDE the pane — an inset stroke landed right under the
+                // first/last text row and column, tinting the glyphs. On
+                // internal edges the stroke now recolours the divider band
+                // (dead space, iTerm2-style); on window edges it sits in the
+                // outer padding. The at-most-t/2 px that still touch the
+                // cell area are the outermost edge pixels, where glyph ink
+                // doesn't reach — and the glyph pass paints over the stroke
+                // anyway (it lives on the main layer, behind text).
+                let h = t / 2.0;
                 let accent = self.focus_border_color.unwrap_or(ACCENT_FOCUS_BORDER);
                 // Translucent stroke: drawn on the main layer (behind the
                 // glyph pass) at the configured opacity, so it reads as a
                 // background hint instead of a hard frame against the text.
                 let a = self.focus_border_alpha.clamp(0.0, 1.0);
-                // Top + bottom strokes (clamped to zero inner width).
-                let inner_w = (fw - 2.0 * i).max(0.0);
-                let inner_h = (fh - 2.0 * i).max(0.0);
+                let outer_w = fw + t;
+                let outer_h = fh + t;
                 // Top
                 self.focus_border_quads
-                    .push(Quad::new([fx + i, fy + i], [inner_w, t], accent, a));
+                    .push(Quad::new([fx - h, fy - h], [outer_w, t], accent, a));
                 // Bottom
                 self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + fh - i - t],
-                    [inner_w, t],
+                    [fx - h, fy + fh - h],
+                    [outer_w, t],
                     accent,
                     a,
                 ));
-                // Left (full height corners filled by verticals)
+                // Left (full height; corners filled by the horizontals)
                 self.focus_border_quads
-                    .push(Quad::new([fx + i, fy + i], [t, inner_h], accent, a));
+                    .push(Quad::new([fx - h, fy - h], [t, outer_h], accent, a));
                 // Right
                 self.focus_border_quads.push(Quad::new(
-                    [fx + fw - i - t, fy + i],
-                    [t, inner_h],
+                    [fx + fw - h, fy - h],
+                    [t, outer_h],
                     accent,
                     a,
                 ));
@@ -5774,34 +5780,36 @@ impl Renderer {
                 }
                 let (rx, ry, rw, rh) = spec.rect_px;
                 let (fx, fy, fw, fh) = (rx.round(), ry.round(), rw.round(), rh.round());
-                let i = t.ceil();
-                let inner_w = (fw - 2.0 * i).max(0.0);
-                let inner_h = (fh - 2.0 * i).max(0.0);
+                // Straddle the pane boundary like the focus border above —
+                // an inset stroke tinted the outermost text row/column.
+                let h = t / 2.0;
+                let outer_w = fw + t;
+                let outer_h = fh + t;
                 // Top
                 self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + i],
-                    [inner_w, t],
+                    [fx - h, fy - h],
+                    [outer_w, t],
                     BROADCAST_ACCENT,
                     1.0,
                 ));
                 // Bottom
                 self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + fh - i - t],
-                    [inner_w, t],
+                    [fx - h, fy + fh - h],
+                    [outer_w, t],
                     BROADCAST_ACCENT,
                     1.0,
                 ));
                 // Left
                 self.focus_border_quads.push(Quad::new(
-                    [fx + i, fy + i],
-                    [t, inner_h],
+                    [fx - h, fy - h],
+                    [t, outer_h],
                     BROADCAST_ACCENT,
                     1.0,
                 ));
                 // Right
                 self.focus_border_quads.push(Quad::new(
-                    [fx + fw - i - t, fy + i],
-                    [t, inner_h],
+                    [fx + fw - h, fy - h],
+                    [t, outer_h],
                     BROADCAST_ACCENT,
                     1.0,
                 ));
