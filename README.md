@@ -178,13 +178,17 @@ apply it on the next launch — no UAC prompt, no installer to click through.
 | macOS Intel | `terminale-vX.Y.Z-x86_64-apple-darwin.dmg` |
 | Linux x86_64 | `terminale-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` |
 
-> **Windows: MSI vs PowerShell installer.** The `.msi` is a **system-wide**
-> install under `Program Files` — good for managed/multi-user machines, but
-> because that location needs admin rights, updates can't apply silently: the
-> in-app updater downloads the new `.msi` and runs it (with the usual UAC
-> prompt). For **hands-off background updates**, use the per-user PowerShell
-> one-liner above instead. (Switching is a one-time reinstall: uninstall the
-> MSI build from *Add or remove programs*, then run the PowerShell one-liner.)
+> **Windows: the MSI is per-user too (since 0.1.27).** It installs under
+> `%LOCALAPPDATA%\terminale` with no admin rights, so the in-app updater
+> replaces the binary **silently in the background** — same hands-off updates
+> as the PowerShell one-liner, just with a wizard the first time.
+>
+> **Coming from the old system-wide MSI** (pre-0.1.27, under `Program Files`)?
+> Open **Settings → About → "Switch to self-updating install"** — terminale
+> reinstalls itself per-user and removes the old copy (one last UAC prompt,
+> the last ever). Until you switch, updates still work: the new installer is
+> downloaded, verified, and run silently (`/passive`) with a single elevation
+> consent — no wizard to click through.
 
 The macOS download is a `.dmg`: open it, then drag **terminale.app** onto the
 `/Applications` shortcut. It then shows up in Launchpad and Spotlight with the

@@ -557,8 +557,10 @@ fn main() -> Result<()> {
             }
             Ok(update::UpdateOutcome::InstallerLaunched(v)) => {
                 println!(
-                    "Installer for terminale {v} launched — follow its prompts to finish \
-                     updating."
+                    "Silent installer for terminale {v} launched — approve the elevation \
+                     prompt and the update completes on its own (terminale will close \
+                     briefly). Tip: switch to the self-updating per-user install from \
+                     Settings → About to never see that prompt again."
                 );
             }
             Ok(update::UpdateOutcome::InstallerRequired(v)) => {
@@ -676,9 +678,10 @@ fn main() -> Result<()> {
                     Ok(update::UpdateOutcome::InstallerRequired(v)) => {
                         tracing::info!(
                             version = %v,
-                            "a newer terminale is available; this install is managed by the \
-                             platform installer — use Settings → About → Check for updates \
-                             to run it"
+                            "a newer terminale is available; this legacy system-wide install \
+                             updates via Settings → About → Check for updates (silent \
+                             installer, one elevation prompt) — or switch to the \
+                             self-updating per-user install there to drop the prompt forever"
                         );
                     }
                     Ok(update::UpdateOutcome::InstallerLaunched(_))
