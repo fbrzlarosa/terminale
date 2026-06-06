@@ -2082,8 +2082,8 @@ pub(crate) fn handle_scroll(state: &mut RunningState, delta: winit::event::Mouse
     // beyond what fits on screen clamps there, like before.
     if state.selection_press_px.is_some() {
         if let Some((col, row)) = state.selection_anchor {
-            let shifted = (i64::from(row) + new_scroll as i64 - current as i64)
-                .clamp(0, i64::from(u16::MAX));
+            let shifted =
+                (i64::from(row) + new_scroll as i64 - current as i64).clamp(0, i64::from(u16::MAX));
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let row = shifted as u16;
             state.selection_anchor = Some((col, row));

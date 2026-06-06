@@ -301,6 +301,65 @@ fn reanchored_row(
     usize::try_from(i64::from(row) + dy).ok()
 }
 
+/// When the scrollback scrollbar is shown. Mirrors `window.scrollbar`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScrollbarMode {
+    /// Shown while panning history, or when hovering the right edge —
+    /// so it can be grabbed even from the live bottom. (default)
+    #[default]
+    Auto,
+    /// Shown whenever any scrollback history exists.
+    Always,
+    /// Never drawn (and never grabbable).
+    Never,
+}
+
+/// Geometry of the scrollback scrollbar as last computed by the draw pass,
+/// in physical pixels, plus the scroll state it was derived from. Cached per
+/// frame so the mouse handler can hit-test the thumb and convert a drag into
+/// a scroll offset without recomputing renderer internals.
+#[derive(Debug, Clone, Copy)]
+pub struct ScrollbarGeom {
+    /// Left edge of the track.
+    pub track_x: f32,
+    /// Top of the track.
+    pub track_top: f32,
+    /// Track width.
+    pub track_w: f32,
+    /// Track height.
+    pub track_h: f32,
+    /// Top of the thumb.
+    pub thumb_top: f32,
+    /// Thumb height.
+    pub thumb_h: f32,
+    /// Scrollback length the geometry was computed against.
+    pub history: usize,
+    /// Visible grid rows the geometry was computed against.
+    pub rows: usize,
+}
+
+/// Scroll offset (lines into history; `0` = live bottom) for a thumb dragged
+/// so its TOP sits at `thumb_top`. Inverse of the draw-pass mapping, linear
+/// over the thumb's travel range so the full history is always reachable —
+/// thumb at the track top ⇒ deepest history, thumb at the bottom ⇒ live.
+#[must_use]
+pub fn scrollbar_scroll_for_thumb(geom: &ScrollbarGeom, thumb_top: f32) -> usize {
+    if geom.history == 0 {
+        return 0;
+    }
+    let total = (geom.history + geom.rows).max(1) as f32;
+    #[allow(clippy::cast_precision_loss)]
+    let thumb_frac = (geom.rows as f32 / total).clamp(0.04, 1.0);
+    let max_frac = (1.0 - thumb_frac).max(f32::EPSILON);
+    let top_frac = ((thumb_top - geom.track_top) / geom.track_h.max(1.0)).clamp(0.0, max_frac);
+    #[allow(clippy::cast_precision_loss)]
+    let scroll = (geom.history as f32 * (1.0 - top_frac / max_frac)).round();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    {
+        (scroll as usize).min(geom.history)
+    }
+}
+
 /// One menu item shown in the right-click overlay.
 #[derive(Debug, Clone)]
 pub struct MenuItem {
@@ -557,6 +616,18 @@ pub struct Renderer {
     /// frame — the freshest value available when `set_selection` is called
     /// between frames (mouse events).
     last_history: usize,
+    /// When the scrollback scrollbar is shown. Mirrors `window.scrollbar`.
+    scrollbar_mode: ScrollbarMode,
+    /// Pointer currently hovering the scrollbar band (set by the app from
+    /// `CursorMoved`). Reveals the bar in `Auto` mode and widens it.
+    scrollbar_hover: bool,
+    /// Thumb currently being dragged (set by the app). Keeps the bar shown
+    /// and widened for the duration of the drag.
+    scrollbar_active: bool,
+    /// Scrollbar geometry as last computed (cached whenever any history
+    /// exists, even when the bar isn't visible — `Auto` mode needs the band
+    /// for hover-reveal hit-testing). `None` = no scrollback.
+    last_scrollbar: Option<ScrollbarGeom>,
     overlay: Option<MenuOverlay>,
     tab_bar: Option<TabBar>,
     /// Lower bound a tab shrinks to (logical px). Mirrors
@@ -1935,6 +2006,10 @@ impl Renderer {
             selection_scroll: 0,
             selection_history: 0,
             last_history: 0,
+            scrollbar_mode: ScrollbarMode::default(),
+            scrollbar_hover: false,
+            scrollbar_active: false,
+            last_scrollbar: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2129,6 +2204,10 @@ impl Renderer {
             selection_scroll: 0,
             selection_history: 0,
             last_history: 0,
+            scrollbar_mode: ScrollbarMode::default(),
+            scrollbar_hover: false,
+            scrollbar_active: false,
+            last_scrollbar: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -2332,6 +2411,10 @@ impl Renderer {
             selection_scroll: 0,
             selection_history: 0,
             last_history: 0,
+            scrollbar_mode: ScrollbarMode::default(),
+            scrollbar_hover: false,
+            scrollbar_active: false,
+            last_scrollbar: None,
             overlay: None,
             tab_bar: None,
             tab_min_width: TAB_MIN_WIDTH,
@@ -5319,6 +5402,50 @@ impl Renderer {
         self.selection_history
     }
 
+    /// Set when the scrollback scrollbar is shown. Mirrors `window.scrollbar`.
+    pub fn set_scrollbar_mode(&mut self, mode: ScrollbarMode) {
+        self.scrollbar_mode = mode;
+    }
+
+    /// Update the pointer-over-scrollbar state (from `CursorMoved`). Returns
+    /// `true` when the value changed, so the caller knows to repaint.
+    pub fn set_scrollbar_hover(&mut self, hover: bool) -> bool {
+        let changed = self.scrollbar_hover != hover;
+        self.scrollbar_hover = hover;
+        changed
+    }
+
+    /// Mark the scrollbar thumb as being dragged — keeps the bar visible and
+    /// widened for the duration of the drag regardless of pointer position.
+    pub fn set_scrollbar_active(&mut self, active: bool) {
+        self.scrollbar_active = active;
+    }
+
+    /// Scrollbar geometry as last computed by the draw pass. `Some` whenever
+    /// any scrollback history exists (even while the bar is hidden in `Auto`
+    /// mode — the band is needed for hover-reveal); `None` with no history
+    /// or in `Never` mode.
+    #[must_use]
+    pub fn scrollbar_geometry(&self) -> Option<ScrollbarGeom> {
+        self.last_scrollbar
+    }
+
+    /// `true` when the scrollbar is currently visible to the user (geometry
+    /// cached AND the mode + hover/drag/scroll state says it's drawn). The
+    /// mouse handler gates grabs on this so an invisible bar never swallows
+    /// right-edge clicks.
+    #[must_use]
+    pub fn scrollbar_visible(&self) -> bool {
+        self.last_scrollbar.is_some()
+            && match self.scrollbar_mode {
+                ScrollbarMode::Never => false,
+                ScrollbarMode::Always => true,
+                ScrollbarMode::Auto => {
+                    self.scroll_lines > 0 || self.scrollbar_hover || self.scrollbar_active
+                }
+            }
+    }
+
     /// Update window-focus state. Controls cursor style (solid bar when
     /// focused, hollow rectangle when not).
     pub fn set_focused(&mut self, focused: bool) {
@@ -7405,35 +7532,65 @@ impl Renderer {
             ));
         }
 
-        // Scrollback position indicator — a thin scrollbar on the right edge
-        // shown only while panning into history, so the user sees where they
-        // are. Thumb size ∝ visible fraction; position ∝ how far up.
+        // Scrollback scrollbar on the right edge. Interactive: the thumb can
+        // be grabbed and dragged (see `handle_mouse` / `scrollbar_geometry`),
+        // a track click jumps there. Visibility per `scrollbar_mode`:
+        // `Auto` shows it while panning history OR while the pointer hovers
+        // the right-edge band (so it can be grabbed from the live bottom),
+        // `Always` whenever history exists, `Never` not at all. Geometry is
+        // cached whenever history exists — hidden-in-Auto included — because
+        // the hover-reveal hit-test needs the band. Thumb size ∝ visible
+        // fraction; position ∝ how far up.
         // (`history` snapshotted above, next to the grid-cell capture.)
-        if self.scroll_lines > 0 && history > 0 {
+        self.last_scrollbar = None;
+        if history > 0 && self.scrollbar_mode != ScrollbarMode::Never {
+            let engaged = self.scrollbar_hover || self.scrollbar_active;
+            let show = match self.scrollbar_mode {
+                ScrollbarMode::Always => true,
+                ScrollbarMode::Never => false,
+                ScrollbarMode::Auto => self.scroll_lines > 0 || engaged,
+            };
             let total = (history + rows as usize).max(1) as f32;
             let track_top = top_pad_px;
             let track_h = (self.config.height as f32 - track_top).max(1.0);
-            let bar_w = (4.0 * scale).max(2.0);
+            // Wider while hovered / dragged so it's easy to grab.
+            let bar_w = if engaged {
+                (10.0 * scale).max(6.0)
+            } else {
+                (4.0 * scale).max(2.0)
+            };
             let bar_x = self.config.width as f32 - bar_w - 2.0 * scale;
-            // Faint track + accent thumb.
-            quads.push(Quad::new(
-                [bar_x, track_top],
-                [bar_w, track_h],
-                [0x3b, 0x42, 0x5a],
-                0.25,
-            ));
             let thumb_frac = (rows as f32 / total).clamp(0.04, 1.0);
             // Lines above the viewport's top, from the oldest scrollback line.
             let lines_above = history.saturating_sub(self.scroll_lines) as f32;
             let top_frac = (lines_above / total).clamp(0.0, 1.0 - thumb_frac);
             let thumb_h = (thumb_frac * track_h).max(16.0 * scale);
             let thumb_y = track_top + top_frac * track_h;
-            quads.push(Quad::new(
-                [bar_x, thumb_y],
-                [bar_w, thumb_h],
-                [0x7d, 0xa6, 0xff],
-                0.85,
-            ));
+            self.last_scrollbar = Some(ScrollbarGeom {
+                track_x: bar_x,
+                track_top,
+                track_w: bar_w,
+                track_h,
+                thumb_top: thumb_y,
+                thumb_h,
+                history,
+                rows: rows as usize,
+            });
+            if show {
+                // Faint track + accent thumb (brighter while engaged).
+                quads.push(Quad::new(
+                    [bar_x, track_top],
+                    [bar_w, track_h],
+                    [0x3b, 0x42, 0x5a],
+                    if engaged { 0.4 } else { 0.25 },
+                ));
+                quads.push(Quad::new(
+                    [bar_x, thumb_y],
+                    [bar_w, thumb_h],
+                    [0x7d, 0xa6, 0xff],
+                    if engaged { 1.0 } else { 0.85 },
+                ));
+            }
         }
 
         // Overlay text (label badges + palette rows + save-host toast labels)
@@ -8497,6 +8654,52 @@ fn compute_pill_geometry_pure(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── scrollbar_scroll_for_thumb (drag → scroll mapping) ────────────────────
+
+    fn test_geom(history: usize, rows: usize) -> ScrollbarGeom {
+        ScrollbarGeom {
+            track_x: 1000.0,
+            track_top: 40.0,
+            track_w: 8.0,
+            track_h: 600.0,
+            thumb_top: 40.0,
+            thumb_h: 60.0,
+            history,
+            rows,
+        }
+    }
+
+    #[test]
+    fn thumb_at_track_top_is_deepest_history() {
+        let g = test_geom(500, 40);
+        assert_eq!(scrollbar_scroll_for_thumb(&g, 40.0), 500);
+        // Dragging past the top clamps.
+        assert_eq!(scrollbar_scroll_for_thumb(&g, -100.0), 500);
+    }
+
+    #[test]
+    fn thumb_at_track_bottom_is_live() {
+        let g = test_geom(500, 40);
+        assert_eq!(scrollbar_scroll_for_thumb(&g, 40.0 + 600.0), 0);
+        // Past the bottom clamps too.
+        assert_eq!(scrollbar_scroll_for_thumb(&g, 10_000.0), 0);
+    }
+
+    #[test]
+    fn thumb_midway_is_about_half_the_history() {
+        let g = test_geom(500, 40);
+        let max_frac = 1.0 - (40.0_f32 / 540.0).max(0.04);
+        let mid_y = 40.0 + 0.5 * max_frac * 600.0;
+        let s = scrollbar_scroll_for_thumb(&g, mid_y);
+        assert!((240..=260).contains(&s), "expected ~250, got {s}");
+    }
+
+    #[test]
+    fn no_history_is_always_live() {
+        let g = test_geom(0, 40);
+        assert_eq!(scrollbar_scroll_for_thumb(&g, 40.0), 0);
+    }
 
     // ── reanchored_row (selection follows the text) ───────────────────────────
 

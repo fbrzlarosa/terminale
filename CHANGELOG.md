@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **The scrollback scrollbar is now interactive.** Grab the thumb and drag to
+  pan through history, or click anywhere on the track to jump there. It widens
+  on approach, and in the default `auto` mode it appears while scrolled **or
+  when the pointer hovers the right edge** — so it can be grabbed even from
+  the live bottom. Configurable via `window.scrollbar` (`auto` / `always` /
+  `never`) and **Settings → Terminal → Scrollbar** (applies live).
+
+### Fixed
+- **The right-click context menu no longer jumps left when hovering a submenu
+  on a multi-monitor setup.** The right-edge flip compared absolute screen
+  coordinates against the monitor's width instead of its right edge, so on any
+  secondary monitor every submenu hover shifted the whole menu. The flip now
+  uses real edges and, when genuinely needed, keeps the base column anchored
+  and opens the flyout on its left (like native OS menus).
+- **The text selection now follows the text.** Selecting and then scrolling
+  (or new output arriving) left the highlight glued to fixed screen rows over
+  different text — and copying returned whatever was under it now. The
+  selection is anchored to the scrollback at creation time: the highlight
+  moves with the text and the copied content is what was selected, no matter
+  how far you've scrolled since.
+
 ## [0.1.25]
 
 ### Added
