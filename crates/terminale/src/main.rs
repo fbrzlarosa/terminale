@@ -7799,6 +7799,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                             .map_or(1, |t| count_leaves(&t.tree));
                         if state.pane_tear_out && leaf_count > 1 {
                             state.pane_header_press = Some((pid, pointer_phys));
+                            // This intercept returns WITHOUT running
+                            // handle_mouse, which is what normally tracks the
+                            // held button — but the drag-promotion gate in
+                            // CursorMoved requires `held_button == Left`.
+                            // Track it here, or the pane drag can never arm
+                            // (the release path clears it as usual).
+                            state.held_button = Some(MouseButton::Left);
                         }
                         // Double-click detection: same pane within 400 ms.
                         let now = std::time::Instant::now();

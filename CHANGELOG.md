@@ -35,6 +35,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   `never`) and **Settings → Terminal → Scrollbar** (applies live).
 
 ### Fixed
+- **Dragging a split pane by its header now actually works.** The header
+  press intercept returned before the shared mouse handler ever tracked the
+  held button, and the drag promotion gate requires it — so a pane drag
+  could never arm. The press now records the held button itself; pane
+  headers can be dragged onto a tab bar (→ tab), outside (→ window), or
+  onto a pane body (→ split) as designed.
 - **The right-click context menu no longer jumps left when hovering a submenu
   on a multi-monitor setup.** The right-edge flip compared absolute screen
   coordinates against the monitor's width instead of its right edge, so on any
