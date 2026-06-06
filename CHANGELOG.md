@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.26]
+
 ### Added
 - **Merge a tab into another tab as a split.** Drag a tab (or a pane header)
   onto a terminal body and a tinted drop zone shows which half
@@ -694,7 +696,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...HEAD
+[0.1.26]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/fbrzlarosa/terminale/compare/v0.1.22...v0.1.23
