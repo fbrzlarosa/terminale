@@ -3299,12 +3299,13 @@ impl TerminaleApp {
         } else {
             return;
         };
-        let (slot_x, slot_w) = src
-            .renderer
-            .tab_slot_rect(tab_index)
-            .unwrap_or((8.0, 160.0));
-        let pointer_logical_x = src.pointer_logical.0;
-        let grab_offset_x = pointer_logical_x - (slot_x + slot_w * 0.5);
+        // A pane drag lifts from the pane's HEADER, not from a tab-bar slot —
+        // anchoring the grab offset to the active tab's bar slot (like the
+        // tab drag does) displaced the ghost pill by the full header-to-slot
+        // distance. Centre the pill under the cursor instead, with the
+        // default slot width for the pill size.
+        let slot_w = 160.0;
+        let grab_offset_x = 0.0;
         let animated = src.animated_tab_drag;
         let origin_window = src.window.id();
         let label_for_ghost = label.clone();
