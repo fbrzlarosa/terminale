@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.27]
+
 ### Changed
 - **No more clicking through installers to update — on any OS.** Three
   changes close the last gap (Windows MSI installs):
@@ -717,7 +719,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...HEAD
+[0.1.27]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/fbrzlarosa/terminale/compare/v0.1.23...v0.1.24
