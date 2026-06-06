@@ -94,8 +94,8 @@ pub use terminal::{
 };
 pub use updates::UpdatesConfig;
 pub use window::{
-    snap_window_rect, MonitorRect, RestoreSession, SnapEdge, WindowConfig, WindowRect,
-    ZenHideElement,
+    snap_window_rect, MonitorRect, RestoreSession, ScrollbarMode, SnapEdge, WindowConfig,
+    WindowRect, ZenHideElement,
 };
 
 use schemars::JsonSchema;

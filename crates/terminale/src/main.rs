@@ -2003,6 +2003,10 @@ struct TermWindow {
     /// once the cursor has moved more than a few pixels from this anchor —
     /// otherwise a single click is treated as click, not click+drag.
     selection_press_px: Option<(f32, f32)>,
+    /// `Some(grab_offset_px)` while the scrollback-scrollbar thumb is being
+    /// dragged: the vertical distance from the thumb's top to where the user
+    /// grabbed it, so the thumb tracks the cursor without snapping.
+    scrollbar_drag: Option<f32>,
     /// (timestamp, position, count) of the last left-click — used by
     /// double/triple-click word/line selection.
     last_click: Option<(std::time::Instant, (f32, f32), u8)>,
@@ -2828,6 +2832,7 @@ impl TerminaleApp {
             selecting: false,
             selection_anchor: None,
             selection_press_px: None,
+            scrollbar_drag: None,
             last_click: None,
             last_titlebar_click: None,
             last_tab_click: None,
@@ -3009,6 +3014,8 @@ impl TerminaleApp {
             .set_inactive_pane_dim(self.config.appearance.inactive_pane_dim);
         tw.renderer
             .set_selection_opacity(self.config.appearance.selection_opacity);
+        tw.renderer
+            .set_scrollbar_mode(render_scrollbar_mode(self.config.window.scrollbar));
         tw.renderer
             .set_unfocused_window_dim(self.config.appearance.unfocused_window_dim);
         tw.renderer
@@ -4875,6 +4882,9 @@ impl TerminaleApp {
                         .set_selection_opacity(cfg.appearance.selection_opacity);
                     state
                         .renderer
+                        .set_scrollbar_mode(render_scrollbar_mode(cfg.window.scrollbar));
+                    state
+                        .renderer
                         .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
                     state
                         .renderer
@@ -4977,6 +4987,9 @@ impl TerminaleApp {
                     state
                         .renderer
                         .set_selection_opacity(cfg.appearance.selection_opacity);
+                    state
+                        .renderer
+                        .set_scrollbar_mode(render_scrollbar_mode(cfg.window.scrollbar));
                     state
                         .renderer
                         .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
@@ -6874,6 +6887,25 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     update_divider_drag(state, pos_phys);
                     return;
                 }
+                // Scrollbar thumb drag owns the cursor like a divider drag:
+                // update the scroll offset and skip every other CursorMoved
+                // path. Ends on left-release (see `handle_mouse`).
+                if state.scrollbar_drag.is_some() {
+                    crate::mouse::apply_scrollbar_drag(state, pos_phys.1);
+                    return;
+                }
+                // Scrollbar hover-reveal / grab affordance: track whether the
+                // pointer is inside the right-edge band where the bar lives.
+                // In `Auto` mode this is what makes the bar appear (and widen)
+                // so it can be grabbed even from the live bottom.
+                let scrollbar_hover = state.renderer.scrollbar_geometry().is_some_and(|g| {
+                    pos_phys.0 >= g.track_x - 8.0 * scale
+                        && pos_phys.1 >= g.track_top
+                        && pos_phys.1 <= g.track_top + g.track_h
+                });
+                if state.renderer.set_scrollbar_hover(scrollbar_hover) {
+                    state.window.request_redraw();
+                }
                 // Otherwise see if we're just hovering a divider — if so,
                 // override the cursor icon BEFORE the resize-edge / URL /
                 // default branch decides, so the user gets the
@@ -6921,7 +6953,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     match resize_edge {
                         Some(dir) => cursor_icon_for_resize(dir),
                         None => {
-                            if state.modifiers.control_key() && url_under.is_some() {
+                            if scrollbar_hover {
+                                // Over the scrollbar band → the plain arrow,
+                                // like native scrollbars (the I-beam would
+                                // suggest text selection where there is none).
+                                winit::window::CursorIcon::Default
+                            } else if state.modifiers.control_key() && url_under.is_some() {
                                 winit::window::CursorIcon::Pointer
                             } else if crate::panes::pane_cell_at_pixel(state, pos_px).is_some() {
                                 // Over a pane's text grid → I-beam, the
@@ -8994,6 +9031,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                             .set_selection_opacity(cfg.appearance.selection_opacity);
                         state
                             .renderer
+                            .set_scrollbar_mode(render_scrollbar_mode(cfg.window.scrollbar));
+                        state
+                            .renderer
                             .set_unfocused_window_dim(cfg.appearance.unfocused_window_dim);
                         state.confirm_close = cfg.window.confirm_close;
                         // Turning the feature off cancels any queued request.
@@ -9887,6 +9927,16 @@ fn suggestion_bar_view(
         SuggestionState::Error(m) => Some(SuggestionBar {
             state: SuggestionBarState::Error { message: m.clone() },
         }),
+    }
+}
+
+/// Map the config-level scrollbar mode to the renderer's mirror enum (the
+/// render crate deliberately doesn't depend on `terminale-config`).
+fn render_scrollbar_mode(m: terminale_config::ScrollbarMode) -> terminale_render::ScrollbarMode {
+    match m {
+        terminale_config::ScrollbarMode::Auto => terminale_render::ScrollbarMode::Auto,
+        terminale_config::ScrollbarMode::Always => terminale_render::ScrollbarMode::Always,
+        terminale_config::ScrollbarMode::Never => terminale_render::ScrollbarMode::Never,
     }
 }
 

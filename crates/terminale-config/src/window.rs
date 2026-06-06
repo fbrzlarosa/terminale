@@ -45,6 +45,40 @@ pub type MonitorRect = (i32, i32, u32, u32);
 /// A window rectangle in physical pixels: `(x, y, width, height)`.
 pub type WindowRect = (i32, i32, u32, u32);
 
+/// When the scrollback scrollbar on the right edge is shown. The bar is
+/// interactive in every visible mode: grab the thumb to drag through
+/// history, click the track to jump there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScrollbarMode {
+    /// Visible while panning history, and revealed when the pointer hovers
+    /// the right edge — so it can be grabbed even from the live bottom.
+    #[default]
+    Auto,
+    /// Visible whenever any scrollback history exists.
+    Always,
+    /// Never drawn (and never grabbable).
+    Never,
+}
+
+impl ScrollbarMode {
+    /// All variants in display order — useful for UI / iteration.
+    #[must_use]
+    pub fn all() -> [Self; 3] {
+        [Self::Auto, Self::Always, Self::Never]
+    }
+
+    /// Human-readable label for UI rendering.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (on scroll or hover)",
+            Self::Always => "Always",
+            Self::Never => "Never",
+        }
+    }
+}
+
 /// Edge (centre, or full-screen) a window snaps to on its current monitor.
 /// Drives the standalone `Snap*` shortcut actions (independent of Quake mode).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -242,6 +276,11 @@ pub struct WindowConfig {
     /// `0` disables scrollback entirely (only the visible screen is kept).
     /// Applies live to every open tab; capped at 1_000_000 to bound memory.
     pub scrollback_lines: usize,
+    /// When the scrollback scrollbar on the right edge is shown — `auto`
+    /// (default: on scroll or right-edge hover), `always`, or `never`. The
+    /// bar is interactive whenever visible: grab the thumb to drag through
+    /// history, click the track to jump there. Applies live.
+    pub scrollbar: ScrollbarMode,
     /// Require a confirming second close action before a tab (or the last
     /// tab / window) actually closes. When `true`, the first close arms a
     /// short window (~1.5 s); a second close within it goes through, while
@@ -305,6 +344,7 @@ impl Default for WindowConfig {
             smooth_scroll: false,
             copy_on_select: false,
             scrollback_lines: 10_000,
+            scrollbar: ScrollbarMode::default(),
             confirm_close: false,
             always_on_top: false,
             startup_position: None,
@@ -351,6 +391,29 @@ impl WindowConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── ScrollbarMode ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn scrollbar_defaults_to_auto() {
+        assert_eq!(WindowConfig::default().scrollbar, ScrollbarMode::Auto);
+    }
+
+    #[test]
+    fn scrollbar_mode_roundtrip() {
+        for mode in ScrollbarMode::all() {
+            let cfg = WindowConfig {
+                scrollbar: mode,
+                ..WindowConfig::default()
+            };
+            let toml = toml::to_string(&cfg).unwrap();
+            let back: WindowConfig = toml::from_str(&toml).unwrap();
+            assert_eq!(back.scrollbar, mode);
+        }
+        // A config file written before the field existed keeps the default.
+        let legacy: WindowConfig = toml::from_str("").unwrap();
+        assert_eq!(legacy.scrollbar, ScrollbarMode::Auto);
+    }
 
     // Monitor used in all tests: origin (0, 0), 2000 × 1200 px.
     const MON: MonitorRect = (0, 0, 2000, 1200);

@@ -45,6 +45,10 @@ opacity          = 0.97        # 0.0–1.0
 padding          = 8           # inner padding, px
 scrollback_lines = 10000       # 0 disables scrollback; applied live
 copy_on_select   = false       # copy to clipboard on selection
+scrollbar        = "auto"      # interactive scrollback scrollbar: drag the
+                               # thumb, click the track to jump. auto = shown
+                               # while scrolled or on right-edge hover;
+                               # always | never
 ```
 
 ### `[cursor]`

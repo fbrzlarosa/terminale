@@ -152,6 +152,39 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                field_label(ui, "Scrollbar");
+                let current = self.config.window.scrollbar;
+                egui::ComboBox::from_id_salt("scrollbar_mode")
+                    .selected_text(current.label())
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for mode in terminale_config::ScrollbarMode::all() {
+                            if ui
+                                .selectable_value(
+                                    &mut self.config.window.scrollbar,
+                                    mode,
+                                    mode.label(),
+                                )
+                                .clicked()
+                            {
+                                dirty = true;
+                            }
+                        }
+                    });
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Terminal, "Scrollbar");
+            sublabel(
+                ui,
+                "The scrollback scrollbar on the right edge — drag the thumb to pan through \
+                 history, click the track to jump. \"Auto\" shows it while scrolled or when \
+                 hovering the right edge; \"Always\" whenever history exists. Applies live.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Copy on select");
                 let on = self.config.window.copy_on_select;
                 if toggle_switch(ui, on).clicked() {

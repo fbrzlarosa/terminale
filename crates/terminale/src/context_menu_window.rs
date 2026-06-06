@@ -163,6 +163,12 @@ pub struct ContextMenuWindow {
     /// Index of the parent row whose flyout is currently drawn inside this
     /// window. `None` = no flyout visible.
     open_submenu_idx: Option<usize>,
+    /// `true` while the open flyout is drawn on the LEFT of the base column
+    /// (right-edge flip). The OS window is moved left by the flyout width and
+    /// the base column is drawn shifted right by the same amount, so the base
+    /// stays visually anchored at the click point — only the flyout side
+    /// changes. Recomputed in [`Self::resize_for_flyout`].
+    flyout_on_left: bool,
     /// Screen position at which this window was originally opened (physical px).
     origin_screen: PhysicalPosition<i32>,
     /// Work-area dimensions of the monitor the window is on (physical px).
@@ -319,6 +325,7 @@ impl ContextMenuWindow {
             chosen: None,
             requested_close: false,
             open_submenu_idx: None,
+            flyout_on_left: false,
             origin_screen: screen_px,
             monitor_work_area,
             monitor_origin,
@@ -433,10 +440,16 @@ impl ContextMenuWindow {
         let scale = self.window.scale_factor() as f32;
         let (lw, lh) = desired_size(&self.entries, self.open_submenu_idx);
 
-        // Right-edge flip: if the flyout would overflow the monitor, move the
-        // window left so the flyout appears to the left of the base column.
-        // Bottom-edge flip: recompute the top edge from the (possibly taller)
-        // flyout height so a menu near the bottom stays fully on-screen.
+        // Right-edge flip: if the open flyout would overflow the monitor's
+        // RIGHT EDGE (absolute screen coords — `monitor_origin.x` matters on a
+        // multi-monitor layout, where a secondary screen's origin is far past
+        // the primary's width), extend the window leftward and draw the flyout
+        // on the left of the base column. The base column itself is drawn
+        // shifted right by the same amount (see `build_ui`), so it never moves
+        // on screen. Bottom-edge flip: recompute the top edge from the
+        // (possibly taller) flyout height so a menu near the bottom stays
+        // fully on-screen.
+        self.flyout_on_left = false;
         if let Some(work_area) = self.monitor_work_area {
             let work_top = self.monitor_origin.map_or(0, |o| o.y);
             let work_bottom = work_top + work_area.height as i32;
@@ -446,8 +459,11 @@ impl ContextMenuWindow {
                 work_top,
                 work_bottom,
             );
+            let work_left = self.monitor_origin.map_or(0, |o| o.x);
+            let work_right = work_left + work_area.width as i32;
             let candidate_right = self.origin_screen.x + (lw * scale) as i32;
-            let x = if candidate_right > work_area.width as i32 {
+            let x = if self.open_submenu_idx.is_some() && candidate_right > work_right {
+                self.flyout_on_left = true;
                 self.origin_screen.x - ((MENU_WIDTH - FLYOUT_OVERLAP) * scale) as i32
             } else {
                 self.origin_screen.x
@@ -553,6 +569,23 @@ impl ContextMenuWindow {
         let has_icons = self.entries.iter().any(|e| e.icon.is_some());
         let icon_gutter = if has_icons { 26.0 } else { 0.0 };
 
+        // Horizontal in-window offsets for the two columns. Normally the base
+        // sits at 0 and the flyout opens to its right; in left-flip mode
+        // (flyout would overflow the monitor's right edge) the window has been
+        // extended leftward, the base is drawn shifted right — keeping it
+        // visually anchored at the click point — and the flyout takes x = 0.
+        let flipped = self.flyout_on_left && self.open_submenu_idx.is_some();
+        let base_col_x = if flipped {
+            MENU_WIDTH - FLYOUT_OVERLAP
+        } else {
+            0.0
+        };
+        let flyout_col_x = if flipped {
+            0.0
+        } else {
+            MENU_WIDTH - FLYOUT_OVERLAP
+        };
+
         // ---- Base column ---------------------------------------------------
         // Constrained to exactly MENU_WIDTH so it never bleeds into the flyout
         // area when the window is wider.
@@ -560,7 +593,7 @@ impl ContextMenuWindow {
             .frame(egui::Frame::none())
             .show(ctx, |ui| {
                 let col_rect = egui::Rect::from_min_size(
-                    ui.min_rect().min,
+                    ui.min_rect().min + egui::vec2(base_col_x, 0.0),
                     egui::vec2(MENU_WIDTH, ui.available_height()),
                 );
                 let mut col_ui = ui.new_child(
@@ -630,7 +663,7 @@ impl ContextMenuWindow {
                 .get(parent_idx)
                 .and_then(|e| e.submenu.as_deref())
             {
-                let flyout_x = MENU_WIDTH - FLYOUT_OVERLAP;
+                let flyout_x = flyout_col_x;
                 let flyout_y = row_top_for(&self.entries, parent_idx);
                 let flyout_size = egui::vec2(MENU_WIDTH, column_height(children));
                 let flyout_pos = egui::pos2(flyout_x, flyout_y);
@@ -717,10 +750,7 @@ impl ContextMenuWindow {
                     .and_then(|e| e.submenu.as_deref())
                     .map(|children| {
                         let flyout_rect = egui::Rect::from_min_size(
-                            egui::pos2(
-                                MENU_WIDTH - FLYOUT_OVERLAP,
-                                row_top_for(&self.entries, parent_idx),
-                            ),
+                            egui::pos2(flyout_col_x, row_top_for(&self.entries, parent_idx)),
                             egui::vec2(MENU_WIDTH, column_height(children)),
                         );
                         ctx.pointer_latest_pos()

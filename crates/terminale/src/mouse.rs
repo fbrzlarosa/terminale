@@ -288,6 +288,24 @@ pub(crate) fn dispatch_mouse_actions(state: &mut RunningState, actions: &[KeyAct
 
 // ── handle_mouse ─────────────────────────────────────────────────────────────
 
+/// Apply an in-flight scrollbar-thumb drag: convert the cursor's Y position
+/// (physical px) into a scroll offset via the geometry cached by the draw
+/// pass, and pan the focused tab there. No-op when no drag is armed.
+pub(crate) fn apply_scrollbar_drag(state: &mut RunningState, cursor_y: f32) {
+    let Some(grab) = state.scrollbar_drag else {
+        return;
+    };
+    let Some(geom) = state.renderer.scrollbar_geometry() else {
+        return;
+    };
+    let scroll = terminale_render::scrollbar_scroll_for_thumb(&geom, cursor_y - grab);
+    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
+        tab.scroll_lines = scroll;
+    }
+    state.renderer.set_scroll_lines(scroll);
+    state.window.request_redraw();
+}
+
 /// Handle clicks. Left = start/extend selection. Right = open context menu.
 pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_state: ElementState) {
     use terminale_render::{CellRect, TabHit};
@@ -431,6 +449,37 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                 state.window.request_redraw();
                 return;
             }
+            // Scrollbar grab: a press on the thumb starts a drag, a press on
+            // the track jumps the thumb there (centred under the cursor) and
+            // keeps dragging. Checked before selection so a grab never starts
+            // a text selection. The geometry is cached by the draw pass; it's
+            // `Some` whenever scrollback exists (Auto-hidden included, so the
+            // widened hover band is grabbable the moment it appears).
+            if let Some(geom) = state.renderer.scrollbar_geometry() {
+                let in_band = pos_px.0 >= geom.track_x - 4.0 * scale
+                    && pos_px.1 >= geom.track_top
+                    && pos_px.1 <= geom.track_top + geom.track_h;
+                // Only react when the bar is actually visible to the user:
+                // hovering reveals it (set on CursorMoved), scrolling shows
+                // it, Always keeps it on. Without this gate an invisible bar
+                // would swallow right-edge clicks.
+                if in_band && state.renderer.scrollbar_visible() {
+                    let on_thumb =
+                        pos_px.1 >= geom.thumb_top && pos_px.1 <= geom.thumb_top + geom.thumb_h;
+                    let grab = if on_thumb {
+                        pos_px.1 - geom.thumb_top
+                    } else {
+                        // Track click: centre the thumb under the cursor.
+                        geom.thumb_h / 2.0
+                    };
+                    state.scrollbar_drag = Some(grab);
+                    state.renderer.set_scrollbar_active(true);
+                    // Apply immediately so a track click jumps right away.
+                    apply_scrollbar_drag(state, pos_px.1);
+                    return;
+                }
+            }
+
             // Ctrl+click on a hyperlinked cell → open the URI in the
             // system browser. Cleanest UX is requiring Ctrl so accidental
             // clicks on URLs in shell prompts don't navigate.
@@ -636,6 +685,13 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
             }
         }
         (MouseButton::Left, ElementState::Released) => {
+            // End an in-flight scrollbar drag. Consumes the release so it is
+            // never misread as the end of a selection (copy-on-select, etc.).
+            if state.scrollbar_drag.take().is_some() {
+                state.renderer.set_scrollbar_active(false);
+                state.window.request_redraw();
+                return;
+            }
             // Copy-on-select: finishing a mouse selection (drag, or
             // double/triple-click word/line) auto-copies it. `copy_selection`
             // no-ops when there's no selection, so plain clicks (which clear

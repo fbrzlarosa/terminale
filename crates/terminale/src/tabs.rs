@@ -807,9 +807,18 @@ pub(crate) fn restart_focused_pane(
 /// `None` when there's no (non-empty) selection.
 pub(crate) fn selection_text(state: &RunningState) -> Option<String> {
     let sel = state.renderer.selection()?;
-    let scroll = state.renderer.scroll_lines();
     let tab = state.tabs.get(state.active_tab)?;
     let emu = tab.emulator.lock();
+    // The selection rect is viewport-relative AS OF when it was made (the
+    // renderer snapshots scroll + history at set_selection time). Map it back
+    // to the same text regardless of how far the user has scrolled since or
+    // how much output has arrived: the effective scroll is the snapshot
+    // scroll plus the history growth (capped at what's actually retained).
+    let scroll = (state.renderer.selection_scroll()
+        + emu
+            .history_size()
+            .saturating_sub(state.renderer.selection_history()))
+    .min(emu.history_size());
     let text = if sel.block {
         let (a_col, a_row) = sel.anchor;
         let (c_col, c_row) = sel.cursor;
