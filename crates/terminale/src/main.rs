@@ -102,9 +102,14 @@ const TAB_ICON_PICKER_BASE: u32 = 0x3_0000;
 
 /// Action-ID base reserved for the "Add to group" entries in a tab's
 /// context menu. Entries use `GROUP_ASSIGN_BASE + group_index` (index into
-/// `RunningState::tab_groups`). Highest of the picker ranges, so the App-level
-/// handler must test it first.
+/// `RunningState::tab_groups`).
 const GROUP_ASSIGN_BASE: u32 = 0x4_0000;
+
+/// Action-ID base reserved for the "Merge into tab" entries in a tab's
+/// context menu. Entries use `MERGE_TAB_BASE + dest_tab_index`; choosing one
+/// grafts the right-clicked (= active) tab into that tab as a split. Highest
+/// of the picker ranges, so the App-level handler must test it first.
+const MERGE_TAB_BASE: u32 = 0x5_0000;
 
 /// Which surface a right-click context menu was opened over. Drives which
 /// menu is built: right-clicking a tab shows tab + group management, while
@@ -143,6 +148,19 @@ enum DropTarget {
     Reorder(usize),
     /// Attach to another window (by `WindowId`) at this insertion slot.
     AttachTo(WindowId, usize),
+    /// Cursor is over a terminal BODY — release merges the dragged tab /
+    /// pane into that window's tab as a split of `pane`, on `side`.
+    MergeInto {
+        /// Window whose body is under the cursor.
+        window: WindowId,
+        /// Tab receiving the graft (the window's active tab at hit time —
+        /// the only one whose body is visible).
+        tab_index: usize,
+        /// The pane under the cursor: the split target.
+        pane: PaneId,
+        /// Which half of that pane the dragged item will occupy.
+        side: crate::panes::DropSide,
+    },
     /// Cursor is outside every tab bar — release tears out a new window.
     Detach,
 }
@@ -1533,15 +1551,52 @@ impl TabState {
     /// (`true` = right/bottom, `false` = left/top), and focus moves to
     /// it. Returns the new pane's id.
     fn split_focused(&mut self, direction: SplitDir, new_pane: Pane, side_b: bool) -> PaneId {
+        self.split_pane_at(self.focused, direction, new_pane, side_b)
+    }
+
+    /// Like [`Self::split_focused`] but splits around an arbitrary `target`
+    /// leaf — used when a dragged pane is dropped onto a specific pane's
+    /// body rather than the focused one. Focus moves to the inserted pane.
+    fn split_pane_at(
+        &mut self,
+        target: PaneId,
+        direction: SplitDir,
+        new_pane: Pane,
+        side_b: bool,
+    ) -> PaneId {
         let new_id = self.next_pane_id;
         self.next_pane_id = self.next_pane_id.wrapping_add(1);
         self.panes.insert(new_id, new_pane);
-        let focused = self.focused;
-        // Rebuild the tree with the focused leaf swapped for a Split.
-        let owned = std::mem::replace(&mut self.tree, PaneNode::Leaf(focused));
-        self.tree = split_in(owned, focused, direction, new_id, side_b);
+        // Rebuild the tree with the target leaf swapped for a Split.
+        let owned = std::mem::replace(&mut self.tree, PaneNode::Leaf(target));
+        self.tree = split_in(owned, target, direction, new_id, side_b);
+        self.zoomed_pane = None;
         self.focused = new_id;
         new_id
+    }
+
+    /// Graft every pane of `src` into this tab as a split of `target`: the
+    /// whole `src` pane tree (splits included) lands on the `side_b` side.
+    /// `src`'s pane ids are re-allocated into this tab's id space and focus
+    /// moves to `src`'s focused pane (remapped). This is what powers
+    /// "merge tab into split" — both the drag-onto-body drop and the tab
+    /// context-menu action.
+    fn graft_tab(&mut self, src: TabState, target: PaneId, direction: SplitDir, side_b: bool) {
+        let src_focused = src.focused;
+        let mut map = std::collections::HashMap::new();
+        for (old_id, pane) in src.panes {
+            let new_id = self.next_pane_id;
+            self.next_pane_id = self.next_pane_id.wrapping_add(1);
+            map.insert(old_id, new_id);
+            self.panes.insert(new_id, pane);
+        }
+        let subtree = crate::panes::remap_leaf_ids(src.tree, &map);
+        self.zoomed_pane = None;
+        let owned = std::mem::replace(&mut self.tree, PaneNode::Leaf(target));
+        self.tree = crate::panes::graft_in(owned, target, direction, subtree, side_b);
+        if let Some(&f) = map.get(&src_focused) {
+            self.focused = f;
+        }
     }
 
     /// Close the focused pane, collapsing its parent split so the
@@ -3386,7 +3441,12 @@ impl TerminaleApp {
                 let slot = self.drop_slot_in_window(id, cursor_screen);
                 DropTarget::AttachTo(id, slot)
             }
-            None => DropTarget::Detach,
+            // Not over any tab bar: over a terminal BODY this is a
+            // merge-into-split drop (when enabled and applicable);
+            // otherwise a release tears out a new window.
+            None => self
+                .merge_target_at(&drag, cursor_screen)
+                .unwrap_or(DropTarget::Detach),
         };
 
         self.tab_drag = Some(drag);
@@ -3412,6 +3472,66 @@ impl TerminaleApp {
             let local_x = (cursor_screen.0 - pos.x) as f32;
             w.renderer.drop_slot_at(local_x)
         }
+    }
+
+    /// Resolve a merge-into-split drop target for the cursor position, or
+    /// `None` when the drop isn't a merge: feature disabled, cursor outside
+    /// every window body, group payload (groups don't merge), a whole-tab
+    /// payload over its own window (the dragged tab IS the visible body —
+    /// merging it into itself is meaningless), or a pane dropped onto
+    /// itself.
+    fn merge_target_at(&self, drag: &TabDrag, cursor_screen: (i32, i32)) -> Option<DropTarget> {
+        if !self.config.appearance.tab_drop_merge {
+            return None;
+        }
+        if matches!(drag.payload, DragPayload::Group { .. }) {
+            return None;
+        }
+        for w in &self.windows {
+            let id = w.window.id();
+            let Ok(pos) = w.window.inner_position() else {
+                continue;
+            };
+            let size = w.window.inner_size();
+            let lx = cursor_screen.0 - pos.x;
+            let ly = cursor_screen.1 - pos.y;
+            if lx < 0 || ly < 0 || lx >= size.width as i32 || ly >= size.height as i32 {
+                continue;
+            }
+            // A whole-tab drag keeps the dragged tab active in its origin
+            // window, so the origin body under the cursor is the dragged
+            // tab's OWN content — never a merge target.
+            if matches!(drag.payload, DragPayload::Tab { .. }) && id == drag.origin_window {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let local = (lx as f32, ly as f32);
+            let hit = crate::panes::active_tab_pane_rects(w)
+                .into_iter()
+                .find(|(_, r)| {
+                    local.0 >= r.0 && local.0 < r.0 + r.2 && local.1 >= r.1 && local.1 < r.1 + r.3
+                });
+            let Some((pane, rect)) = hit else {
+                return None; // inside the window but not over a pane body
+            };
+            // A pane dropped back onto itself is a no-op, not a merge.
+            if let DragPayload::Pane {
+                tab_index, pane_id, ..
+            } = drag.payload
+            {
+                if id == drag.origin_window && w.active_tab == tab_index && pane == pane_id {
+                    return None;
+                }
+            }
+            let side = crate::panes::drop_side_for(rect, local.0, local.1);
+            return Some(DropTarget::MergeInto {
+                window: id,
+                tab_index: w.active_tab,
+                pane,
+                side,
+            });
+        }
+        None
     }
 
     /// Move tab `from` to insertion `slot` within window `id`, keeping it the
@@ -3463,10 +3583,21 @@ impl TerminaleApp {
         let (indicator_win, indicator_slot): (Option<WindowId>, usize) = match drag.target {
             DropTarget::Reorder(slot) => (Some(drag.origin_window), slot),
             DropTarget::AttachTo(id, slot) => (Some(id), slot),
-            DropTarget::Detach => (None, 0),
+            // A body drop shows the half-pane drop zone, not a bar indicator.
+            DropTarget::MergeInto { .. } | DropTarget::Detach => (None, 0),
+        };
+        // Which window shows the drop-zone highlight (and which half-rect).
+        let merge_zone: Option<(WindowId, PaneId, crate::panes::DropSide)> = match drag.target {
+            DropTarget::MergeInto {
+                window, pane, side, ..
+            } => Some((window, pane, side)),
+            _ => None,
         };
         let floating_ghost_alive = self.ghost_window.is_some();
-        let detaching = matches!(drag.target, DropTarget::Detach);
+        let detaching = !matches!(
+            drag.target,
+            DropTarget::Reorder(_) | DropTarget::AttachTo(..)
+        );
         let ghost_win = indicator_win.unwrap_or(drag.origin_window);
         // Refresh the floating ghost window's renderer with the (cached)
         // label so the pill stays correct if config or theme changed
@@ -3515,6 +3646,21 @@ impl TerminaleApp {
             } else {
                 w.renderer.set_tab_drop_indicator(None);
             }
+            // Merge drop-zone highlight: tint the half of the target pane
+            // the dragged item would occupy on release.
+            let zone = match merge_zone {
+                Some((zone_win, pane, side)) if zone_win == id => {
+                    crate::panes::active_tab_pane_rects(w)
+                        .into_iter()
+                        .find(|(pid, _)| *pid == pane)
+                        .map(|(_, rect)| {
+                            let (zx, zy, zw, zh) = side.half_rect(rect);
+                            [zx, zy, zw, zh]
+                        })
+                }
+                _ => None,
+            };
+            w.renderer.set_drop_zone(zone);
             w.window.request_redraw();
         }
     }
@@ -3526,6 +3672,7 @@ impl TerminaleApp {
         for w in &mut self.windows {
             w.renderer.set_tab_drag_ghost(None);
             w.renderer.set_tab_drop_indicator(None);
+            w.renderer.set_drop_zone(None);
             w.window.request_redraw();
         }
         // Tear down the floating ghost window — it's only meaningful while
@@ -3744,6 +3891,21 @@ impl TerminaleApp {
                     DropTarget::AttachTo(target_id, slot) => {
                         self.attach_tab(drag.origin_window, tab_index, target_id, slot);
                     }
+                    DropTarget::MergeInto {
+                        window,
+                        tab_index: dst_tab,
+                        pane,
+                        side,
+                    } => {
+                        self.merge_tab_into(
+                            drag.origin_window,
+                            tab_index,
+                            window,
+                            dst_tab,
+                            pane,
+                            side,
+                        );
+                    }
                     DropTarget::Detach => {
                         if let Some(src_idx) = self.window_index(drag.origin_window) {
                             self.tear_out(event_loop, src_idx, tab_index);
@@ -3778,6 +3940,22 @@ impl TerminaleApp {
                             None,
                         );
                     }
+                    DropTarget::MergeInto {
+                        window,
+                        tab_index: dst_tab,
+                        pane: target_pane,
+                        side,
+                    } => {
+                        self.merge_pane_into(
+                            drag.origin_window,
+                            tab_index,
+                            pane_id,
+                            window,
+                            dst_tab,
+                            target_pane,
+                            side,
+                        );
+                    }
                     DropTarget::Detach => {
                         // Dropped outside every window — tear the pane out
                         // into a new OS window at the cursor position.
@@ -3792,6 +3970,9 @@ impl TerminaleApp {
                 }
             }
             DragPayload::Group { group_id } => match drag.target {
+                // Unreachable: merge_target_at never proposes a merge for a
+                // group payload. Treat defensively as a no-op.
+                DropTarget::MergeInto { .. } => {}
                 DropTarget::Reorder(slot) => {
                     self.reorder_group(drag.origin_window, group_id, slot);
                 }
@@ -3806,6 +3987,150 @@ impl TerminaleApp {
             },
         }
         self.clear_drag_visuals();
+    }
+
+    /// Merge the whole tab `src_tab_idx` of window `src_id` into tab
+    /// `dst_tab_idx` of window `dst_id` as a split: the source tab's entire
+    /// pane tree is grafted onto `side` of `target_pane`, its tab disappears
+    /// from the source bar, and focus lands on its (remapped) focused pane.
+    /// Works same-window (the context-menu path) and cross-window (the
+    /// drag-onto-body path). Closes the source window when it empties.
+    fn merge_tab_into(
+        &mut self,
+        src_id: WindowId,
+        src_tab_idx: usize,
+        dst_id: WindowId,
+        dst_tab_idx: usize,
+        target_pane: PaneId,
+        side: crate::panes::DropSide,
+    ) {
+        // Merging a tab into itself is meaningless.
+        if src_id == dst_id && src_tab_idx == dst_tab_idx {
+            return;
+        }
+        let Some(src_idx) = self.window_index(src_id) else {
+            return;
+        };
+        // Detach the whole TabState from the source window (mirrors
+        // `attach_tab`).
+        let src = &mut self.windows[src_idx];
+        if src_tab_idx >= src.tabs.len() {
+            return;
+        }
+        let len_before = src.tabs.len();
+        let tab = src.tabs.remove(src_tab_idx);
+        src.active_tab = active_tab_after_detach(src.active_tab, src_tab_idx, len_before);
+        let src_empty = src.tabs.is_empty();
+        src.renderer.set_selection(None);
+        refresh_tab_bar(src);
+        src.window.request_redraw();
+
+        // Locate the destination tab. Same-window: removing the source tab
+        // above shifted every index after it down by one.
+        let Some(dst_idx) = self.window_index(dst_id) else {
+            return;
+        };
+        let dst_tab_idx = if src_id == dst_id && src_tab_idx < dst_tab_idx {
+            dst_tab_idx - 1
+        } else {
+            dst_tab_idx
+        };
+        let dst = &mut self.windows[dst_idx];
+        let palette = dst.palette;
+        let Some(dst_tab) = dst.tabs.get_mut(dst_tab_idx) else {
+            // Destination vanished — fall back to re-attaching as a tab so
+            // the sessions are never dropped.
+            dst.tabs.push(tab);
+            dst.active_tab = dst.tabs.len() - 1;
+            refresh_tab_bar(dst);
+            dst.window.request_redraw();
+            return;
+        };
+        // Adopt the destination palette on every migrating pane (mirrors
+        // `build_single_pane_tab`); geometry is fixed by the resize below.
+        for pane in tab.panes.values() {
+            pane.emulator.lock().set_palette(palette);
+        }
+        let (direction, side_b) = side.split();
+        dst_tab.graft_tab(tab, target_pane, direction, side_b);
+        dst.active_tab = dst_tab_idx;
+        resize_active_tab_panes(dst);
+        refresh_tab_bar(dst);
+        dst.renderer.set_selection(None);
+        dst.window.focus_window();
+        dst.window.request_redraw();
+
+        // Close the source window if it has no tabs left.
+        if src_empty {
+            if let Some(i) = self.window_index(src_id) {
+                self.windows.remove(i);
+            }
+        }
+    }
+
+    /// Merge a single dragged pane into tab `dst_tab_idx` of window `dst_id`
+    /// as a split of `target_pane`. When the source tab is a lone leaf the
+    /// pane IS the tab, so the whole-tab merge runs instead (keeping labels,
+    /// colours, and the source bar consistent).
+    #[allow(clippy::too_many_arguments)]
+    fn merge_pane_into(
+        &mut self,
+        src_id: WindowId,
+        src_tab_idx: usize,
+        pane_id: PaneId,
+        dst_id: WindowId,
+        dst_tab_idx: usize,
+        target_pane: PaneId,
+        side: crate::panes::DropSide,
+    ) {
+        // Dropping a pane onto itself is a no-op.
+        if src_id == dst_id && src_tab_idx == dst_tab_idx && pane_id == target_pane {
+            return;
+        }
+        let Some(src_idx) = self.window_index(src_id) else {
+            return;
+        };
+        let src = &mut self.windows[src_idx];
+        let Some(tab) = src.tabs.get_mut(src_tab_idx) else {
+            return;
+        };
+        // A lone-leaf tab: the pane is the whole tab — merge the tab.
+        if crate::panes::count_leaves(&tab.tree) == 1 {
+            self.merge_tab_into(src_id, src_tab_idx, dst_id, dst_tab_idx, target_pane, side);
+            return;
+        }
+        let Some(pane) = detach_leaf(tab, pane_id) else {
+            return;
+        };
+        src.renderer.set_selection(None);
+        src.window.request_redraw();
+        resize_active_tab_panes(&mut self.windows[src_idx]);
+
+        let Some(dst_idx) = self.window_index(dst_id) else {
+            return;
+        };
+        let dst = &mut self.windows[dst_idx];
+        let palette = dst.palette;
+        let Some(dst_tab) = dst.tabs.get_mut(dst_tab_idx) else {
+            // Destination vanished — keep the session alive as a new tab.
+            let size = dst.window.inner_size();
+            let (cols, rows) = dst.renderer.pixels_to_cells(size.width, size.height);
+            let new_tab = build_single_pane_tab(pane, palette, cols, rows);
+            dst.tabs.push(new_tab);
+            dst.active_tab = dst.tabs.len() - 1;
+            refresh_tab_bar(dst);
+            dst.window.request_redraw();
+            return;
+        };
+        pane.emulator.lock().set_palette(palette);
+        let (direction, side_b) = side.split();
+        dst_tab.split_pane_at(target_pane, direction, pane, side_b);
+        dst.active_tab = dst_tab_idx;
+        resize_active_tab_panes(dst);
+        refresh_tab_bar(dst);
+        dst.renderer.set_selection(None);
+        dst.window.focus_window();
+        dst.window.request_redraw();
     }
 
     /// Detach pane `pane_id` from tab `src_tab_idx` of window `src_id` and
@@ -6391,10 +6716,31 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     self.context_menu = None;
                     // Dynamic pickers reserve high action-id ranges so they
                     // can route via the App (which holds the config + runtime).
-                    if action_id >= GROUP_ASSIGN_BASE {
+                    if action_id >= MERGE_TAB_BASE {
+                        // "Merge into tab" in a tab's context menu: graft the
+                        // active (right-clicked) tab into the chosen tab as a
+                        // split on the right. Highest picker range, so it must
+                        // be tested before the others.
+                        let dst_tab = (action_id - MERGE_TAB_BASE) as usize;
+                        if let Some(win_idx) = self.focused_window_index() {
+                            let win_id = self.windows[win_idx].window.id();
+                            let src_tab = self.windows[win_idx].active_tab;
+                            let target_pane =
+                                self.windows[win_idx].tabs.get(dst_tab).map(|t| t.focused);
+                            if let Some(target_pane) = target_pane {
+                                self.merge_tab_into(
+                                    win_id,
+                                    src_tab,
+                                    win_id,
+                                    dst_tab,
+                                    target_pane,
+                                    crate::panes::DropSide::Right,
+                                );
+                            }
+                        }
+                    } else if action_id >= GROUP_ASSIGN_BASE {
                         // "Add to <group>" in a tab's context menu: assign the
-                        // active tab to the group at this index. Highest picker
-                        // range, so it must be tested before the others.
+                        // active tab to the group at this index.
                         let idx = (action_id - GROUP_ASSIGN_BASE) as usize;
                         if let Some(state) = self.focused_window_mut() {
                             if let Some(gid) = state.tab_groups.get(idx).map(|g| g.id) {
@@ -11086,6 +11432,10 @@ enum MenuAction {
     /// profile, keeping the pane tree). Dispatched at App level — it needs
     /// `self.config` to resolve the pane's profile by name.
     RestartSession,
+    /// Placeholder parent for the "Merge into tab" flyout in a tab's context
+    /// menu. The children route via the dynamic [`MERGE_TAB_BASE`] range
+    /// (handled at App level); the parent itself never dispatches.
+    MergeTabInto,
 }
 
 impl MenuAction {
@@ -11135,6 +11485,7 @@ impl MenuAction {
             Self::AssignTabToGroup => 37,
             Self::ClearTabGroup => 38,
             Self::RestartSession => 39,
+            Self::MergeTabInto => 40,
         }
     }
     fn from_u32(v: u32) -> Option<Self> {
@@ -11179,6 +11530,7 @@ impl MenuAction {
             37 => Self::AssignTabToGroup,
             38 => Self::ClearTabGroup,
             39 => Self::RestartSession,
+            40 => Self::MergeTabInto,
             _ => return None,
         })
     }
@@ -11367,6 +11719,25 @@ fn build_menu_entries(state: &RunningState) -> Vec<MenuEntry> {
         v
     };
 
+    // Build the "Merge into tab" flyout: one entry per OTHER tab; choosing
+    // one grafts the right-clicked (= active) tab into it as a split pane.
+    // Entries route via the dynamic MERGE_TAB_BASE range (dest tab index).
+    let merge_submenu: Vec<MenuEntry> = state
+        .tabs
+        .iter()
+        .enumerate()
+        .filter(|(idx, _)| *idx != state.active_tab)
+        .map(|(idx, tab)| MenuEntry {
+            icon: None,
+            label: crate::panes::tab_label(tab),
+            hotkey: None,
+            enabled: true,
+            separator_before: false,
+            action_id: MERGE_TAB_BASE + idx as u32,
+            submenu: None,
+        })
+        .collect();
+
     menu_items(state)
         .into_iter()
         .map(|(m, a)| {
@@ -11379,6 +11750,10 @@ fn build_menu_entries(state: &RunningState) -> Vec<MenuEntry> {
             // Inject the group submenu into the "Group" parent.
             if matches!(a, MenuAction::AssignTabToGroup) {
                 entry.submenu = Some(group_submenu.clone());
+            }
+            // Inject the merge-into-tab submenu into its parent.
+            if matches!(a, MenuAction::MergeTabInto) && !merge_submenu.is_empty() {
+                entry.submenu = Some(merge_submenu.clone());
             }
             // Inject colour submenu into "Set tab colour…".
             if matches!(a, MenuAction::TabColorRed) && entry.label.contains("colour") {
@@ -11504,6 +11879,9 @@ fn dispatch_menu_action(state: &mut RunningState, action_id: u32) {
             crate::shortcuts::set_tab_user_color(state, Some([0xe0, 0x50, 0xa0]));
         }
         MenuAction::ClearTabIcon => crate::shortcuts::set_tab_user_icon(state, None),
+        // Submenu parent only — its children route via the dynamic
+        // MERGE_TAB_BASE range, handled at App level (needs cross-tab moves).
+        MenuAction::MergeTabInto => {}
     }
     state.window.request_redraw();
 }
@@ -11537,6 +11915,7 @@ fn menu_action_is_tab_only(a: MenuAction) -> bool {
             | MenuAction::TabColorRed   // "Set tab colour…" parent
             | MenuAction::ClearTabIcon  // "Set tab icon…" parent
             | MenuAction::AssignTabToGroup // "Group" parent
+            | MenuAction::MergeTabInto // "Merge into tab" parent
             | MenuAction::CopyCurrentPath
             | MenuAction::CloseTab
     )
@@ -11823,6 +12202,20 @@ fn menu_items_all(state: &RunningState) -> Vec<(RichMenuItem, MenuAction)> {
                 submenu: None, // populated in build_menu_entries
             },
             MenuAction::AssignTabToGroup, // action_id unused for submenu parents
+        ),
+        // Parent of the "Merge into tab" flyout: graft this (active) tab into
+        // another tab as a split pane. Children are populated dynamically in
+        // `build_menu_entries`; disabled when this is the only tab.
+        (
+            RichMenuItem {
+                label: "Merge into tab".into(),
+                icon: None,
+                hotkey: None,
+                enabled: state.tabs.len() > 1,
+                separator_before: false,
+                submenu: None, // populated in build_menu_entries
+            },
+            MenuAction::MergeTabInto, // action_id unused for submenu parents
         ),
         (
             RichMenuItem {
@@ -14290,8 +14683,12 @@ mod tests {
             MenuAction::from_u32(39),
             Some(MenuAction::RestartSession)
         ));
-        // Values above the last static variant (39 = RestartSession) must not resolve.
-        assert!(MenuAction::from_u32(40).is_none());
+        assert!(matches!(
+            MenuAction::from_u32(40),
+            Some(MenuAction::MergeTabInto)
+        ));
+        // Values above the last static variant (40 = MergeTabInto) must not resolve.
+        assert!(MenuAction::from_u32(41).is_none());
     }
 
     /// Snap action ids round-trip correctly through MenuAction.

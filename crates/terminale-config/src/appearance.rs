@@ -281,6 +281,14 @@ pub struct AppearanceConfig {
     /// Has no effect when a tab contains only one pane.
     /// Default: `true`.
     pub pane_tear_out: bool,
+    /// When `true`, dropping a dragged tab or pane onto a terminal BODY
+    /// merges it into that tab as a split pane: while hovering, a tinted
+    /// drop zone shows which half (left/right/top/bottom) of the pane under
+    /// the cursor it will occupy. Tabs merge cross-window (the dragged tab
+    /// is the visible body in its own window); panes also rearrange within
+    /// their own tab. Set `false` to keep the classic behaviour where a
+    /// body drop tears out a new window. Default: `true`.
+    pub tab_drop_merge: bool,
     /// Width of the vertical tab strip in logical pixels, used when
     /// `tab_bar_position` is `Left` or `Right`. Range: `120..=360`.
     /// Default: `180`.
@@ -374,6 +382,7 @@ impl Default for AppearanceConfig {
             background_image: BackgroundImageConfig::default(),
             close_button_style: CloseButtonStyle::default(),
             pane_tear_out: true,
+            tab_drop_merge: true,
             vertical_tab_bar_width: 180.0,
             dim_amount: 0.5,
             minimum_contrast: 1.0,
@@ -601,6 +610,21 @@ mod tests {
         assert_eq!(cfg.tab_bar_position, TabBarPosition::Top);
         assert!(cfg.tab_bar_enabled);
         assert!(!cfg.tab_bar_hide_if_single);
+    }
+
+    #[test]
+    fn tab_drop_merge_defaults_on_and_roundtrips() {
+        assert!(AppearanceConfig::default().tab_drop_merge);
+        let cfg = AppearanceConfig {
+            tab_drop_merge: false,
+            ..AppearanceConfig::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: AppearanceConfig = toml::from_str(&toml).unwrap();
+        assert!(!back.tab_drop_merge);
+        // A config file written before the field existed keeps the default.
+        let legacy: AppearanceConfig = toml::from_str("").unwrap();
+        assert!(legacy.tab_drop_merge);
     }
 
     #[test]

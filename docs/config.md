@@ -32,7 +32,11 @@ ligatures = true               # enable programming ligatures
 
 ```toml
 [appearance]
-theme = "Tokyo Night"          # name of a built-in or user theme
+theme          = "Tokyo Night" # name of a built-in or user theme
+tab_drop_merge = true          # drop a dragged tab/pane onto a terminal body
+                               # to merge it there as a split pane (a tinted
+                               # zone previews the half it will occupy).
+                               # false = body drops tear out a new window
 ```
 
 See [`theming.md`](theming.md) to add your own themes.

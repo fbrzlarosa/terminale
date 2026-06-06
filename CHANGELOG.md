@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Added
+- **Merge a tab into another tab as a split.** Two ways: **drag & drop** — drag
+  a tab (or a pane header) onto a terminal body and a tinted drop zone shows
+  which half (left/right/top/bottom) of the pane under the cursor it will
+  occupy; release to graft it there, splits and all. Tabs merge across
+  windows; panes can also be re-arranged within their own tab the same way.
+  And **right-click a tab → "Merge into tab"** to pick a destination tab
+  directly (covers the same-window case, since a dragged tab is itself the
+  visible body in its own window). Configurable via `appearance.tab_drop_merge`
+  and **Settings → Appearance → "Merge on body drop"** (default: on; off
+  restores the classic body-drop tear-out).
 - **The scrollback scrollbar is now interactive.** Grab the thumb and drag to
   pan through history, or click anywhere on the track to jump there. It widens
   on approach, and in the default `auto` mode it appears while scrolled **or
