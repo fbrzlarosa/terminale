@@ -5657,6 +5657,18 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                                 toggle_quake(w, &quake);
                             }
                         }
+                        // Each toggle_quake above called focus_window(), so
+                        // OS focus landed on whichever window the loop showed
+                        // LAST — not the one the user was actually working in
+                        // before the hide. Re-assert focus on the tracked
+                        // most-recently-focused terminal window (falls back
+                        // to the loop's natural winner when it's gone).
+                        if let Some(idx) = self
+                            .active_window_id
+                            .and_then(|id| self.window_index(id))
+                        {
+                            self.windows[idx].window.focus_window();
+                        }
                     }
                 }
             }

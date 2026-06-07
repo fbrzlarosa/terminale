@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Fixed
+- **Quake show now returns focus to the window you were last working in.**
+  With multiple Quake windows, the show loop focused each window as it
+  revealed it, so keyboard focus always landed on the last one in creation
+  order — not the one that had focus before the hide. The most recently
+  focused terminal window is now re-asserted at the end of the show.
 - **Windows could freeze permanently after a monitor powered off** (e.g.
   display sleep overnight). The default GPU backend choice landed on Vulkan,
   whose NVIDIA swapchain is known to block inside frame acquisition when the
