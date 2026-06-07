@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 pub enum GpuBackend {
-    /// Let wgpu choose the best backend for this platform (default).
+    /// Pick the best backend for this platform (default). On Windows this
+    /// prefers Direct3D 12 — DXGI recovers from display sleep / GPU resets
+    /// with errors the renderer heals from, while NVIDIA's Vulkan swapchain
+    /// can hang the app when a monitor powers off. Elsewhere wgpu's own
+    /// choice is used (Metal on macOS, Vulkan on Linux).
     #[default]
     Auto,
     /// Force the Vulkan backend (Linux / Windows / Android).

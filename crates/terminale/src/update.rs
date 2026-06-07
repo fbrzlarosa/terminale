@@ -65,14 +65,20 @@ pub enum UpdateOutcome {
     /// The new binary was verified and swapped on disk; it applies on the
     /// next launch. The running session is untouched.
     Staged(String),
-    /// The install location is not writable from this process (typically an
-    /// MSI install under `Program Files`), so the platform installer was
-    /// downloaded, verified, and launched — the user finishes the update in
-    /// its UI (Windows handles the elevation prompt).
-    InstallerLaunched(String),
-    /// Non-interactive contexts only (startup auto-update): a newer version
-    /// exists but applying it needs the platform installer, which would pop
-    /// UI/elevation prompts unprompted — so nothing was launched.
+    /// A newer version exists but this is a legacy system-wide Windows
+    /// install (non-writable, typically the pre-0.1.27 MSI under
+    /// `Program Files`). The modern MSI is per-user and REFUSES to upgrade
+    /// it, so launching it would only show a blocked installer. The fix is
+    /// the one-time migration ([`migrate_to_user_install`], surfaced as
+    /// "Switch to self-updating install" in Settings → About), which updates
+    /// AND migrates in a single step.
+    SwitchRequired(String),
+    /// A newer version exists but applying it needs an action this process
+    /// can't take silently (e.g. a macOS `.app` in a directory this user
+    /// can't write). Nothing was launched; the caller should point the user
+    /// at the manual path. Only constructed on macOS (the non-interactive
+    /// bundle-swap guard) — matched everywhere, hence the cfg'd allow.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     InstallerRequired(String),
 }
 
@@ -87,11 +93,9 @@ pub enum UpdateOutcome {
 /// * **Non-writable install** (MSI under `Program Files`): in-place
 ///   replacement is impossible without elevation, and silently rewriting a
 ///   Windows-Installer-managed tree would desync the MSI database anyway.
-///   With `interactive = true` the `.msi` for the new version is downloaded,
-///   checksum-verified, and handed to `msiexec` ([`UpdateOutcome::
-///   InstallerLaunched`]); with `interactive = false` nothing is launched and
-///   [`UpdateOutcome::InstallerRequired`] is returned so the caller can
-///   notify instead.
+///   [`UpdateOutcome::SwitchRequired`] is returned: the modern per-user MSI
+///   refuses to upgrade a legacy tree, so the only path is the one-time
+///   migration ([`migrate_to_user_install`]), which the caller surfaces.
 pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner(OWNER)
@@ -528,15 +532,17 @@ fn ditto(args: &[&OsStr]) -> Result<()> {
     Ok(())
 }
 
-/// Non-writable install: hand the update to the platform installer.
+/// Non-writable install: an in-place update is impossible from this process.
 ///
-/// Windows: download + verify the release `.msi` and launch `msiexec /i` —
-/// Windows Installer performs the upgrade (and shows the standard elevation
-/// prompt). Elsewhere a read-only install means a package manager owns the
-/// binary, so we bail with a pointer to it rather than fight the ownership.
+/// Windows: the modern release MSI is a PER-USER package that refuses to
+/// upgrade a legacy system-wide tree (launching it would only show a blocked
+/// installer dialog), so the answer is always the one-time migration —
+/// [`UpdateOutcome::SwitchRequired`] points the caller at it. Elsewhere a
+/// read-only install means a package manager owns the binary, so we bail
+/// with a pointer to it rather than fight the ownership.
 fn apply_via_installer(
     latest: &self_update::update::Release,
-    interactive: bool,
+    _interactive: bool,
 ) -> Result<UpdateOutcome> {
     if !cfg!(windows) {
         bail!(
@@ -544,55 +550,7 @@ fn apply_via_installer(
              manager that installed it (e.g. `brew upgrade terminale` or your distro's tool)"
         );
     }
-    if !interactive {
-        return Ok(UpdateOutcome::InstallerRequired(latest.version.clone()));
-    }
-
-    let target = self_update::get_target();
-    #[allow(clippy::case_sensitive_file_extension_comparisons)]
-    let asset = latest
-        .assets
-        .iter()
-        .find(|a| a.name.contains(target) && a.name.ends_with(".msi"))
-        .ok_or_else(|| anyhow!("no .msi release asset matching target {target}"))?;
-
-    // Persistent temp location — msiexec reads the file AFTER this function
-    // returns, so a self-deleting tempdir would yank it away mid-install.
-    let dir = std::env::temp_dir().join("terminale-update");
-    std::fs::create_dir_all(&dir).context("create download dir for the installer")?;
-    let msi = dir.join(&asset.name);
-    download_and_verify(&latest.version, &asset.name, &latest.assets, &msi)?;
-
-    // Hand off to Windows Installer in PASSIVE mode: no wizard, no clicks —
-    // just the standard elevation consent (unavoidable for a per-machine
-    // tree) and a progress bar. `/norestart` keeps it from scheduling a
-    // reboot; Windows' Restart Manager closes the running terminale to free
-    // its files and the upgrade completes unattended.
-    //
-    // CREATE_BREAKAWAY_FROM_JOB (0x0100_0000): terminale confines itself to a
-    // kill-on-close Job Object so its ConPTY hosts can't outlive a crash (see
-    // `process_job`). msiexec MUST escape that job — otherwise quitting
-    // terminale to let the upgrade proceed would kill the installer mid-flight.
-    // The job is created with BREAKAWAY_OK, so this succeeds.
-    //
-    // `#[cfg(windows)]`-gated because `CommandExt::creation_flags` lives in
-    // `std::os::windows` and would not compile elsewhere. The non-Windows path
-    // never reaches here — the `!cfg!(windows)` bail above returns first — but
-    // the body is still type-checked on every target, so the gate is required.
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-        std::process::Command::new("msiexec")
-            .arg("/i")
-            .arg(&msi)
-            .arg("/passive")
-            .arg("/norestart")
-            .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
-            .spawn()
-            .context("launch msiexec for the downloaded installer")?;
-    }
-    Ok(UpdateOutcome::InstallerLaunched(latest.version.clone()))
+    Ok(UpdateOutcome::SwitchRequired(latest.version.clone()))
 }
 
 /// Download release asset `name` to `dest` and verify it against its

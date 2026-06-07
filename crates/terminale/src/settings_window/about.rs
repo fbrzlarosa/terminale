@@ -102,8 +102,11 @@ impl SettingsWindow {
                         Ok(UpdateOutcome::Staged(v)) => {
                             tracing::info!(version = %v, "update staged; restart to apply");
                         }
-                        Ok(UpdateOutcome::InstallerLaunched(v)) => {
-                            tracing::info!(version = %v, "installer launched for update");
+                        Ok(UpdateOutcome::SwitchRequired(v)) => {
+                            tracing::info!(
+                                version = %v,
+                                "legacy install: update available via the one-time switch"
+                            );
                         }
                         Ok(UpdateOutcome::InstallerRequired(_)) | Ok(UpdateOutcome::UpToDate) => {
                             tracing::info!("update check finished");
