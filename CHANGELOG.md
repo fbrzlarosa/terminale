@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **The Vulkan backend could flood the log file with hundreds of megabytes a
+  day.** wgpu's Vulkan present-mode converter WARNs (`Unrecognized present
+  mode …`) on every surface reconfigure; a display-induced reconfigure loop
+  wrote 390 MB of that single repeated line in one day in the field. That
+  module is now capped to errors in both the file and console log layers
+  (an explicit user `wgpu_hal` directive still wins). Auto-backend users are
+  additionally off Vulkan entirely since 0.1.28's DX12 default.
+
 ## [0.1.28]
 
 ### Fixed
