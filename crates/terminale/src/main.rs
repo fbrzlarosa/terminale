@@ -601,7 +601,10 @@ fn main() -> Result<()> {
     let loaded = Config::load_or_init_at(cli.config.clone());
 
     // Console layer: always on, follows `--log-level` / TERMINALE_LOG.
-    let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("warn"));
+    // Same noisy-crate caps as the file layer — the Vulkan present-mode
+    // converter would otherwise spam an interactive shell at WARN too.
+    let filter = EnvFilter::try_new(quiet_noisy_crates(&cli.log_level))
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
     {
         use tracing_subscriber::layer::SubscriberExt as _;
         use tracing_subscriber::util::SubscriberInitExt as _;
@@ -864,20 +867,36 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Append `=warn` caps for known-chatty third-party crates to a user
-/// `EnvFilter` directive string, unless the user already mentions that crate
-/// explicitly (their directive must win). `wgpu_core` alone logs
-/// `Device::maintain` at INFO on every device poll — millions of lines per
-/// session — which both bloats the rolling file and buries real diagnostics.
+/// Append level caps for known-chatty third-party log targets to a user
+/// `EnvFilter` directive string, unless the user already mentions that
+/// target's crate explicitly (their directive must win). Two tiers:
+///
+/// * crate-wide `=warn` caps — `wgpu_core` alone logs `Device::maintain` at
+///   INFO on every device poll, millions of lines per session;
+/// * module-level `=error` caps for spam ABOVE warn — the Vulkan
+///   present-mode converter WARNs on every surface configure
+///   (`Unrecognized present mode …`), and a stuck reconfigure loop once
+///   wrote 390 MB of that single line in a day.
 fn quiet_noisy_crates(base: &str) -> String {
-    const NOISY: &[&str] = &["wgpu_core", "wgpu_hal", "naga"];
-    let mut out = base.trim().to_string();
-    if out.is_empty() {
-        out.push_str("info");
-    }
-    for krate in NOISY {
-        if !out.contains(krate) {
-            out.push_str(&format!(",{krate}=warn"));
+    const NOISY: &[(&str, &str)] = &[
+        ("wgpu_core", "warn"),
+        ("wgpu_hal", "warn"),
+        ("naga", "warn"),
+        ("wgpu_hal::vulkan::conv", "error"),
+    ];
+    let user = base.trim();
+    let mut out = if user.is_empty() {
+        "info".to_string()
+    } else {
+        user.to_string()
+    };
+    for (target, cap) in NOISY {
+        // Match the user's mention against the CRATE root, so an explicit
+        // `wgpu_hal=debug` (or any wgpu_hal::… directive) also disables the
+        // module-level conv cap — the user asked to see that crate.
+        let root = target.split("::").next().unwrap_or(target);
+        if !user.contains(root) {
+            out.push_str(&format!(",{target}={cap}"));
         }
     }
     out
@@ -15777,6 +15796,24 @@ mod tests {
         assert!(!d.contains("wgpu_core=warn"));
         // Crates the user did NOT mention still get capped.
         assert!(d.contains("wgpu_hal=warn"));
+    }
+
+    #[test]
+    fn quiet_noisy_crates_silences_vulkan_present_mode_spam() {
+        // The module-level cap that stops `Unrecognized present mode` WARNs
+        // (390 MB of a single repeated line in one day, in the field).
+        let d = quiet_noisy_crates("info");
+        assert!(d.contains("wgpu_hal::vulkan::conv=error"), "missing: {d}");
+        assert!(EnvFilter::try_new(&d).is_ok());
+    }
+
+    #[test]
+    fn quiet_noisy_crates_user_wgpu_hal_directive_disables_conv_cap() {
+        // A user explicitly raising wgpu_hal verbosity asked to SEE that
+        // crate — the module-level cap must not sneak back in above them.
+        let d = quiet_noisy_crates("info,wgpu_hal=debug");
+        assert!(d.contains("wgpu_hal=debug"));
+        assert!(!d.contains("wgpu_hal::vulkan::conv=error"), "cap leaked: {d}");
     }
 
     #[test]
