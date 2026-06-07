@@ -5682,9 +5682,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         // before the hide. Re-assert focus on the tracked
                         // most-recently-focused terminal window (falls back
                         // to the loop's natural winner when it's gone).
-                        if let Some(idx) = self
-                            .active_window_id
-                            .and_then(|id| self.window_index(id))
+                        if let Some(idx) =
+                            self.active_window_id.and_then(|id| self.window_index(id))
                         {
                             self.windows[idx].window.focus_window();
                         }
@@ -15813,7 +15812,10 @@ mod tests {
         // crate — the module-level cap must not sneak back in above them.
         let d = quiet_noisy_crates("info,wgpu_hal=debug");
         assert!(d.contains("wgpu_hal=debug"));
-        assert!(!d.contains("wgpu_hal::vulkan::conv=error"), "cap leaked: {d}");
+        assert!(
+            !d.contains("wgpu_hal::vulkan::conv=error"),
+            "cap leaked: {d}"
+        );
     }
 
     #[test]
