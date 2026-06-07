@@ -22,7 +22,7 @@ default-members = ["crates/terminale"]
 exclude = ["vendor/glyphon"]
 
 [workspace.package]
-version = "0.1.27"
+version = "0.1.28"
 edition = "2021"
 rust-version = "1.88"
 authors = ["terminale contributors"]

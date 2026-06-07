@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.28]
+
 ### Fixed
 - **Quake show now returns focus to the window you were last working in.**
   With multiple Quake windows, the show loop focused each window as it
@@ -744,7 +746,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...HEAD
+[0.1.28]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...v0.1.26
 [0.1.25]: https://github.com/fbrzlarosa/terminale/compare/v0.1.24...v0.1.25
