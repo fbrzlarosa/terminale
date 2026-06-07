@@ -69,9 +69,10 @@ pub enum UpdateOutcome {
     /// install (non-writable, typically the pre-0.1.27 MSI under
     /// `Program Files`). The modern MSI is per-user and REFUSES to upgrade
     /// it, so launching it would only show a blocked installer. The fix is
-    /// the one-time migration ([`migrate_to_user_install`], surfaced as
-    /// "Switch to self-updating install" in Settings → About), which updates
-    /// AND migrates in a single step.
+    /// the one-time migration — `migrate_to_user_install` (Windows-only, so
+    /// no intra-doc link: the item is absent from other targets' docs),
+    /// surfaced as "Switch to self-updating install" in Settings → About —
+    /// which updates AND migrates in a single step.
     SwitchRequired(String),
     /// A newer version exists but applying it needs an action this process
     /// can't take silently (e.g. a macOS `.app` in a directory this user
@@ -95,7 +96,7 @@ pub enum UpdateOutcome {
 ///   Windows-Installer-managed tree would desync the MSI database anyway.
 ///   [`UpdateOutcome::SwitchRequired`] is returned: the modern per-user MSI
 ///   refuses to upgrade a legacy tree, so the only path is the one-time
-///   migration ([`migrate_to_user_install`]), which the caller surfaces.
+///   migration (`migrate_to_user_install`), which the caller surfaces.
 pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
     let releases = self_update::backends::github::ReleaseList::configure()
         .repo_owner(OWNER)
