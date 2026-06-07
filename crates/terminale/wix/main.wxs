@@ -105,7 +105,11 @@
                 <FileSearch Id='LegacyPfExe' Name='terminale.exe'/>
             </DirectorySearch>
         </Property>
-        <Condition Message='A system-wide terminale installation was found under Program Files. Remove it first (Settings → Apps → terminale → Uninstall), or use "Switch to self-updating install" in terminale itself (Settings → About), then run this installer again.'>
+        <!--
+          ASCII-only message: this file is windows-1252 encoded, so any UTF-8
+          arrow / fancy punctuation renders as mojibake in the dialog.
+        -->
+        <Condition Message='An older system-wide terminale installation was found under Program Files. This version installs per-user and cannot upgrade it. Uninstall the old terminale first (Windows Settings, Apps, terminale, Uninstall) and then run this installer again - your terminale settings are kept.'>
             <![CDATA[Installed OR NOT LEGACYMACHINEINSTALL]]>
         </Condition>
 

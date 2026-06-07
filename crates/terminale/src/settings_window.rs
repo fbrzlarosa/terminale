@@ -822,18 +822,20 @@ impl SettingsWindow {
                             StatusKind::Success,
                             format!("Update {v} downloaded — restart terminale to apply."),
                         ),
-                        Ok(UpdateOutcome::InstallerLaunched(v)) => (
-                            StatusKind::Success,
+                        Ok(UpdateOutcome::SwitchRequired(v)) => (
+                            StatusKind::Error,
                             format!(
-                                "Installer for {v} launched — follow its prompts to finish \
-                                 updating (it may ask to close terminale)."
+                                "{v} is available, but this legacy system-wide install can't \
+                                 be upgraded in place — use \"Switch to self-updating \
+                                 install\" below (one-time, keeps your settings)."
                             ),
                         ),
-                        // Unreachable from the interactive button, but keep a
-                        // sensible message rather than silence if it ever is.
                         Ok(UpdateOutcome::InstallerRequired(v)) => (
                             StatusKind::Success,
-                            format!("Update {v} is available — run the installer to apply it."),
+                            format!(
+                                "Update {v} is available but this install location isn't \
+                                 writable — update it the way it was installed."
+                            ),
                         ),
                         Ok(UpdateOutcome::UpToDate) => {
                             (StatusKind::Success, "terminale is up to date.".to_owned())

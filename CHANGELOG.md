@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Windows could freeze permanently after a monitor powered off** (e.g.
+  display sleep overnight). The default GPU backend choice landed on Vulkan,
+  whose NVIDIA swapchain is known to block inside frame acquisition when the
+  display goes away — hanging the whole event loop. `gpu.backend = "auto"`
+  now prefers **Direct3D 12** on Windows: DXGI reports display sleep / GPU
+  resets as recoverable errors the renderer already heals from. Vulkan
+  remains available via `gpu.backend = "vulkan"` for those who want it.
+- **Legacy system-wide installs no longer download an installer that refuses
+  to run.** 0.1.27 made the MSI per-user, but a legacy (Program Files)
+  install checking for updates would download that new MSI and hit its
+  own "can't upgrade a system-wide install" guard — a dead end with a
+  confusing (and mojibake-garbled) dialog. The updater now skips the
+  installer entirely on legacy installs and points straight at the one-time
+  **"Switch to self-updating install"** (Settings → About), which updates
+  and migrates in a single step. The installer dialog text is now plain
+  ASCII (the `.wxs` is windows-1252 — the arrows became `â†'`) with clear
+  instructions for people running the installer by hand: uninstall the old
+  copy first, settings are kept.
+
 ## [0.1.27]
 
 ### Changed

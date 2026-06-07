@@ -1816,8 +1816,22 @@ pub(crate) fn gpu_options_from_config(
     // instance to that single backend; `Software` keeps the default backend
     // set but flips `force_fallback_adapter`, which selects a CPU adapter and
     // so disables hardware GPU acceleration.
+    //
+    // Windows: `Auto` prefers DX12 instead of wgpu's own enumeration order
+    // (which lands on Vulkan). NVIDIA's Vulkan swapchain is known to BLOCK
+    // inside acquire when a monitor powers off (display sleep overnight →
+    // permanently frozen window); DXGI surfaces the same events as
+    // recoverable errors that `acquire_frame` already heals from. Users who
+    // want Vulkan can still force `gpu.backend = "vulkan"`, and hosts with
+    // no DX12 adapter fall back to every backend inside `Renderer::new`.
     let backends = match cfg.gpu.backend {
-        GpuBackend::Auto | GpuBackend::Software => wgpu::Backends::all(),
+        GpuBackend::Auto | GpuBackend::Software => {
+            if cfg!(windows) {
+                wgpu::Backends::DX12
+            } else {
+                wgpu::Backends::all()
+            }
+        }
         GpuBackend::Vulkan => wgpu::Backends::VULKAN,
         GpuBackend::Dx12 => wgpu::Backends::DX12,
         GpuBackend::Metal => wgpu::Backends::METAL,

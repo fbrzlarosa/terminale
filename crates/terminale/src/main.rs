@@ -555,17 +555,21 @@ fn main() -> Result<()> {
             Ok(update::UpdateOutcome::Staged(v)) => {
                 println!("Updated to terminale {v}. Restart terminale to use the new version.");
             }
-            Ok(update::UpdateOutcome::InstallerLaunched(v)) => {
+            Ok(update::UpdateOutcome::SwitchRequired(v)) => {
                 println!(
-                    "Silent installer for terminale {v} launched — approve the elevation \
-                     prompt and the update completes on its own (terminale will close \
-                     briefly). Tip: switch to the self-updating per-user install from \
-                     Settings → About to never see that prompt again."
+                    "terminale {v} is available, but this is a legacy system-wide install \
+                     (Program Files) that modern releases can no longer upgrade in place. \
+                     Switch once to the self-updating per-user install: open terminale → \
+                     Settings → About → \"Switch to self-updating install\" — or uninstall \
+                     terminale from Windows Settings → Apps and reinstall with the latest \
+                     installer. Your settings are kept either way."
                 );
             }
             Ok(update::UpdateOutcome::InstallerRequired(v)) => {
-                // Not reachable with interactive=true; cover it anyway.
-                println!("terminale {v} is available — run the platform installer to apply it.");
+                println!(
+                    "terminale {v} is available but can't be applied from here (the install \
+                     location isn't writable) — update it the way it was installed."
+                );
             }
             Ok(update::UpdateOutcome::UpToDate) => println!(
                 "Already on the latest version ({}).",
@@ -675,17 +679,22 @@ fn main() -> Result<()> {
                     Ok(update::UpdateOutcome::Staged(v)) => {
                         tracing::info!(version = %v, "update staged; restart terminale to apply");
                     }
-                    Ok(update::UpdateOutcome::InstallerRequired(v)) => {
+                    Ok(update::UpdateOutcome::SwitchRequired(v)) => {
                         tracing::info!(
                             version = %v,
                             "a newer terminale is available; this legacy system-wide install \
-                             updates via Settings → About → Check for updates (silent \
-                             installer, one elevation prompt) — or switch to the \
-                             self-updating per-user install there to drop the prompt forever"
+                             can't be upgraded in place — use Settings → About → \
+                             'Switch to self-updating install' (one-time, keeps settings)"
                         );
                     }
-                    Ok(update::UpdateOutcome::InstallerLaunched(_))
-                    | Ok(update::UpdateOutcome::UpToDate) => {}
+                    Ok(update::UpdateOutcome::InstallerRequired(v)) => {
+                        tracing::info!(
+                            version = %v,
+                            "a newer terminale is available; this install location isn't \
+                             writable — update it the way it was installed"
+                        );
+                    }
+                    Ok(update::UpdateOutcome::UpToDate) => {}
                     Err(e) => tracing::warn!(?e, "background auto-update failed"),
                 }
             } else {
