@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.29]
+
 ### Fixed
 - **The app no longer crashes when resuming from standby.** winit's
   `MonitorHandle::name()` / `size()` unwrap a fallible Win32 call
@@ -764,7 +766,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...HEAD
+[0.1.29]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...v0.1.27
 [0.1.26]: https://github.com/fbrzlarosa/terminale/compare/v0.1.25...v0.1.26
