@@ -748,7 +748,11 @@ pub(crate) fn snap_window(state: &mut RunningState, edge: terminale_config::Snap
         return;
     };
     let mpos = mon.position();
-    let msize = mon.size();
+    // Panic-safe: a monitor handle can be momentarily invalid right after the
+    // OS resumes from standby (winit's inherent `size()` would unwrap-panic).
+    let Some(msize) = crate::monitor_names::monitor_size(&mon) else {
+        return;
+    };
     let size = state.window.inner_size();
     let pos = state.window.outer_position().unwrap_or_default();
     let rect = terminale_config::snap_window_rect(
@@ -1115,11 +1119,15 @@ pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
     };
     // Only write when the handle has actually changed (name-based comparison
     // because `MonitorHandle` does not implement `PartialEq`).
-    let new_name = new_mon.name();
+    // Panic-safe name reads: `quake_last_monitor` is a handle we snapshotted
+    // earlier, so after a standby/resume cycle it may be invalid — winit's
+    // inherent `name()` unwrap-panics on it (OS error 1461). See
+    // [`crate::monitor_names::monitor_name`].
+    let new_name = crate::monitor_names::monitor_name(&new_mon);
     let old_name = state
         .quake_last_monitor
         .as_ref()
-        .and_then(winit::monitor::MonitorHandle::name);
+        .and_then(crate::monitor_names::monitor_name);
     if new_name != old_name {
         state.quake_last_monitor = Some(new_mon);
     }
@@ -1153,7 +1161,9 @@ pub(crate) fn monitor_for_window(window: &Window) -> Option<winit::monitor::Moni
         .iter()
         .map(|m| {
             let p = m.position();
-            let s = m.size();
+            // Panic-safe: skip a momentarily-invalid handle gracefully (0×0
+            // never contains the window centre, so it drops out of the search).
+            let s = crate::monitor_names::monitor_size(m).unwrap_or_default();
             (p.x, p.y, s.width, s.height)
         })
         .collect();
@@ -1530,7 +1540,7 @@ pub(crate) fn compute_quake_target(
         //  4. First available monitor      (degenerate: no other info)
         QuakeDisplay::Current => {
             tracing::debug!(
-                snapshot = ?state.quake_last_monitor.as_ref().and_then(winit::monitor::MonitorHandle::name),
+                snapshot = ?state.quake_last_monitor.as_ref().and_then(crate::monitor_names::monitor_name),
                 "compute_quake_target: Current = window's own monitor"
             );
             state
@@ -1553,10 +1563,14 @@ pub(crate) fn compute_quake_target(
             // Log a warning when the two sources disagree so we can file a
             // winit issue with concrete data from user reports.
             if let (Some(ref wp), Some(ref op)) = (&winit_primary, &os_primary) {
-                if wp.name() != op.name() {
+                let (wp_name, op_name) = (
+                    crate::monitor_names::monitor_name(wp),
+                    crate::monitor_names::monitor_name(op),
+                );
+                if wp_name != op_name {
                     tracing::warn!(
-                        winit_primary = ?wp.name(),
-                        os_primary = ?op.name(),
+                        winit_primary = ?wp_name,
+                        os_primary = ?op_name,
                         "QuakeDisplay::Primary: winit and OS disagree on primary monitor; \
                          using OS value"
                     );
@@ -1583,11 +1597,14 @@ pub(crate) fn compute_quake_target(
     }?;
     tracing::debug!(
         display = ?cfg.display,
-        monitor = ?mon.name(),
+        monitor = ?crate::monitor_names::monitor_name(&mon),
         "compute_quake_target: resolved monitor"
     );
     let pos = mon.position();
-    let size = mon.size();
+    // Panic-safe: a handle that just came back from a fallback chain can be
+    // momentarily invalid after resume; bail out of this frame's reposition
+    // rather than unwrap-panicking inside winit's inherent `size()`.
+    let size = crate::monitor_names::monitor_size(&mon)?;
     let full_rect: terminale_config::MonitorRect = (pos.x, pos.y, size.width, size.height);
     // Dock against the screen's WORK AREA so the window sits flush under the
     // macOS menu bar (Top/Left/Right) and clears the Dock (Bottom). On other

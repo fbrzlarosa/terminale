@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Fixed
+- **The app no longer crashes when resuming from standby.** winit's
+  `MonitorHandle::name()` / `size()` unwrap a fallible Win32 call
+  (`GetMonitorInfoW`) internally; when the OS wakes from sleep it briefly
+  invalidates monitor handles (error 1461, *"the screen handle is not
+  valid"*), so probing a handle captured *before* standby panicked — taking
+  down the whole window with a "fatal error" dialog. Monitor name/size reads
+  now go through a panic-safe layer that degrades to a graceful fallback, and
+  the fatal-error dialog stays quiet for these recovered probes. The same path
+  guards every OS, not just Windows.
 - **The Vulkan backend could flood the log file with hundreds of megabytes a
   day.** wgpu's Vulkan present-mode converter WARNs (`Unrecognized present
   mode …`) on every surface reconfigure; a display-induced reconfigure loop

@@ -38,11 +38,68 @@
 //!
 //! * This module MUST only be used from code that already runs on the main
 //!   thread (the egui/winit event loop). On macOS the AppKit call requires it.
-//! * No panics on any OS: every code path has an explicit fallback.
+//! * No panics on any OS: every code path has an explicit fallback. In
+//!   particular, winit's inherent `MonitorHandle::name()` / `size()` unwrap a
+//!   fallible OS call and panic on a handle invalidated by a standby/resume
+//!   cycle — always read those through [`monitor_name`] / [`monitor_size`],
+//!   never the inherent methods.
 //! * No new external crates for Linux; only the `windows-sys` crate (already
 //!   in the workspace tree) is gated behind `cfg(target_os = "windows")`.
 
+use winit::dpi::PhysicalSize;
 use winit::monitor::MonitorHandle;
+
+// ── Panic-safe monitor probes ──────────────────────────────────────────────
+
+thread_local! {
+    /// Set while a monitor probe ([`monitor_name`] / [`monitor_size`]) is inside
+    /// its `catch_unwind`. The release-Windows panic hook (which pops a fatal
+    /// message box) consults [`monitor_panic_is_caught`] to stay quiet for the
+    /// panics we recover from here — a transient invalid monitor handle must not
+    /// also flash a "fatal error" dialog.
+    static MONITOR_PANIC_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the current thread is inside a monitor probe's `catch_unwind` — i.e.
+/// an in-flight panic from a winit monitor query will be caught and degraded to
+/// a `None` result.
+// Only referenced by the release-Windows panic hook; dead code elsewhere.
+#[allow(dead_code)]
+pub(crate) fn monitor_panic_is_caught() -> bool {
+    MONITOR_PANIC_GUARD.with(std::cell::Cell::get)
+}
+
+/// Run `f` under the monitor-panic guard, catching any unwind into `None`.
+fn caught<T>(f: impl FnOnce() -> T) -> Option<T> {
+    MONITOR_PANIC_GUARD.with(|g| g.set(true));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    MONITOR_PANIC_GUARD.with(|g| g.set(false));
+    r.ok()
+}
+
+/// Panic-safe [`MonitorHandle::name`].
+///
+/// winit's `MonitorHandle::name()` calls `GetMonitorInfoW(..).unwrap()`
+/// internally on Windows (`winit/src/platform_impl/windows/monitor.rs:155`).
+/// When the OS resumes from standby it invalidates monitor handles, so
+/// `GetMonitorInfoW` fails with `ERROR_INVALID_MONITOR_HANDLE` (1461, *"the
+/// screen handle is not valid"*) and the inherent `name()` **panics** — most
+/// often on a [`MonitorHandle`] we stored *before* standby. The other OS
+/// back-ends can fault the same way on display reconfiguration. We catch the
+/// unwind and return `None`; callers already treat a missing name as a soft
+/// fallback. Always route monitor-name reads through this, never the inherent
+/// `MonitorHandle::name()`.
+pub fn monitor_name(mon: &MonitorHandle) -> Option<String> {
+    caught(|| mon.name()).flatten()
+}
+
+/// Panic-safe [`MonitorHandle::size`]. winit's inherent `size()` unwraps the
+/// same fallible `GetMonitorInfoW` call (`monitor.rs:171`); see [`monitor_name`]
+/// for why that panics across a standby/resume cycle. Returns `None` on an
+/// invalid handle so callers can fall back instead of crashing.
+pub fn monitor_size(mon: &MonitorHandle) -> Option<PhysicalSize<u32>> {
+    caught(|| mon.size())
+}
 
 // ── Platform-specific implementations ──────────────────────────────────────
 
@@ -81,7 +138,7 @@ mod imp {
     /// Returns `None` when the Win32 APIs fail or return an empty name.
     pub(super) fn friendly_name(mon: &MonitorHandle) -> Option<String> {
         // winit on Windows returns the GDI device path, e.g. "\\.\DISPLAY1".
-        let gdi = mon.name()?;
+        let gdi = super::monitor_name(mon)?;
 
         // Step 1: ask DisplayConfig how large the output buffers need to be.
         let mut path_count: u32 = 0;
@@ -273,7 +330,7 @@ mod imp {
     /// winit already calls `NSScreen.localizedName` on macOS and returns it
     /// from `MonitorHandle::name()`. We just unwrap and validate it here.
     pub(super) fn friendly_name(mon: &MonitorHandle) -> Option<String> {
-        let n = mon.name()?;
+        let n = super::monitor_name(mon)?;
         let t = n.trim().to_string();
         if t.is_empty() {
             None
@@ -298,7 +355,7 @@ mod imp {
 
     /// Return the connector name exposed by winit (XRandR / `wl_output.name`).
     pub(super) fn friendly_name(mon: &MonitorHandle) -> Option<String> {
-        let n = mon.name()?;
+        let n = super::monitor_name(mon)?;
         let t = n.trim().to_string();
         if t.is_empty() {
             None
@@ -350,7 +407,7 @@ pub fn os_primary_monitor(monitors: &[MonitorHandle]) -> Option<MonitorHandle> {
     // Windows; pass-through from XRandR/wl_output on other platforms).
     monitors
         .iter()
-        .find(|m| m.name().as_deref() == Some(primary_gdi.as_str()))
+        .find(|m| monitor_name(m).as_deref() == Some(primary_gdi.as_str()))
         .cloned()
 }
 
@@ -375,7 +432,7 @@ pub fn friendly_monitor_label(mon: &MonitorHandle, zero_based_idx: usize) -> Str
             return name;
         }
     }
-    let size = mon.size();
+    let size = monitor_size(mon).unwrap_or_default();
     format!(
         "Display {} ({}x{})",
         zero_based_idx + 1,
@@ -388,7 +445,37 @@ pub fn friendly_monitor_label(mon: &MonitorHandle, zero_based_idx: usize) -> Str
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_gdi_path, os_primary_monitor};
+    use super::{caught, looks_like_gdi_path, monitor_panic_is_caught, os_primary_monitor};
+
+    /// A probe that panics (winit's inherent `name()`/`size()` do exactly this
+    /// on a monitor handle invalidated by standby/resume) must be degraded to
+    /// `None`, not propagated. This is the whole point of the panic-safe layer.
+    #[test]
+    fn caught_swallows_panic_into_none() {
+        let r: Option<u32> = caught(|| panic!("invalid display handle"));
+        assert!(r.is_none());
+    }
+
+    /// A non-panicking probe returns its value untouched.
+    #[test]
+    fn caught_passes_value_through() {
+        assert_eq!(caught(|| 42_u32), Some(42));
+    }
+
+    /// The guard the panic hook reads must be reset to `false` after a caught
+    /// panic — otherwise a *subsequent*, genuinely-fatal panic would be wrongly
+    /// suppressed. Suppress the default hook's noise for the deliberate panic.
+    #[test]
+    fn guard_is_cleared_after_caught_panic() {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let _ = caught(|| panic!("boom"));
+        std::panic::set_hook(prev);
+        assert!(
+            !monitor_panic_is_caught(),
+            "guard leaked true past the catch_unwind"
+        );
+    }
 
     #[test]
     fn gdi_path_detection() {

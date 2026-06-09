@@ -231,7 +231,11 @@ impl ContextMenuWindow {
                 .expect("failed to create context menu window"),
         );
 
-        let monitor_work_area = window.current_monitor().map(|m| m.size());
+        // Panic-safe size read: winit's inherent `MonitorHandle::size()`
+        // unwrap-panics on a handle invalidated by a standby/resume cycle.
+        let monitor_work_area = window
+            .current_monitor()
+            .and_then(|m| crate::monitor_names::monitor_size(&m));
         let monitor_origin = window.current_monitor().map(|m| m.position());
 
         // Bottom-edge flip: a menu opened near the bottom of the screen would

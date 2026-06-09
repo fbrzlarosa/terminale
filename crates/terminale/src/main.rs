@@ -426,6 +426,14 @@ fn install_panic_message_box() {
             tracing::error!(%info, "recovered parser panic (pane marked crashed)");
             return;
         }
+        // Monitor probes (`crate::monitor_names::monitor_name` / `monitor_size`)
+        // catch winit's unwrap-panic on a monitor handle invalidated by a
+        // standby/resume cycle. The catch degrades to `None`; a fatal dialog
+        // for it would be a lie.
+        if crate::monitor_names::monitor_panic_is_caught() {
+            tracing::error!(%info, "recovered monitor-probe panic (invalid display handle)");
+            return;
+        }
         show_fatal_message_box(&format!("{info}"));
     }));
 }
