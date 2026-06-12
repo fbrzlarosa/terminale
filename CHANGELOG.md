@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.30]
+
+### Fixed
+- **The right-click menu no longer flashes a black block, and stops "stretching"
+  when you move between submenus.** The popup is a borderless wgpu window; on
+  Windows its surface only offers an opaque alpha mode, so the transparent
+  corners around a short flyout composited as solid black. It was also resized
+  on every submenu open/switch/close, and each resize recreated the swapchain —
+  the compositor scaled the stale frame for one tick, which read as a stretch
+  (most visible going from a submenu parent back to a plain row). The window is
+  now a fixed size for its whole life and clipped to the L-shape actually
+  painted via a window region, so navigating a submenu only changes the clip:
+  no swapchain churn, no stretch, and the empty corners show what's behind
+  without relying on per-pixel alpha.
+
 ## [0.1.29]
 
 ### Fixed
@@ -766,7 +781,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...HEAD
+[0.1.30]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...v0.1.28
 [0.1.27]: https://github.com/fbrzlarosa/terminale/compare/v0.1.26...v0.1.27
