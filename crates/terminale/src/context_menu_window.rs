@@ -18,7 +18,7 @@ use egui_wgpu::Renderer as EguiRenderer;
 use egui_wgpu::ScreenDescriptor;
 use egui_winit::State as EguiState;
 use std::sync::Arc;
-use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
+use winit::dpi::{LogicalSize, PhysicalPosition};
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, NamedKey};
@@ -54,27 +54,36 @@ const BOTTOM_PADDING: f32 = 6.0;
 /// Horizontal overlap between the base column and the flyout column (logical px).
 const FLYOUT_OVERLAP: f32 = 4.0;
 
-/// Compute the logical-pixel size the window should have.
+/// Compute the **fixed** logical-pixel size the OS window should have for the
+/// whole life of this menu — the bounding box of the base column plus the
+/// widest/tallest flyout any parent row could open.
 ///
-/// When `open_submenu_idx` is `Some(i)` and `entries[i].submenu` is `Some`,
-/// the window grows rightward to accommodate the flyout column. Height
-/// expands when the flyout would extend below the base column.
-fn desired_size(entries: &[MenuEntry], open_submenu_idx: Option<usize>) -> (f32, f32) {
+/// The window is sized once, at open, and never resized while the user
+/// navigates: opening, switching, or closing a submenu only changes the
+/// [`ContextMenuWindow::apply_flyout_region`] clip, not the window itself. This
+/// is deliberate — every `request_inner_size` on this surface is a Windows
+/// `SetWindowPos` that recreates the swapchain, and the compositor scales the
+/// stale buffer to the new size for one frame, which reads as a visible
+/// "stretch". A constant window size removes that class of glitch entirely; the
+/// region clip makes the window *look* exactly the right shape regardless.
+///
+/// A menu with no submenu parents is simply `MENU_WIDTH` wide.
+fn window_outer_size(entries: &[MenuEntry]) -> (f32, f32) {
     let base_h = column_height(entries);
-
-    let flyout = open_submenu_idx
-        .and_then(|i| entries.get(i))
-        .and_then(|e| e.submenu.as_deref());
-
-    if let Some(children) = flyout {
-        let row_top = row_top_for(entries, open_submenu_idx.unwrap_or(0));
-        let flyout_h = column_height(children);
-        let total_h = (row_top + flyout_h).max(base_h);
-        let total_w = MENU_WIDTH * 2.0 - FLYOUT_OVERLAP;
-        (total_w, total_h)
-    } else {
-        (MENU_WIDTH, base_h)
+    let has_submenu = entries.iter().any(|e| e.submenu.is_some());
+    if !has_submenu {
+        return (MENU_WIDTH, base_h);
     }
+
+    // Tallest point any flyout could reach (its parent row's top + its height),
+    // never shorter than the base column.
+    let mut height = base_h;
+    for (i, entry) in entries.iter().enumerate() {
+        if let Some(children) = entry.submenu.as_deref() {
+            height = height.max(row_top_for(entries, i) + column_height(children));
+        }
+    }
+    (MENU_WIDTH * 2.0 - FLYOUT_OVERLAP, height)
 }
 
 /// Height of one column of `entries` including top/bottom padding.
@@ -167,15 +176,14 @@ pub struct ContextMenuWindow {
     /// (right-edge flip). The OS window is moved left by the flyout width and
     /// the base column is drawn shifted right by the same amount, so the base
     /// stays visually anchored at the click point — only the flyout side
-    /// changes. Recomputed in [`Self::resize_for_flyout`].
+    /// changes. Decided once at open and constant for the menu's lifetime.
     flyout_on_left: bool,
-    /// Screen position at which this window was originally opened (physical px).
-    origin_screen: PhysicalPosition<i32>,
-    /// Work-area dimensions of the monitor the window is on (physical px).
-    monitor_work_area: Option<PhysicalSize<u32>>,
-    /// Top-left of the monitor the window is on (physical px). Needed alongside
-    /// the size to compute the screen's bottom edge for the upward flip.
-    monitor_origin: Option<PhysicalPosition<i32>>,
+    /// `(open_submenu_idx, flyout_on_left)` of the window region last applied via
+    /// `SetWindowRgn`. The clip is refreshed only when this key changes, so a
+    /// per-frame `SetWindowRgn` (which would force a redraw and could flicker) is
+    /// avoided while the same flyout stays open. Windows-only.
+    #[cfg(windows)]
+    last_region_key: Option<(Option<usize>, bool)>,
     /// When the popup was shown. Used to ignore the spurious `Focused(false)`
     /// macOS emits immediately after a trackpad two-finger tap (the press/release
     /// hands focus straight back to the parent), which would otherwise close the
@@ -202,7 +210,7 @@ impl ContextMenuWindow {
         queue: Arc<wgpu::Queue>,
         focus_on_open: bool,
     ) -> Self {
-        let (w, h) = desired_size(&entries, None);
+        let (w, h) = window_outer_size(&entries);
 
         // Window is created hidden and rendered offscreen, then DWM-cloaked
         // and only THEN made visible: the compositor never sees a
@@ -238,18 +246,38 @@ impl ContextMenuWindow {
             .and_then(|m| crate::monitor_names::monitor_size(&m));
         let monitor_origin = window.current_monitor().map(|m| m.position());
 
-        // Bottom-edge flip: a menu opened near the bottom of the screen would
-        // extend past the screen edge, leaving its lower items unreachable.
-        // Reposition the (still hidden) window upward so the whole base column
-        // fits. resize_for_flyout() reapplies this when a submenu changes the
-        // height, so the anchor stored below stays the raw cursor point.
+        // Decide both screen-edge flips **once**, for the fixed window box —
+        // the window is never resized afterwards, so flips can't change while
+        // navigating (which would make the base column jump). The base column
+        // is always anchored at the cursor; flips only move where the *extra*
+        // width/height extends.
+        //
+        //  • Right-edge flip: if the full (base + flyout) width would overflow
+        //    the monitor's right edge, extend the window leftward and draw the
+        //    flyout on the LEFT of the base column (see `flyout_on_left`). The
+        //    window origin moves left by one column so the base, drawn shifted
+        //    right in `build_ui`, still lands at the click point.
+        //  • Bottom-edge flip: if the window would overflow the bottom, pull its
+        //    top up so it stays fully on-screen.
+        let mut flyout_on_left = false;
         if let Some(size) = monitor_work_area {
             let scale = window.scale_factor() as f32;
             let work_top = monitor_origin.map_or(0, |o| o.y);
             let work_bottom = work_top + size.height as i32;
+            let work_left = monitor_origin.map_or(0, |o| o.x);
+            let work_right = work_left + size.width as i32;
+
+            let has_submenu = entries.iter().any(|e| e.submenu.is_some());
+            let candidate_right = screen_px.x + (w * scale) as i32;
+            let x = if has_submenu && candidate_right > work_right {
+                flyout_on_left = true;
+                screen_px.x - ((MENU_WIDTH - FLYOUT_OVERLAP) * scale) as i32
+            } else {
+                screen_px.x
+            };
             let y = menu_top_y(screen_px.y, (h * scale) as i32, work_top, work_bottom);
-            if y != screen_px.y {
-                window.set_outer_position(PhysicalPosition::new(screen_px.x, y));
+            if x != screen_px.x || y != screen_px.y {
+                window.set_outer_position(PhysicalPosition::new(x, y));
             }
         }
 
@@ -329,10 +357,9 @@ impl ContextMenuWindow {
             chosen: None,
             requested_close: false,
             open_submenu_idx: None,
-            flyout_on_left: false,
-            origin_screen: screen_px,
-            monitor_work_area,
-            monitor_origin,
+            flyout_on_left,
+            #[cfg(windows)]
+            last_region_key: None,
             opened_at: std::time::Instant::now(),
         };
 
@@ -360,7 +387,7 @@ impl ContextMenuWindow {
     /// verification — sets the flyout visible on the first frame).
     pub fn force_open_submenu(&mut self, idx: usize) {
         self.open_submenu_idx = Some(idx);
-        self.resize_for_flyout();
+        self.on_submenu_changed();
     }
 
     /// The OS window id for routing events.
@@ -437,47 +464,101 @@ impl ContextMenuWindow {
         self.requested_close
     }
 
-    /// Resize the OS window to fit the currently open flyout (if any) and
-    /// reconfigure the wgpu surface to match. Also repositions the window
-    /// when a right-edge flip is needed to keep the flyout on-screen.
-    fn resize_for_flyout(&mut self) {
-        let scale = self.window.scale_factor() as f32;
-        let (lw, lh) = desired_size(&self.entries, self.open_submenu_idx);
+    /// React to a submenu opening, switching, or closing.
+    ///
+    /// The window is a fixed size for its whole lifetime (see
+    /// [`window_outer_size`]), so this no longer touches the window size or
+    /// position — doing so on every submenu change is exactly what caused the
+    /// one-frame "stretch". All that's left is to schedule a redraw so the next
+    /// frame paints the new flyout and refreshes the region clip
+    /// ([`Self::build_ui`] reapplies it to match what was painted).
+    fn on_submenu_changed(&mut self) {
+        self.window.request_redraw();
+    }
 
-        // Right-edge flip: if the open flyout would overflow the monitor's
-        // RIGHT EDGE (absolute screen coords — `monitor_origin.x` matters on a
-        // multi-monitor layout, where a secondary screen's origin is far past
-        // the primary's width), extend the window leftward and draw the flyout
-        // on the left of the base column. The base column itself is drawn
-        // shifted right by the same amount (see `build_ui`), so it never moves
-        // on screen. Bottom-edge flip: recompute the top edge from the
-        // (possibly taller) flyout height so a menu near the bottom stays
-        // fully on-screen.
-        self.flyout_on_left = false;
-        if let Some(work_area) = self.monitor_work_area {
-            let work_top = self.monitor_origin.map_or(0, |o| o.y);
-            let work_bottom = work_top + work_area.height as i32;
-            let y = menu_top_y(
-                self.origin_screen.y,
-                (lh * scale) as i32,
-                work_top,
-                work_bottom,
-            );
-            let work_left = self.monitor_origin.map_or(0, |o| o.x);
-            let work_right = work_left + work_area.width as i32;
-            let candidate_right = self.origin_screen.x + (lw * scale) as i32;
-            let x = if self.open_submenu_idx.is_some() && candidate_right > work_right {
-                self.flyout_on_left = true;
-                self.origin_screen.x - ((MENU_WIDTH - FLYOUT_OVERLAP) * scale) as i32
-            } else {
-                self.origin_screen.x
-            };
-            self.window.set_outer_position(PhysicalPosition::new(x, y));
+    /// Clip the OS window to the L-shape actually painted by [`Self::build_ui`]:
+    /// the base column plus, when open, the flyout column. The corners left
+    /// empty around a short flyout are excluded from the window region, so they
+    /// fall back to whatever is behind the window instead of the opaque clear
+    /// colour.
+    ///
+    /// Needed because this borderless, always-on-top surface only advertises
+    /// `CompositeAlphaMode::Opaque` on Windows — the transparent clear can't be
+    /// composited, so the empty L-region would otherwise show as a black block.
+    /// Region coordinates are physical pixels relative to the window's top-left,
+    /// matching `build_ui`'s logical layout scaled by `scale_factor`.
+    #[cfg(windows)]
+    fn apply_flyout_region(&self) {
+        use std::ffi::c_void;
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+        #[link(name = "gdi32")]
+        extern "system" {
+            fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> *mut c_void;
+            fn CombineRgn(
+                dst: *mut c_void,
+                src1: *mut c_void,
+                src2: *mut c_void,
+                mode: i32,
+            ) -> i32;
+            fn DeleteObject(obj: *mut c_void) -> i32;
         }
+        #[link(name = "user32")]
+        extern "system" {
+            fn SetWindowRgn(hwnd: *mut c_void, hrgn: *mut c_void, redraw: i32) -> i32;
+        }
+        const RGN_OR: i32 = 2;
 
-        // request_inner_size delivers a Resized event which updates
-        // surface_config and reconfigures the surface there.
-        let _ = self.window.request_inner_size(LogicalSize::new(lw, lh));
+        let Ok(handle) = self.window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(h) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = h.hwnd.get() as *mut c_void;
+
+        let scale = self.window.scale_factor() as f32;
+        let px = |v: f32| (v * scale).round() as i32;
+
+        // Mirror the column placement computed in `build_ui`.
+        let flipped = self.flyout_on_left;
+        let base_col_x = if flipped { MENU_WIDTH - FLYOUT_OVERLAP } else { 0.0 };
+        let flyout_col_x = if flipped { 0.0 } else { MENU_WIDTH - FLYOUT_OVERLAP };
+
+        let base_h = column_height(&self.entries);
+        // SAFETY: CreateRectRgn returns an owned region handle; ownership of the
+        // final region transfers to the window via SetWindowRgn, intermediate
+        // regions are freed with DeleteObject.
+        unsafe {
+            let region = CreateRectRgn(
+                px(base_col_x),
+                0,
+                px(base_col_x + MENU_WIDTH),
+                px(base_h),
+            );
+
+            if let Some(idx) = self.open_submenu_idx {
+                if let Some(children) = self
+                    .entries
+                    .get(idx)
+                    .and_then(|e| e.submenu.as_deref())
+                {
+                    let flyout_y = row_top_for(&self.entries, idx);
+                    let flyout_h = column_height(children);
+                    let flyout = CreateRectRgn(
+                        px(flyout_col_x),
+                        px(flyout_y),
+                        px(flyout_col_x + MENU_WIDTH),
+                        px(flyout_y + flyout_h),
+                    );
+                    CombineRgn(region, region, flyout, RGN_OR);
+                    DeleteObject(flyout);
+                }
+            }
+
+            // The window now owns `region`; do not free it here.
+            SetWindowRgn(hwnd, region, 1);
+        }
     }
 
     fn render_frame(&mut self) {
@@ -578,7 +659,7 @@ impl ContextMenuWindow {
         // (flyout would overflow the monitor's right edge) the window has been
         // extended leftward, the base is drawn shifted right — keeping it
         // visually anchored at the click point — and the flyout takes x = 0.
-        let flipped = self.flyout_on_left && self.open_submenu_idx.is_some();
+        let flipped = self.flyout_on_left;
         let base_col_x = if flipped {
             MENU_WIDTH - FLYOUT_OVERLAP
         } else {
@@ -762,7 +843,23 @@ impl ContextMenuWindow {
                     })
             })
             .unwrap_or(false);
-        let (new_idx, should_resize) = submenu_transition(
+        // Clip the window to the L-shape *of the flyout just painted*, before
+        // the transition below mutates `open_submenu_idx`. Keying on the painted
+        // state keeps the window region in lock-step with the on-screen content:
+        // otherwise the frame that switches submenu parents would show the
+        // previous flyout clipped to the next parent's shape, a one-frame
+        // "stretch". The window itself never resizes (see `window_outer_size`),
+        // so the region is the only thing that changes between submenus.
+        #[cfg(windows)]
+        {
+            let key = (self.open_submenu_idx, self.flyout_on_left);
+            if self.last_region_key != Some(key) {
+                self.apply_flyout_region();
+                self.last_region_key = Some(key);
+            }
+        }
+
+        let (new_idx, changed) = submenu_transition(
             prev_open_submenu,
             hovered_submenu,
             hovered_submenu_has_data,
@@ -770,8 +867,8 @@ impl ContextMenuWindow {
         );
         self.open_submenu_idx = new_idx;
 
-        if should_resize || new_idx != prev_open_submenu {
-            self.resize_for_flyout();
+        if changed || new_idx != prev_open_submenu {
+            self.on_submenu_changed();
         }
     }
 }
@@ -1036,11 +1133,11 @@ mod tests {
         assert!(!fire, "no submenu data means no resize");
     }
 
-    // ── desired_size ─────────────────────────────────────────────────────────
+    // ── window_outer_size ──────────────────────────────────────────────────────
 
-    /// Without a flyout the window is exactly MENU_WIDTH wide.
+    /// Without any submenu parent the window is exactly MENU_WIDTH wide.
     #[test]
-    fn desired_size_no_flyout() {
+    fn window_outer_size_no_submenu_is_menu_width() {
         let entries = vec![
             MenuEntry {
                 icon: None,
@@ -1061,16 +1158,18 @@ mod tests {
                 submenu: None,
             },
         ];
-        let (w, _h) = desired_size(&entries, None);
+        let (w, _h) = window_outer_size(&entries);
         assert!(
             (w - MENU_WIDTH).abs() < 0.1,
-            "width without flyout must equal MENU_WIDTH"
+            "a menu with no submenus must be exactly MENU_WIDTH wide"
         );
     }
 
-    /// With a flyout open the window must be wider than MENU_WIDTH.
+    /// A menu that has any submenu parent is sized to the full two-column box up
+    /// front (and stays that width for its whole life — it is never resized when
+    /// a flyout opens or closes).
     #[test]
-    fn desired_size_with_flyout_is_wider() {
+    fn window_outer_size_with_submenu_is_wider() {
         let child = MenuEntry {
             icon: None,
             label: "Child".into(),
@@ -1089,10 +1188,10 @@ mod tests {
             action_id: 0,
             submenu: Some(vec![child]),
         }];
-        let (w, _h) = desired_size(&entries, Some(0));
+        let (w, _h) = window_outer_size(&entries);
         assert!(
             w > MENU_WIDTH,
-            "window with flyout must be wider than MENU_WIDTH"
+            "a menu with a submenu parent must reserve the full two-column width"
         );
     }
 
