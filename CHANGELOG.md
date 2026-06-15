@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.33] — 2026-06-15
+
+### Changed
+- **"Show quake on all desktops" now actually works on Windows.** Previously a
+  no-op outside macOS, the option now *pins* the Quake window through the
+  Windows virtual-desktop COM API (via `winvd`): switch virtual desktop and the
+  drop-down stays on screen — no hide/show round-trip. On Windows builds whose
+  COM IIDs winvd doesn't recognise it degrades gracefully to the active desktop
+  and logs once. Linux/Wayland is still pending. (Enable in **Settings → Quake →
+  Show on all desktops**.)
+
 ## [0.1.32] — 2026-06-15
 
 ### Added
@@ -836,7 +847,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.32...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.33...HEAD
+[0.1.33]: https://github.com/fbrzlarosa/terminale/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...v0.1.30
