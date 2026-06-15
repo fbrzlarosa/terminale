@@ -176,13 +176,11 @@ pub struct QuakeConfig {
     /// `window.restore_session` is active. Default: `true`.
     pub restore_visible: bool,
     /// Keep the Quake window visible on **every virtual desktop / workspace**,
-    /// so switching desktop still finds it under the hotkey. Implemented per
-    /// OS: macOS (`NSWindowCollectionBehaviorCanJoinAllSpaces`) and X11
-    /// (`_NET_WM_DESKTOP = 0xFFFFFFFF`) are reliable; on Windows it is a
-    /// best-effort pin via the virtual-desktop COM API and may be a no-op on
-    /// some builds (it then degrades to appearing on whichever desktop the
-    /// hotkey is pressed). No effect on Wayland (no standard protocol).
-    /// Default: `false`.
+    /// so it stays on screen when you switch desktop — no hide/show needed.
+    /// macOS uses `NSWindowCollectionBehaviorCanJoinAllSpaces`; Windows pins the
+    /// window through the virtual-desktop COM API. On some Windows builds the
+    /// COM IIDs differ and pinning silently degrades to the active desktop only.
+    /// Linux/Wayland is not yet implemented (no-op). Default: `false`.
     pub show_on_all_desktops: bool,
 }
 

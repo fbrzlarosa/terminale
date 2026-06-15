@@ -254,12 +254,11 @@ pub(crate) fn set_click_through_windows(window: &Window) {
 
 /// Make `window` visible on every virtual desktop / workspace, or undo it.
 ///
-/// Used for the Quake drop-down so switching desktop still finds it under the
-/// hotkey. Reliable on macOS via `NSWindow` collection behaviour. On Windows
-/// and Linux this is a best-effort no-op for now — pinning needs the
-/// undocumented virtual-desktop COM API (Windows, IIDs vary per build) or an
-/// X11 `_NET_WM_DESKTOP` round-trip (Linux); a one-time log records the gap.
-/// The drop-down then simply appears on whichever desktop the hotkey is hit.
+/// Used for the Quake drop-down so it stays on screen across a desktop switch —
+/// no hide/show round-trip. macOS uses `NSWindow` collection behaviour; Windows
+/// pins the window through the virtual-desktop COM API (via `winvd`). Linux /
+/// Wayland is still a best-effort no-op (logged once), where the drop-down
+/// appears on whichever desktop the hotkey is pressed.
 #[cfg(target_os = "macos")]
 pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
     use objc2::msg_send;
@@ -293,7 +292,43 @@ pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "windows")]
+pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return;
+    };
+    // winvd's pin/unpin take the `windows` crate's HWND (a pointer newtype).
+    let hwnd = windows::Win32::Foundation::HWND(h.hwnd.get() as *mut core::ffi::c_void);
+    // "Pinning" a window in the Windows virtual-desktop model makes it show on
+    // every desktop — exactly the behaviour we want: switch desktop and the
+    // drop-down stays put, no hide/show. winvd handles COM init itself.
+    let result = if enable {
+        winvd::pin_window(hwnd)
+    } else {
+        winvd::unpin_window(hwnd)
+    };
+    if let Err(e) = result {
+        // Pinning can fail if the running Windows build exposes virtual-desktop
+        // COM IIDs winvd doesn't recognise. Degrade gracefully (the drop-down
+        // then lives on the desktop it was shown on) and log once.
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::warn!(
+                ?e,
+                "could not pin the Quake window across virtual desktops \
+                 (unsupported Windows build?); it will appear only on the active desktop"
+            );
+        }
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn set_window_on_all_desktops(_window: &Window, enable: bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);

@@ -103,6 +103,13 @@ windows-sys = { version = "0.59", features = [
     "Win32_System_JobObjects",
     "Win32_System_Threading",
 ] }
+# Virtual-desktop pinning so the Quake drop-down can stay visible on every
+# workspace (quake.show_on_all_desktops). winvd resolves the per-build COM
+# IIDs and handles COM init (CoIncrementMTAUsage) itself.
+winvd = { version = "0.0.49", default-features = false }
+# Needed only to build the `windows::…::HWND` value winvd's pin/unpin take.
+# Must match winvd's `windows` major (0.58) so the HWND type is identical.
+windows = { version = "0.58", features = ["Win32_Foundation"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Read the OS's real mouse-button state (NSEvent +pressedMouseButtons) so a
