@@ -247,6 +247,36 @@ impl SettingsWindow {
                 ui,
                 "Enable/level apply on the next launch; older files are pruned at startup.",
             );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                field_label(ui, "Freeze watchdog");
+                let enabled = self.config.logging.slow_frame_warn_ms != 0;
+                if toggle_switch(ui, enabled).clicked() {
+                    // Off ⇄ on; restore a sane default when re-enabling.
+                    self.config.logging.slow_frame_warn_ms = if enabled { 0 } else { 250 };
+                    self.dirty = true;
+                }
+            });
+            if self.config.logging.slow_frame_warn_ms != 0 {
+                ui.horizontal(|ui| {
+                    field_label(ui, "Warn above");
+                    let r = ui.add(
+                        egui::DragValue::new(&mut self.config.logging.slow_frame_warn_ms)
+                            .range(16..=60_000)
+                            .suffix(" ms"),
+                    );
+                    if r.changed() {
+                        self.dirty = true;
+                    }
+                });
+            }
+            self.highlight_row(ui, ui.min_rect(), Section::About, "Freeze watchdog");
+            sublabel(
+                ui,
+                "Logs a warning when a single frame stalls past this threshold — catches \
+                 transient freezes (GPU reset, blocking UI call) that recover on their own. \
+                 Applies live.",
+            );
             ui.add_space(6.0);
             if ui.button("Open logs folder").clicked() {
                 if let Some(parent) = self.config_path.parent() {

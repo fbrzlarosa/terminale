@@ -1896,6 +1896,20 @@ impl Renderer {
 
         let adapter = adapter.ok_or(RenderError::NoAdapter)?;
 
+        // Record which GPU we actually landed on. A weak/software adapter (or an
+        // unexpected fallback) is a prime suspect for intermittent freeze-and-
+        // recover stalls (GPU TDR / device-lost), so make the choice visible in
+        // the log file at startup.
+        let adapter_info = adapter.get_info();
+        tracing::info!(
+            name = %adapter_info.name,
+            backend = ?adapter_info.backend,
+            device_type = ?adapter_info.device_type,
+            driver = %adapter_info.driver,
+            driver_info = %adapter_info.driver_info,
+            "GPU adapter selected"
+        );
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &DeviceDescriptor {
                 label: Some("terminale device"),
@@ -6249,8 +6263,27 @@ impl Renderer {
     fn acquire_frame(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
         match self.surface.get_current_texture() {
             Ok(frame) => Ok(frame),
-            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
-                tracing::debug!("surface lost/outdated; reconfiguring and retrying");
+            Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
+                // `Lost` is a *real* device reset — GPU TDR, driver crash,
+                // sleep/wake, RDP attach — and is exactly the user-visible
+                // "froze for a moment, then fixed itself". Surface it at WARN so
+                // it lands in the log file at the default `info` level (with a
+                // running total to expose how often it happens). `Outdated` is
+                // the benign every-resize case; keep it at debug to avoid spam.
+                static SURFACE_LOSSES: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                if matches!(e, wgpu::SurfaceError::Lost) {
+                    let total = SURFACE_LOSSES
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                        + 1;
+                    tracing::warn!(
+                        total,
+                        "GPU surface lost (device reset / TDR / sleep-wake); \
+                         reconfigured and recovered — this is the transient freeze"
+                    );
+                } else {
+                    tracing::debug!("surface outdated; reconfiguring and retrying");
+                }
                 self.surface.configure(&self.device, &self.config);
                 Ok(self.surface.get_current_texture()?)
             }

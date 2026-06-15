@@ -101,15 +101,23 @@ See [`plugins.md`](plugins.md) for the plugin API and the permission model.
 
 ```toml
 [logging]
-file_enabled   = true          # rolling daily file in <config dir>/logs/
-file_level     = "info"        # error | warn | info | debug | trace (or a
+file_enabled       = true      # rolling daily file in <config dir>/logs/
+file_level         = "info"    # error | warn | info | debug | trace (or a
                                # tracing directive like "terminale=debug")
-retention_days = 7             # older files are pruned at startup (1–365)
+retention_days     = 7         # older files are pruned at startup (1–365)
+slow_frame_warn_ms = 250       # freeze watchdog: warn when one render stalls
+                               # longer than this (0 = off, else 16–60000)
 ```
 
 The file exists so a freeze or crash leaves evidence even when terminale is
 launched without a console. Enable/level apply on the next launch; the
 console log (when launched from a shell) independently follows `--log-level`.
+
+`slow_frame_warn_ms` is the **freeze watchdog**: when a single main-window
+render takes longer than the threshold it logs a `WARN`, so transient stalls
+(GPU reset / TDR, a blocking call on the UI thread) that recover on their own
+still leave a timestamped trace. It applies live and is also exposed in
+**Settings → About → Diagnostics**.
 
 ### `[terminal]`
 

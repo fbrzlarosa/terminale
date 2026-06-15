@@ -1435,6 +1435,13 @@ struct Pane {
     /// every time the active grid changes. Each entry is
     /// `(col_start, col_end_inclusive, row, url)`.
     autodetect_links: Vec<DetectedLink>,
+    /// Emulator generation at which `autodetect_links` was last computed.
+    /// `refresh_autodetect_links` skips re-scanning when the emulator's
+    /// current generation matches this value — avoids O(rows) filesystem
+    /// `stat()` calls (from `links::scan_paths`) on every PTY event for
+    /// panes whose grid content has not changed (e.g. the non-focused pane
+    /// in a split while the user types in the focused pane).
+    link_scan_generation: u64,
     /// Wall-clock instant of the last *non-trivial* PTY chunk received by
     /// this pane. Updated in [`drain_pty_output`] whenever a chunk with
     /// `len > 1 || contains '\n'` is applied. Used as a fallback busy
@@ -1925,6 +1932,10 @@ struct TermWindow {
     /// Cached bell mode (visual / audio / both / none) — updated live
     /// from the settings window.
     bell_mode: terminale_config::BellMode,
+    /// Freeze watchdog threshold in ms. Mirrors `logging.slow_frame_warn_ms`;
+    /// when non-zero, a main-window render taking longer than this logs a WARN
+    /// (catches transient GPU/UI stalls that recover on their own).
+    slow_frame_warn_ms: u32,
     /// Rows scrolled per wheel notch. Mirrors `window.scroll_step_lines`
     /// from config so handle_scroll can stay sync.
     scroll_step_lines: u8,
@@ -2889,6 +2900,7 @@ impl TerminaleApp {
             proxy: self.proxy.clone(),
             palette: terminale_term::AnsiPalette::default(),
             bell_mode: self.config.bell.mode,
+            slow_frame_warn_ms: self.config.logging.slow_frame_warn_ms,
             scroll_step_lines: self.config.window.scroll_step_lines,
             alt_screen_scroll_lines: self.config.window.alt_screen_scroll_lines,
             touchpad_pixels_per_row: self.config.window.touchpad_pixels_per_row,
@@ -5275,6 +5287,7 @@ impl TerminaleApp {
                 for state in &mut self.windows {
                     state.renderer.set_cursor(cursor_params_from_config(&cfg));
                     state.bell_mode = cfg.bell.mode;
+                    state.slow_frame_warn_ms = cfg.logging.slow_frame_warn_ms;
                     state.scroll_step_lines = cfg.window.scroll_step_lines;
                     state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
                     state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
@@ -9391,6 +9404,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     for state in &mut self.windows {
                         state.renderer.set_cursor(cursor_params_from_config(&cfg));
                         state.bell_mode = cfg.bell.mode;
+                        state.slow_frame_warn_ms = cfg.logging.slow_frame_warn_ms;
                         state.scroll_step_lines = cfg.window.scroll_step_lines;
                         state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
                         state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
@@ -10229,6 +10243,7 @@ fn spawn_pane(
         scroll_lines: 0,
         crashed: false,
         autodetect_links: Vec::new(),
+        link_scan_generation: u64::MAX, // force scan on first refresh
         last_output_at: None,
         last_input_at: None,
     }
@@ -10708,10 +10723,24 @@ fn render_main(state: &mut RunningState) {
             focused: s.focused,
         })
         .collect();
-    if let Err(e) = state
+    // Freeze watchdog: time the render so a transient stall (GPU TDR, a
+    // blocking call landing on the UI thread) that recovers on its own still
+    // leaves a timestamped trace in the log. Disabled when the threshold is 0.
+    let frame_started = std::time::Instant::now();
+    let render_result = state
         .renderer
-        .render_panes_with_dividers(&render_specs, &divider_strokes)
-    {
+        .render_panes_with_dividers(&render_specs, &divider_strokes);
+    if state.slow_frame_warn_ms != 0 {
+        let frame_ms = frame_started.elapsed().as_millis();
+        if frame_ms >= u128::from(state.slow_frame_warn_ms) {
+            tracing::warn!(
+                frame_ms = frame_ms as u64,
+                threshold_ms = state.slow_frame_warn_ms,
+                "slow render frame (possible freeze) — main window stalled"
+            );
+        }
+    }
+    if let Err(e) = render_result {
         tracing::warn!(?e, "render frame failed");
         // The renderer already reconfigures + retries on a lost/outdated
         // surface; if even that failed (driver mid-reset), ask for another

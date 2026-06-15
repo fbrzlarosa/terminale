@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **Freeze diagnostics.** Intermittent "freezes that fix themselves" are almost
+  always a GPU surface loss (driver reset / TDR, sleep-wake, RDP attach) that
+  the renderer silently recovers from — previously logged only at `debug`, so it
+  left no trace at the default `info` level. The recovery is now logged at
+  `WARN` with a running total, the selected GPU adapter (name / backend / type /
+  driver) is logged once at startup, and a new **freeze watchdog**
+  (`logging.slow_frame_warn_ms`, default 250 ms, `0` = off) warns whenever a
+  single main-window render stalls past the threshold. Configurable live in
+  **Settings → About → Diagnostics**.
+
 ## [0.1.30]
 
 ### Fixed

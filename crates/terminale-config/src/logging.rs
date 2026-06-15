@@ -24,6 +24,12 @@ pub struct LoggingConfig {
     /// Delete log files older than this many days at startup. Default: `7`;
     /// max `365`.
     pub retention_days: u32,
+    /// Freeze watchdog: warn in the log when a single main-window render takes
+    /// longer than this many milliseconds. Catches transient stalls (GPU TDR,
+    /// a blocking call on the UI thread) that recover on their own and so leave
+    /// no other trace. `0` disables it. Default: `250`; otherwise `16..=60000`.
+    /// Applies live (no restart needed).
+    pub slow_frame_warn_ms: u32,
 }
 
 impl Default for LoggingConfig {
@@ -32,6 +38,7 @@ impl Default for LoggingConfig {
             file_enabled: true,
             file_level: "info".to_owned(),
             retention_days: 7,
+            slow_frame_warn_ms: 250,
         }
     }
 }
@@ -54,6 +61,14 @@ impl LoggingConfig {
             return Err(ConfigError::Invalid {
                 field: "logging.retention_days",
                 message: "must be between 1 and 365",
+            });
+        }
+        if self.slow_frame_warn_ms != 0
+            && !(16..=60_000).contains(&self.slow_frame_warn_ms)
+        {
+            return Err(ConfigError::Invalid {
+                field: "logging.slow_frame_warn_ms",
+                message: "must be 0 (disabled) or between 16 and 60000",
             });
         }
         Ok(())
@@ -88,6 +103,21 @@ mod tests {
     }
 
     #[test]
+    fn slow_frame_warn_ms_zero_or_in_range() {
+        let mut c = LoggingConfig::default();
+        c.slow_frame_warn_ms = 0; // disabled
+        assert!(c.validate().is_ok(), "0 must be allowed (disabled)");
+        c.slow_frame_warn_ms = 16;
+        assert!(c.validate().is_ok(), "lower bound must be allowed");
+        c.slow_frame_warn_ms = 60_000;
+        assert!(c.validate().is_ok(), "upper bound must be allowed");
+        c.slow_frame_warn_ms = 5;
+        assert!(c.validate().is_err(), "below 16 (and non-zero) must be rejected");
+        c.slow_frame_warn_ms = 60_001;
+        assert!(c.validate().is_err(), "above 60000 must be rejected");
+    }
+
+    #[test]
     fn roundtrip_toml() {
         #[derive(Serialize, Deserialize)]
         struct Wrap {
@@ -98,6 +128,7 @@ mod tests {
                 file_enabled: false,
                 file_level: "terminale=trace".into(),
                 retention_days: 30,
+                slow_frame_warn_ms: 0,
             },
         };
         let s = toml::to_string(&w).expect("serialize");

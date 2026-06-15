@@ -745,9 +745,26 @@ pub(crate) fn refresh_autodetect_links(state: &mut RunningState) {
             pane.autodetect_links.clear();
             continue;
         }
+        // Skip re-scanning when the emulator's content generation has not
+        // changed since the last scan. `scan_pane_links` calls
+        // `links::scan_paths` which issues one `Path::exists()` filesystem
+        // syscall per path-like token per visible row. On Windows these
+        // translate to `GetFileAttributesW` calls that can block for tens-to-
+        // hundreds of milliseconds (cold cache, AV, network paths). Running
+        // them for ALL panes on EVERY PTY event — even panes whose grid has
+        // not changed — is the dominant cause of the typing freeze in split
+        // view: the non-focused pane's generation is unchanged while the user
+        // types, so the scan is pure wasted work. Skipping on a generation
+        // match is sound: the links are identical to what a re-scan would
+        // produce because the grid content is byte-for-byte identical.
         let emu = pane.emulator.lock();
+        let current_gen = emu.generation();
+        if current_gen == pane.link_scan_generation {
+            continue; // content unchanged — cached links are still valid
+        }
         let detected = scan_pane_links(&emu, cols, rows);
         drop(emu);
+        pane.link_scan_generation = current_gen;
         pane.autodetect_links = detected;
     }
     // Underline behaviour is controlled by `terminal.link_underline`:
