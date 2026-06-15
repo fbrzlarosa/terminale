@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.32] — 2026-06-15
+
+### Added
+- **Shift+Enter now works in Claude Code (and other modern TUIs) out of the
+  box** — no `/terminal-setup` needed. terminale implements the **kitty keyboard
+  protocol** (the `CSI u` progressive enhancement): programs that opt in receive
+  unambiguous key events, most importantly `Shift+Enter` (`CSI 13;2u`) for
+  multi-line input, plus disambiguated Ctrl/Alt combos, key press/repeat/release
+  events, and associated text. The terminal also self-identifies via
+  `TERM_PROGRAM`/`TERM_PROGRAM_VERSION` like iTerm2/kitty/WezTerm. Toggle in
+  **Settings → Terminal → Kitty keyboard protocol** (default on).
+- **The app reopens exactly as you left it.** With session restore enabled, the
+  last session now also restores the window's position and size, the monitor it
+  was on (matched by the display's friendly name, so it survives reboots and
+  rearranged monitors), and — if you closed it while the Quake drop-down was
+  showing — reopens in Quake mode on that same monitor. Toggle in
+  **Settings → Workspaces → Restore window geometry** and
+  **Settings → Quake → Reopen in Quake mode** (both default on).
+- **Keep the Quake drop-down on every virtual desktop.** New
+  **Settings → Quake → Show on all desktops** (default off): switching virtual
+  desktop / workspace still finds the Quake window under its hotkey. Reliable on
+  macOS; best-effort on Windows/Linux (it otherwise appears on whichever desktop
+  the hotkey is pressed).
+
+### Fixed
+- **Closing the window with the X button / Alt+F4 no longer loses your session.**
+  Only closing the last tab used to save the last session; the OS close button
+  (and the close-confirmation dialog) skipped saving entirely. Both paths now
+  persist the session when session restore is enabled.
+
 ## [0.1.31] — 2026-06-15
 
 ### Fixed
@@ -806,7 +836,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.32...HEAD
+[0.1.32]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...v0.1.29
