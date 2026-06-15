@@ -273,6 +273,12 @@ impl Session {
         // Set terminfo-friendly env so apps know our capabilities.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // Self-identify like every modern terminal (iTerm2, kitty, WezTerm, …).
+        // Programs read `TERM_PROGRAM` to enable terminal-specific features;
+        // Claude Code, for one, keys its multi-line `Shift+Enter` setup off a
+        // recognised terminal here rather than the generic `xterm-256color`.
+        cmd.env("TERM_PROGRAM", "terminale");
+        cmd.env("TERM_PROGRAM_VERSION", env!("CARGO_PKG_VERSION"));
 
         let child = slave
             .spawn_command(cmd)

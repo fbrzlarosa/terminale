@@ -686,6 +686,35 @@ impl SettingsWindow {
 
         ui.add_space(6.0);
 
+        // ── Kitty keyboard protocol ───────────────────────────────────────────
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                let on = self.config.terminal.kitty_keyboard;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.terminal.kitty_keyboard = !on;
+                    dirty = true;
+                }
+                ui.label("Kitty keyboard protocol");
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Kitty keyboard protocol",
+            );
+            sublabel(
+                ui,
+                "On (default): programs that opt in (Claude Code, neovim, fish, \
+                 helix, …) receive unambiguous key events via the CSI-u progressive \
+                 enhancement — most notably Shift+Enter for multi-line input, plus \
+                 disambiguated Ctrl/Alt combos and key-release events. \
+                 Off: always use the legacy xterm encoding, even when an application \
+                 requests the protocol. Applies to newly-typed keys immediately.",
+            );
+        });
+
+        ui.add_space(6.0);
+
         // ── Inline image protocols ────────────────────────────────────────────
         card(ui, |ui| {
             field_label(ui, "Inline image protocols");

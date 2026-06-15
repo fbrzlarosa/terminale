@@ -459,6 +459,19 @@ pub struct TerminalConfig {
     /// `always_csi`: always send CSI regardless of DECCKM — compatibility
     /// escape-hatch for shells or remote sessions that set DECCKM by accident.
     pub keyboard_encoding: KeyboardEncoding,
+    /// When `true` (default), terminale advertises and honours the **kitty
+    /// keyboard protocol** (the `CSI … u` progressive enhancement). Programs
+    /// that opt in — Claude Code, neovim, fish, helix, … — can then receive
+    /// unambiguous key events, most notably **Shift+Enter** (`CSI 13;2u`) for
+    /// multi-line input, plus disambiguated Ctrl/Alt combos, key release
+    /// events, and associated text.
+    ///
+    /// The receive side (parsing the protocol's push/pop/query sequences and
+    /// the per-screen flag stack) is always active in the emulator; this knob
+    /// gates the **send** side — when `false`, keystrokes always use the legacy
+    /// xterm encoding even if an application requested the protocol. Leave it
+    /// on unless a program misbehaves with the modern encoding.
+    pub kitty_keyboard: bool,
     /// Scope for broadcast-input mode (toggled by `toggle_broadcast_input`).
     ///
     /// When broadcast mode is active, each keystroke typed in the focused pane
@@ -597,6 +610,7 @@ impl Default for TerminalConfig {
             exit_behavior: ExitBehavior::default(),
             image_protocols: ImageProtocolsConfig::default(),
             keyboard_encoding: KeyboardEncoding::default(),
+            kitty_keyboard: true,
             broadcast_scope: BroadcastScope::default(),
             link_hover_tooltip: true,
             link_hover_delay_ms: 0,
@@ -696,6 +710,27 @@ mod tests {
         // A config file written before the field existed keeps the default.
         let legacy: TerminalConfig = toml::from_str("").unwrap();
         assert!(legacy.ctrl_c_copies_selection);
+    }
+
+    // ── kitty_keyboard ────────────────────────────────────────────────────────
+
+    #[test]
+    fn kitty_keyboard_defaults_on() {
+        assert!(TerminalConfig::default().kitty_keyboard);
+    }
+
+    #[test]
+    fn kitty_keyboard_roundtrip() {
+        let cfg = TerminalConfig {
+            kitty_keyboard: false,
+            ..TerminalConfig::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: TerminalConfig = toml::from_str(&toml).unwrap();
+        assert!(!back.kitty_keyboard);
+        // A config file written before the field existed keeps the default.
+        let legacy: TerminalConfig = toml::from_str("").unwrap();
+        assert!(legacy.kitty_keyboard);
     }
 
     // ── ExitBehavior tests ────────────────────────────────────────────────────
