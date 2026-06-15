@@ -2475,6 +2475,10 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::About,
+            label: "Freeze watchdog",
+        },
+        SearchEntry {
+            section: Section::About,
             label: "Config file",
         },
         // section_quick_select

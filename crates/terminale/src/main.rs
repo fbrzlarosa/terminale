@@ -1925,6 +1925,10 @@ struct TermWindow {
     /// Cached bell mode (visual / audio / both / none) — updated live
     /// from the settings window.
     bell_mode: terminale_config::BellMode,
+    /// Freeze watchdog threshold in ms. Mirrors `logging.slow_frame_warn_ms`;
+    /// when non-zero, a main-window render taking longer than this logs a WARN
+    /// (catches transient GPU/UI stalls that recover on their own).
+    slow_frame_warn_ms: u32,
     /// Rows scrolled per wheel notch. Mirrors `window.scroll_step_lines`
     /// from config so handle_scroll can stay sync.
     scroll_step_lines: u8,
@@ -2889,6 +2893,7 @@ impl TerminaleApp {
             proxy: self.proxy.clone(),
             palette: terminale_term::AnsiPalette::default(),
             bell_mode: self.config.bell.mode,
+            slow_frame_warn_ms: self.config.logging.slow_frame_warn_ms,
             scroll_step_lines: self.config.window.scroll_step_lines,
             alt_screen_scroll_lines: self.config.window.alt_screen_scroll_lines,
             touchpad_pixels_per_row: self.config.window.touchpad_pixels_per_row,
@@ -5275,6 +5280,7 @@ impl TerminaleApp {
                 for state in &mut self.windows {
                     state.renderer.set_cursor(cursor_params_from_config(&cfg));
                     state.bell_mode = cfg.bell.mode;
+                    state.slow_frame_warn_ms = cfg.logging.slow_frame_warn_ms;
                     state.scroll_step_lines = cfg.window.scroll_step_lines;
                     state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
                     state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
@@ -9391,6 +9397,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     for state in &mut self.windows {
                         state.renderer.set_cursor(cursor_params_from_config(&cfg));
                         state.bell_mode = cfg.bell.mode;
+                        state.slow_frame_warn_ms = cfg.logging.slow_frame_warn_ms;
                         state.scroll_step_lines = cfg.window.scroll_step_lines;
                         state.alt_screen_scroll_lines = cfg.window.alt_screen_scroll_lines;
                         state.touchpad_pixels_per_row = cfg.window.touchpad_pixels_per_row;
@@ -10708,10 +10715,24 @@ fn render_main(state: &mut RunningState) {
             focused: s.focused,
         })
         .collect();
-    if let Err(e) = state
+    // Freeze watchdog: time the render so a transient stall (GPU TDR, a
+    // blocking call landing on the UI thread) that recovers on its own still
+    // leaves a timestamped trace in the log. Disabled when the threshold is 0.
+    let frame_started = std::time::Instant::now();
+    let render_result = state
         .renderer
-        .render_panes_with_dividers(&render_specs, &divider_strokes)
-    {
+        .render_panes_with_dividers(&render_specs, &divider_strokes);
+    if state.slow_frame_warn_ms != 0 {
+        let frame_ms = frame_started.elapsed().as_millis();
+        if frame_ms >= u128::from(state.slow_frame_warn_ms) {
+            tracing::warn!(
+                frame_ms = frame_ms as u64,
+                threshold_ms = state.slow_frame_warn_ms,
+                "slow render frame (possible freeze) — main window stalled"
+            );
+        }
+    }
+    if let Err(e) = render_result {
         tracing::warn!(?e, "render frame failed");
         // The renderer already reconfigures + retries on a lost/outdated
         // surface; if even that failed (driver mid-reset), ask for another
