@@ -239,6 +239,10 @@ fn default_restore_working_dirs() -> bool {
     true
 }
 
+fn default_restore_window_geometry() -> bool {
+    true
+}
+
 /// Convenience: zen mode enters full-screen by default.
 fn default_zen_fullscreen() -> bool {
     true
@@ -331,6 +335,14 @@ pub struct WindowConfig {
     /// in the profile's default directory. Default `true`.
     #[serde(default = "default_restore_working_dirs")]
     pub restore_working_dirs: bool,
+    /// When `restore_session` is active, also restore the window's geometry
+    /// (position + size), the monitor it was on, and — if it was closed as a
+    /// Quake drop-down — reopen it in Quake mode on that same monitor. The
+    /// monitor is matched by its OS friendly name, so it survives reboots and
+    /// origin shifts. If `false`, only the tab/pane layout is restored and the
+    /// window opens at its default geometry. Default `true`.
+    #[serde(default = "default_restore_window_geometry")]
+    pub restore_window_geometry: bool,
 }
 
 impl Default for WindowConfig {
@@ -354,6 +366,7 @@ impl Default for WindowConfig {
             new_window_profile: None,
             restore_session: RestoreSession::Off,
             restore_working_dirs: true,
+            restore_window_geometry: true,
         }
     }
 }
@@ -529,6 +542,22 @@ mod tests {
     #[test]
     fn window_config_default_padding_is_8() {
         assert_eq!(WindowConfig::default().padding, 8);
+    }
+
+    #[test]
+    fn restore_window_geometry_defaults_on() {
+        assert!(WindowConfig::default().restore_window_geometry);
+    }
+
+    #[test]
+    fn restore_window_geometry_roundtrip() {
+        let cfg = WindowConfig {
+            restore_window_geometry: false,
+            ..WindowConfig::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: WindowConfig = toml::from_str(&toml).unwrap();
+        assert!(!back.restore_window_geometry);
     }
 
     /// padding = 0 is the minimum and must be accepted.

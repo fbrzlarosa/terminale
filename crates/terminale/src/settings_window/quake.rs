@@ -235,6 +235,49 @@ impl SettingsWindow {
             ui.add_space(6.0);
         }
 
+        // ── Reopen in Quake on restart (general; not edge-specific) ──
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Reopen in Quake mode");
+                let on = self.config.quake.restore_visible;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.quake.restore_visible = !on;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Quake, "Reopen in Quake mode");
+            sublabel(
+                ui,
+                "If the app is closed while the Quake drop-down is showing, reopen in \
+                 Quake mode on the same monitor at next launch. Requires session restore \
+                 (Workspaces → Restore last session).",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        // ── Show on all virtual desktops ──
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Show on all desktops");
+                let on = self.config.quake.show_on_all_desktops;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.quake.show_on_all_desktops = !on;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Quake, "Show on all desktops");
+            sublabel(
+                ui,
+                "Keep the Quake window on every virtual desktop / workspace, so the hotkey \
+                 still finds it after switching desktop. Reliable on macOS; on Windows and \
+                 Linux it is best-effort (the window otherwise appears on whichever desktop \
+                 the hotkey is pressed).",
+            );
+        });
+
+        ui.add_space(6.0);
+
         // ── Animation ──
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {

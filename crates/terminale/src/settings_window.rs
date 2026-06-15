@@ -1957,6 +1957,14 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Quake,
+            label: "Reopen in Quake mode",
+        },
+        SearchEntry {
+            section: Section::Quake,
+            label: "Show on all desktops",
+        },
+        SearchEntry {
+            section: Section::Quake,
             label: "Animation",
         },
         SearchEntry {
@@ -2570,6 +2578,10 @@ fn search_index() -> &'static [SearchEntry] {
         SearchEntry {
             section: Section::Workspaces,
             label: "Restore working dirs",
+        },
+        SearchEntry {
+            section: Section::Workspaces,
+            label: "Restore window geometry",
         },
         SearchEntry {
             section: Section::Workspaces,

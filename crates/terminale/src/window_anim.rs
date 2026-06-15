@@ -250,6 +250,61 @@ pub(crate) fn set_click_through_windows(window: &Window) {
     }
 }
 
+// ── Show on all virtual desktops ─────────────────────────────────────────────
+
+/// Make `window` visible on every virtual desktop / workspace, or undo it.
+///
+/// Used for the Quake drop-down so switching desktop still finds it under the
+/// hotkey. Reliable on macOS via `NSWindow` collection behaviour. On Windows
+/// and Linux this is a best-effort no-op for now — pinning needs the
+/// undocumented virtual-desktop COM API (Windows, IIDs vary per build) or an
+/// X11 `_NET_WM_DESKTOP` round-trip (Linux); a one-time log records the gap.
+/// The drop-down then simply appears on whichever desktop the hotkey is hit.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let Ok(handle) = window.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return;
+    };
+    let ns_view = h.ns_view.as_ptr().cast::<AnyObject>();
+    // SAFETY: `ns_view` is a live NSView owned by winit; `-window`,
+    // `-collectionBehavior`, and `-setCollectionBehavior:` are standard AppKit
+    // selectors safe to send from the main thread (where winit runs us).
+    unsafe {
+        let ns_window: *mut AnyObject = msg_send![ns_view, window];
+        if ns_window.is_null() {
+            return;
+        }
+        // NSWindowCollectionBehaviorCanJoinAllSpaces.
+        const CAN_JOIN_ALL_SPACES: u64 = 1 << 0;
+        let current: u64 = msg_send![ns_window, collectionBehavior];
+        let next = if enable {
+            current | CAN_JOIN_ALL_SPACES
+        } else {
+            current & !CAN_JOIN_ALL_SPACES
+        };
+        let _: () = msg_send![ns_window, setCollectionBehavior: next];
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn set_window_on_all_desktops(_window: &Window, enable: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    if enable && !WARNED.swap(true, Ordering::Relaxed) {
+        tracing::info!(
+            "quake.show_on_all_desktops is enabled but not yet implemented on this platform; \
+             the Quake window will appear on whichever virtual desktop the hotkey is pressed"
+        );
+    }
+}
+
 // ── ghost_window_position ────────────────────────────────────────────────────
 
 /// Screen-space (physical px) top-left position the floating ghost window
@@ -1360,6 +1415,10 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     //   edge == Off  → restore exact saved geometry (legacy behaviour);
     //   edge != Off  → compute from the selected monitor + size + margin.
     state.quake_visible = true;
+    // Keep the drop-down on every virtual desktop when configured, so the
+    // hotkey still finds it after switching desktop. Re-asserted on each show
+    // so a live config change takes effect on the next toggle.
+    set_window_on_all_desktops(&state.window, quake_cfg.show_on_all_desktops);
     // Swallow keypresses for a short window after the show: when shown via the
     // global hotkey, the still-held trigger key (e.g. the "1" in Ctrl+Shift+1)
     // would otherwise leak into the shell once the window gains focus.
