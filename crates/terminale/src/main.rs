@@ -1435,6 +1435,13 @@ struct Pane {
     /// every time the active grid changes. Each entry is
     /// `(col_start, col_end_inclusive, row, url)`.
     autodetect_links: Vec<DetectedLink>,
+    /// Emulator generation at which `autodetect_links` was last computed.
+    /// `refresh_autodetect_links` skips re-scanning when the emulator's
+    /// current generation matches this value — avoids O(rows) filesystem
+    /// `stat()` calls (from `links::scan_paths`) on every PTY event for
+    /// panes whose grid content has not changed (e.g. the non-focused pane
+    /// in a split while the user types in the focused pane).
+    link_scan_generation: u64,
     /// Wall-clock instant of the last *non-trivial* PTY chunk received by
     /// this pane. Updated in [`drain_pty_output`] whenever a chunk with
     /// `len > 1 || contains '\n'` is applied. Used as a fallback busy
@@ -10236,6 +10243,7 @@ fn spawn_pane(
         scroll_lines: 0,
         crashed: false,
         autodetect_links: Vec::new(),
+        link_scan_generation: u64::MAX, // force scan on first refresh
         last_output_at: None,
         last_input_at: None,
     }

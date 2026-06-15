@@ -264,6 +264,7 @@ pub(crate) fn finish_ssh_tab(state: &mut RunningState, outcome: SshConnectOutcom
         scroll_lines: 0,
         crashed,
         autodetect_links: Vec::new(),
+        link_scan_generation: u64::MAX, // force scan on first refresh
         last_output_at: None,
         last_input_at: None,
     });
