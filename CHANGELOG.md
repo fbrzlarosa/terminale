@@ -7,10 +7,24 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.31] — 2026-06-15
+
+### Fixed
+- **The window no longer freezes for a second when you type in a split, then
+  recovers on its own.** On every PTY event the autodetect-links pass scanned
+  *every* pane in the active tab, calling `Path::exists()` for every path-like
+  token on every visible row. On Windows each check is a blocking
+  `GetFileAttributesW` syscall (tens-to-hundreds of ms with a cold cache,
+  antivirus, or network paths). In a split, typing echoed back as PTY output and
+  re-scanned *both* panes — including the non-focused one whose content had not
+  changed — while holding each pane's emulator lock across the I/O. Panes are now
+  re-scanned only when their emulator content generation actually changes, so an
+  unchanged pane issues zero filesystem syscalls instead of dozens.
+
 ### Added
-- **Freeze diagnostics.** Intermittent "freezes that fix themselves" are almost
-  always a GPU surface loss (driver reset / TDR, sleep-wake, RDP attach) that
-  the renderer silently recovers from — previously logged only at `debug`, so it
+- **Freeze diagnostics.** Intermittent "freezes that fix themselves" can also be
+  a GPU surface loss (driver reset / TDR, sleep-wake, RDP attach) that the
+  renderer silently recovers from — previously logged only at `debug`, so it
   left no trace at the default `info` level. The recovery is now logged at
   `WARN` with a running total, the selected GPU adapter (name / backend / type /
   driver) is logged once at startup, and a new **freeze watchdog**
@@ -792,7 +806,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...HEAD
+[0.1.31]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...v0.1.31
 [0.1.30]: https://github.com/fbrzlarosa/terminale/compare/v0.1.29...v0.1.30
 [0.1.29]: https://github.com/fbrzlarosa/terminale/compare/v0.1.28...v0.1.29
 [0.1.28]: https://github.com/fbrzlarosa/terminale/compare/v0.1.27...v0.1.28
