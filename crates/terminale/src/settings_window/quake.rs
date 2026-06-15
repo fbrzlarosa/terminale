@@ -269,10 +269,10 @@ impl SettingsWindow {
             self.highlight_row(ui, hr.response.rect, Section::Quake, "Show on all desktops");
             sublabel(
                 ui,
-                "Keep the Quake window on every virtual desktop / workspace, so the hotkey \
-                 still finds it after switching desktop. Reliable on macOS; on Windows and \
-                 Linux it is best-effort (the window otherwise appears on whichever desktop \
-                 the hotkey is pressed).",
+                "Keep the Quake window on every virtual desktop / workspace, so it stays \
+                 on screen when you switch desktop — no need to hide and re-show it. \
+                 Works on macOS and Windows; Linux/Wayland is not yet supported (the \
+                 window then appears on whichever desktop the hotkey is pressed).",
             );
         });
 
