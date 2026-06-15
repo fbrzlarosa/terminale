@@ -109,7 +109,7 @@ windows-sys = { version = "0.59", features = [
 winvd = { version = "0.0.49", default-features = false }
 # Needed only to build the `windows::…::HWND` value winvd's pin/unpin take.
 # Must match winvd's `windows` major (0.58) so the HWND type is identical.
-windows = { version = "0.58", features = ["Win32_Foundation"] }
+windows = { version = "0.62", features = ["Win32_Foundation"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Read the OS's real mouse-button state (NSEvent +pressedMouseButtons) so a

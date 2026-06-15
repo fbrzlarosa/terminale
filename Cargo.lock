@@ -6322,7 +6322,7 @@ dependencies = [
  "tracing-subscriber",
  "usvg",
  "wgpu",
- "windows 0.58.0",
+ "windows 0.62.2",
  "windows-sys 0.59.0",
  "winit",
  "winresource",
