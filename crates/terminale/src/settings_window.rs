@@ -1855,6 +1855,11 @@ fn search_index() -> &'static [SearchEntry] {
             section: Section::Terminal,
             label: "Keyboard encoding",
         },
+        // kitty keyboard protocol (CSI-u progressive enhancement)
+        SearchEntry {
+            section: Section::Terminal,
+            label: "Kitty keyboard protocol",
+        },
         // broadcast input scope
         SearchEntry {
             section: Section::Terminal,

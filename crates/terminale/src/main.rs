@@ -20,6 +20,7 @@ mod dir_jump;
 mod egui_icons;
 pub mod icons;
 mod keymap;
+mod kitty_keyboard;
 mod links;
 mod markdown;
 mod monitor_names;
@@ -7925,6 +7926,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         logical_key,
                         state: ElementState::Pressed,
                         text,
+                        repeat,
                         ..
                     },
                 ..
@@ -8058,13 +8060,56 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         false
                     }
                 };
-                if let Some(bytes) = translate_key(
-                    &state.modifiers,
-                    physical_key,
-                    &logical_key,
-                    text,
-                    app_cursor,
-                ) {
+                // Kitty keyboard protocol (send side): when the focused app has
+                // engaged the protocol AND the user hasn't disabled it, encode
+                // the keystroke as a `CSI … u` sequence (this is what makes
+                // Shift+Enter distinguishable for Claude Code & friends). The
+                // encoder falls back to the legacy xterm form for keys it
+                // doesn't own (plain text under disambiguate-only, etc.).
+                let kitty_flags = if self.config.terminal.kitty_keyboard {
+                    state
+                        .tabs
+                        .get(state.active_tab)
+                        .map(|t| t.emulator.lock().kitty_keyboard_flags())
+                        .unwrap_or_default()
+                } else {
+                    terminale_term::KittyKeyboardFlags::default()
+                };
+                let key_bytes = if kitty_flags.any() {
+                    use crate::kitty_keyboard::{KeyPhase, KittyOutcome};
+                    let phase = if repeat && kitty_flags.report_event_types {
+                        KeyPhase::Repeat
+                    } else {
+                        KeyPhase::Press
+                    };
+                    match crate::kitty_keyboard::encode_key(
+                        kitty_flags,
+                        &state.modifiers,
+                        physical_key,
+                        &logical_key,
+                        text.as_deref(),
+                        phase,
+                    ) {
+                        KittyOutcome::Bytes(b) => Some(b),
+                        KittyOutcome::Legacy => translate_key(
+                            &state.modifiers,
+                            physical_key,
+                            &logical_key,
+                            text,
+                            app_cursor,
+                        ),
+                        KittyOutcome::Ignore => None,
+                    }
+                } else {
+                    translate_key(
+                        &state.modifiers,
+                        physical_key,
+                        &logical_key,
+                        text,
+                        app_cursor,
+                    )
+                };
+                if let Some(bytes) = key_bytes {
                     if let Some(tab) = state.tabs.get_mut(state.active_tab) {
                         if let Err(e) = tab.session.write_input(&bytes) {
                             tracing::warn!(?e, "pty write failed");
@@ -8116,6 +8161,51 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.pointer_hidden = true;
                     }
                     state.window.request_redraw();
+                }
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key,
+                        logical_key,
+                        state: ElementState::Released,
+                        text,
+                        ..
+                    },
+                ..
+            } => {
+                // Key *releases* are transmitted only under the kitty keyboard
+                // protocol, and only when the focused app turned on event
+                // reporting (`report_event_types`). Every other path ignores
+                // key-up entirely — terminals don't report it. The encoder
+                // returns `Ignore` for keys it shouldn't report, so this stays
+                // a no-op in the common case.
+                if !self.config.terminal.kitty_keyboard {
+                    return;
+                }
+                let kitty_flags = state
+                    .tabs
+                    .get(state.active_tab)
+                    .map(|t| t.emulator.lock().kitty_keyboard_flags())
+                    .unwrap_or_default();
+                if !kitty_flags.report_event_types {
+                    return;
+                }
+                if let crate::kitty_keyboard::KittyOutcome::Bytes(bytes) =
+                    crate::kitty_keyboard::encode_key(
+                        kitty_flags,
+                        &state.modifiers,
+                        physical_key,
+                        &logical_key,
+                        text.as_deref(),
+                        crate::kitty_keyboard::KeyPhase::Release,
+                    )
+                {
+                    if let Some(tab) = state.tabs.get_mut(state.active_tab) {
+                        if let Err(e) = tab.session.write_input(&bytes) {
+                            tracing::warn!(?e, "pty write failed (key release)");
+                        }
+                    }
                 }
             }
             WindowEvent::RedrawRequested => {

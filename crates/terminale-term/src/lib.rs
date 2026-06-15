@@ -151,6 +151,40 @@ pub enum EmulatorEvent {
     PaletteChanged,
 }
 
+/// Active kitty keyboard protocol progressive-enhancement flags.
+///
+/// Returned by [`Emulator::kitty_keyboard_flags`]. Each field maps to one bit
+/// of the protocol's flag word:
+/// `0b1` disambiguate, `0b10` report event types, `0b100` report alternate
+/// keys, `0b1000` report all keys as escape codes, `0b10000` report associated
+/// text. See <https://sw.kovidgoyal.net/kitty/keyboard-protocol/>.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KittyKeyboardFlags {
+    /// Disambiguate escape codes (encode keys that legacy mode left ambiguous).
+    pub disambiguate: bool,
+    /// Report key press / repeat / release as distinct events.
+    pub report_event_types: bool,
+    /// Report shifted / base-layout alternate key codes alongside the key.
+    pub report_alternate_keys: bool,
+    /// Report every key (including plain text) as an escape code.
+    pub report_all_keys_as_esc: bool,
+    /// Report the text a key would produce as trailing codepoints.
+    pub report_associated_text: bool,
+}
+
+impl KittyKeyboardFlags {
+    /// `true` when any progressive-enhancement flag is active — i.e. the
+    /// focused app has engaged the kitty keyboard protocol on this screen.
+    #[must_use]
+    pub fn any(self) -> bool {
+        self.disambiguate
+            || self.report_event_types
+            || self.report_alternate_keys
+            || self.report_all_keys_as_esc
+            || self.report_associated_text
+    }
+}
+
 /// Cursor shape the app has requested via DECSCUSR (CSI Ps SP q). Maps
 /// 1:1 to `vte::ansi::CursorShape` minus `Hidden` (we return `None` in
 /// that case from [`Emulator::cursor_shape`]).
@@ -344,7 +378,21 @@ impl Emulator {
         };
         let collector = EventCollector::default();
         Self {
-            term: Term::new(Config::default(), &size, collector.clone()),
+            // `kitty_keyboard: true` enables alacritty's built-in receive side
+            // of the kitty keyboard protocol: it parses the push/pop/set/query
+            // escape sequences (`CSI > … u`, `CSI < … u`, `CSI = … u`,
+            // `CSI ? u`), maintains the per-screen progressive-enhancement flag
+            // stack, and emits the query response as an `Event::PtyWrite`. The
+            // *send* side (encoding keystrokes as `CSI … u`) lives host-side in
+            // `crate::kitty_keyboard`, gated by `terminal.kitty_keyboard`.
+            term: Term::new(
+                Config {
+                    kitty_keyboard: true,
+                    ..Config::default()
+                },
+                &size,
+                collector.clone(),
+            ),
             parser: Processor::new(),
             palette: AnsiPalette::default(),
             collector,
@@ -589,6 +637,11 @@ impl Emulator {
         self.bump_generation();
         self.term.set_options(Config {
             scrolling_history: lines,
+            // Preserve kitty keyboard support across a scrollback change:
+            // `set_options` replaces the whole config, so omitting this would
+            // silently disable the protocol (and reset its flag stack — see
+            // alacritty `Term::set_options`) whenever the user retunes history.
+            kitty_keyboard: true,
             ..Config::default()
         });
     }
@@ -1119,6 +1172,26 @@ impl Emulator {
     #[must_use]
     pub fn app_keypad_mode(&self) -> bool {
         self.term.mode().contains(TermMode::APP_KEYPAD)
+    }
+
+    /// The kitty keyboard protocol progressive-enhancement flags currently
+    /// active for the focused screen (main vs alt each keep their own stack;
+    /// alacritty tracks the active set in [`TermMode`]).
+    ///
+    /// The host reads these to decide how to encode keystrokes: when any flag
+    /// is set the key goes out as a `CSI … u` sequence (see
+    /// `crate::kitty_keyboard`); when all are clear the legacy xterm encoding
+    /// is used. Mirrors the bit layout of the protocol's flag word.
+    #[must_use]
+    pub fn kitty_keyboard_flags(&self) -> KittyKeyboardFlags {
+        let m = self.term.mode();
+        KittyKeyboardFlags {
+            disambiguate: m.contains(TermMode::DISAMBIGUATE_ESC_CODES),
+            report_event_types: m.contains(TermMode::REPORT_EVENT_TYPES),
+            report_alternate_keys: m.contains(TermMode::REPORT_ALTERNATE_KEYS),
+            report_all_keys_as_esc: m.contains(TermMode::REPORT_ALL_KEYS_AS_ESC),
+            report_associated_text: m.contains(TermMode::REPORT_ASSOCIATED_TEXT),
+        }
     }
 
     /// Cursor shape the focused app currently wants (DECSCUSR / VT520).
