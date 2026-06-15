@@ -103,6 +103,9 @@ mod tests {
     }
 
     #[test]
+    // The test re-checks the same field across several values; struct-update
+    // init doesn't fit, and the reassignments are the point.
+    #[allow(clippy::field_reassign_with_default)]
     fn slow_frame_warn_ms_zero_or_in_range() {
         let mut c = LoggingConfig::default();
         c.slow_frame_warn_ms = 0; // disabled

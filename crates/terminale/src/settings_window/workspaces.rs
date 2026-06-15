@@ -85,6 +85,39 @@ impl SettingsWindow {
             );
         });
 
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Restore window geometry");
+                let on = self.config.window.restore_window_geometry;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.window.restore_window_geometry = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Workspaces,
+                "Restore window geometry",
+            );
+            sublabel(
+                ui,
+                "When restoring, also bring back the window's position and size, the \
+                 monitor it was on, and reopen in Quake mode if it was closed that way. \
+                 Disable to restore only the tab/pane layout at the default geometry.",
+            );
+        });
+
         ui.add_space(12.0);
 
         // ── Saved workspaces ─────────────────────────────────────────────────

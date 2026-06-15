@@ -393,6 +393,9 @@ mod tests {
     use super::*;
     use winit::keyboard::SmolStr;
 
+    // Test helpers mirror the protocol's flag/modifier words, which are
+    // genuinely several independent booleans — the lint is noise here.
+    #[allow(clippy::fn_params_excessive_bools)]
     fn flags(
         disambiguate: bool,
         report_event_types: bool,
@@ -413,6 +416,7 @@ mod tests {
         flags(true, false, false, false, false)
     }
 
+    #[allow(clippy::fn_params_excessive_bools)]
     fn mods(shift: bool, ctrl: bool, alt: bool, sup: bool) -> ModifiersState {
         let mut m = ModifiersState::empty();
         if shift {

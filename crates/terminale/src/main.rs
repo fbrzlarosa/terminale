@@ -5632,6 +5632,26 @@ impl TerminaleApp {
         }
     }
 
+    /// Save the last-session snapshot for `state` (layout + window geometry +
+    /// Quake), if session restore is enabled and the window still has tabs.
+    /// Shared by the reap path and the explicit window-close (X button) path.
+    fn save_last_session_for(&self, state: &TermWindow) {
+        if self.config.window.restore_session != terminale_config::RestoreSession::LastSession {
+            return;
+        }
+        if state.tabs.is_empty() {
+            return;
+        }
+        crate::workspace::save_last_session(
+            &state.tabs,
+            state.active_tab,
+            self.config.window.restore_working_dirs,
+            &state.tab_groups,
+            state.next_group_id,
+            capture_window_state(state),
+        );
+    }
+
     /// Drop any windows whose tab list is empty (the last tab was closed via
     /// `close_tab`). When the very last window is reaped, save the last
     /// session (if configured) and then exit the process.
@@ -5646,6 +5666,7 @@ impl TerminaleApp {
                         self.config.window.restore_working_dirs,
                         &state.tab_groups,
                         state.next_group_id,
+                        capture_window_state(state),
                     );
                 }
             }
@@ -5658,6 +5679,104 @@ impl TerminaleApp {
             }
             event_loop.exit();
         }
+    }
+}
+
+/// Capture the window-level state (geometry, monitor, Quake) for the last
+/// session snapshot. The monitor is keyed by its OS friendly name so it
+/// survives reboots and display-origin shifts.
+fn capture_window_state(state: &TermWindow) -> crate::workspace::SavedWindowState {
+    let size = state.window.inner_size();
+    let pos = state.window.outer_position().unwrap_or_default();
+    let live_rect = (pos.x, pos.y, size.width, size.height);
+    // When closed in Quake mode, persist the *normal* (non-Quake) geometry that
+    // was snapshotted at the last hide, so a geometry-only restore lands at the
+    // windowed rect instead of inheriting the Quake dock rect.
+    let rect = if state.quake_visible {
+        state.quake_saved_rect.or(Some(live_rect))
+    } else {
+        Some(live_rect)
+    };
+    let monitor = crate::window_anim::monitor_for_window(&state.window)
+        .or_else(|| state.window.current_monitor())
+        .and_then(|m| crate::monitor_names::friendly_monitor_name(&m));
+    let quake_monitor = state
+        .quake_last_monitor
+        .as_ref()
+        .and_then(crate::monitor_names::friendly_monitor_name);
+    crate::workspace::SavedWindowState {
+        rect,
+        monitor,
+        quake_visible: state.quake_visible,
+        quake_monitor,
+    }
+}
+
+/// Re-apply a restored [`crate::workspace::SavedWindowState`] after the window
+/// has been revealed: place it at the saved geometry (recentred on the saved
+/// monitor by friendly name if the absolute origin no longer lands on any
+/// display), then reopen Quake mode if it was closed showing.
+fn apply_restored_window_state(
+    state: &mut TermWindow,
+    ws: &crate::workspace::SavedWindowState,
+    quake_cfg: &terminale_config::QuakeConfig,
+) {
+    if let Some((x, y, w, h)) = ws.rect {
+        let monitors: Vec<_> = state.window.available_monitors().collect();
+        let origin_on_screen = monitors.iter().any(|m| {
+            let p = m.position();
+            crate::monitor_names::monitor_size(m).is_some_and(|s| {
+                x >= p.x
+                    && y >= p.y
+                    && x < p.x + i32::try_from(s.width).unwrap_or(i32::MAX)
+                    && y < p.y + i32::try_from(s.height).unwrap_or(i32::MAX)
+            })
+        });
+        // If the saved origin still lands on a connected display, trust it;
+        // otherwise re-anchor to the saved monitor's origin (display moved /
+        // was disconnected and reconnected elsewhere).
+        let (fx, fy) = if origin_on_screen {
+            (x, y)
+        } else if let Some(name) = &ws.monitor {
+            monitors
+                .iter()
+                .find(|m| {
+                    crate::monitor_names::friendly_monitor_name(m).as_deref()
+                        == Some(name.as_str())
+                })
+                .map_or((x, y), |m| {
+                    let p = m.position();
+                    (p.x, p.y)
+                })
+        } else {
+            (x, y)
+        };
+        state
+            .window
+            .set_outer_position(winit::dpi::PhysicalPosition::new(fx, fy));
+        let _ = state
+            .window
+            .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+    }
+
+    if ws.quake_visible && quake_cfg.restore_visible {
+        // Seed the Quake state machine so the show resolves to the saved
+        // monitor (for `Current` display) and the saved free-floating rect.
+        if let Some(name) = &ws.quake_monitor {
+            if let Some(mon) = state.window.available_monitors().find(|m| {
+                crate::monitor_names::friendly_monitor_name(m).as_deref() == Some(name.as_str())
+            }) {
+                state.quake_last_monitor = Some(mon);
+            }
+        }
+        if let Some(r) = ws.rect {
+            state.quake_saved_rect = Some(r);
+        }
+        // Toggle from the hidden state → the show branch positions and shows
+        // the drop-down. (The window was revealed as a normal window a moment
+        // ago; this transitions it into Quake on the saved monitor.)
+        state.quake_visible = false;
+        crate::window_anim::toggle_quake(state, quake_cfg);
     }
 }
 
@@ -5822,9 +5941,15 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         let do_restore = self.config.window.restore_session
             == terminale_config::RestoreSession::LastSession
             && std::env::var_os("TERMINALE_DEMO_PALETTE").is_none();
+        // Window geometry / monitor / Quake state to re-apply after the window
+        // is revealed (the monitor + scale factor are only stable post-reveal).
+        let mut restore_window_state: Option<crate::workspace::SavedWindowState> = None;
         if do_restore {
             if let Some(saved_ws) = crate::workspace::load_last_session() {
                 if !saved_ws.tabs.is_empty() {
+                    if self.config.window.restore_window_geometry {
+                        restore_window_state = saved_ws.window.clone();
+                    }
                     let win_size = self.windows[0].window.inner_size();
                     let instance = self.windows[0].renderer.instance();
                     let adapter = self.windows[0].renderer.adapter();
@@ -6369,6 +6494,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         active_tab: 0,
                         tab_groups: Vec::new(),
                         next_group_id: 0,
+                        window: None,
                     };
                     // Write to the workspaces directory for the picker to find.
                     if let Some(dir) = terminale_config::paths::workspaces_dir() {
@@ -6932,6 +7058,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             if let Some(edge) = self.config.window.startup_position {
                 snap_window(state, edge);
             }
+            // Restore the last session's window geometry / monitor, and reopen
+            // in Quake mode if it was closed that way. After reveal for the
+            // same monitor/scale-stability reason as startup_position.
+            if let Some(ws) = restore_window_state {
+                apply_restored_window_state(state, &ws, &self.config.quake);
+            }
         }
     }
 
@@ -7097,6 +7229,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if let Some(idx) = self.window_index(parent) {
                         match target {
                             confirm_close::CloseTarget::Window => {
+                                self.save_last_session_for(&self.windows[idx]);
                                 self.windows.remove(idx);
                                 if self.windows.is_empty() {
                                     event_loop.exit();
@@ -7245,6 +7378,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     ));
                 }
             } else {
+                // Persist the session before the window goes away — the X
+                // button / Alt+F4 path never reached `reap_empty_windows`, so
+                // closing this way previously lost the last session entirely.
+                self.save_last_session_for(&self.windows[idx]);
                 self.windows.remove(idx);
                 if self.windows.is_empty() {
                     event_loop.exit();

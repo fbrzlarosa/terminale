@@ -171,6 +171,19 @@ pub struct QuakeConfig {
     pub margin_px: u32,
     /// Auto-hide the Quake window when it loses focus. Default: off.
     pub hide_on_focus_loss: bool,
+    /// When the app is closed while the Quake window is showing, reopen in
+    /// Quake mode on the next launch (on the same monitor). Only consulted when
+    /// `window.restore_session` is active. Default: `true`.
+    pub restore_visible: bool,
+    /// Keep the Quake window visible on **every virtual desktop / workspace**,
+    /// so switching desktop still finds it under the hotkey. Implemented per
+    /// OS: macOS (`NSWindowCollectionBehaviorCanJoinAllSpaces`) and X11
+    /// (`_NET_WM_DESKTOP = 0xFFFFFFFF`) are reliable; on Windows it is a
+    /// best-effort pin via the virtual-desktop COM API and may be a no-op on
+    /// some builds (it then degrades to appearing on whichever desktop the
+    /// hotkey is pressed). No effect on Wayland (no standard protocol).
+    /// Default: `false`.
+    pub show_on_all_desktops: bool,
 }
 
 impl Default for QuakeConfig {
@@ -183,6 +196,8 @@ impl Default for QuakeConfig {
             size_percent: 0.5,
             margin_px: 0,
             hide_on_focus_loss: false,
+            restore_visible: true,
+            show_on_all_desktops: false,
         }
     }
 }
@@ -231,5 +246,33 @@ pub fn quake_dock_rect(
             let x = mx + (mw as i32) - (w as i32) - margin;
             Some((x, my, w, mh))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_visible_defaults_on() {
+        assert!(QuakeConfig::default().restore_visible);
+    }
+
+    #[test]
+    fn show_on_all_desktops_defaults_off() {
+        assert!(!QuakeConfig::default().show_on_all_desktops);
+    }
+
+    #[test]
+    fn restore_and_all_desktops_roundtrip() {
+        let cfg = QuakeConfig {
+            restore_visible: false,
+            show_on_all_desktops: true,
+            ..QuakeConfig::default()
+        };
+        let s = toml::to_string(&cfg).unwrap();
+        let back: QuakeConfig = toml::from_str(&s).unwrap();
+        assert!(!back.restore_visible);
+        assert!(back.show_on_all_desktops);
     }
 }

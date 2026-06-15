@@ -115,6 +115,35 @@ pub(crate) struct SavedTabGroup {
     pub(crate) color: [u8; 3],
 }
 
+/// Window-level state saved alongside the tab layout, so the last session can
+/// reopen on the same monitor, at the same geometry, and back in Quake mode if
+/// that's how it was closed.
+///
+/// Only populated for the auto last-session snapshot (named workspaces leave it
+/// `None`). Every field is optional / defaulted so older session files keep
+/// loading. The monitor is keyed by its OS-reported *friendly name* rather than
+/// the `available_monitors()` index, which is unstable across reboots and
+/// display reconfiguration.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct SavedWindowState {
+    /// Outer window geometry `(x, y, w, h)` in physical pixels. When the window
+    /// was closed in Quake mode this is the *normal* (non-Quake) geometry, so a
+    /// later restore without Quake still lands sensibly.
+    #[serde(default)]
+    pub(crate) rect: Option<terminale_config::WindowRect>,
+    /// Friendly name of the monitor the window was on. Used to re-place the
+    /// window on the same physical display even if monitor origins shifted.
+    #[serde(default)]
+    pub(crate) monitor: Option<String>,
+    /// Whether the window was showing as a Quake drop-down at save time.
+    #[serde(default)]
+    pub(crate) quake_visible: bool,
+    /// Friendly name of the monitor the Quake window was on, so it reopens on
+    /// the same display.
+    #[serde(default)]
+    pub(crate) quake_monitor: Option<String>,
+}
+
 /// Root of a saved workspace — a list of saved tabs.
 ///
 /// Multiple windows are not yet serialised; this struct is kept flat so
@@ -136,6 +165,10 @@ pub(crate) struct SavedWorkspace {
     /// collide with restored ones).
     #[serde(default)]
     pub(crate) next_group_id: u32,
+    /// Window geometry / monitor / Quake state. `None` for named workspaces and
+    /// for sessions saved before this field existed.
+    #[serde(default)]
+    pub(crate) window: Option<SavedWindowState>,
 }
 
 // ── Capture: live state → SavedWorkspace ─────────────────────────────────────
@@ -249,6 +282,9 @@ pub(crate) fn capture_workspace_with_groups(
         active_tab: active_tab.min(tabs.len().saturating_sub(1)),
         tab_groups: saved_groups,
         next_group_id,
+        // Window-level state is attached by `save_last_session` for the
+        // auto-snapshot path; named workspaces don't carry it.
+        window: None,
     }
 }
 
@@ -477,18 +513,20 @@ pub(crate) fn list_workspaces() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Save the auto last-session snapshot to disk.
+/// Save the auto last-session snapshot to disk, including window-level state
+/// (geometry / monitor / Quake) so the next launch reopens exactly as it was.
 pub(crate) fn save_last_session(
     tabs: &[crate::TabState],
     active_tab: usize,
     restore_working_dirs: bool,
     tab_groups: &[crate::TabGroup],
     next_group_id: u32,
+    window: SavedWindowState,
 ) {
     let Some(path) = terminale_config::paths::last_session_path() else {
         return;
     };
-    let ws = capture_workspace_with_groups(
+    let mut ws = capture_workspace_with_groups(
         tabs,
         active_tab,
         "",
@@ -496,6 +534,7 @@ pub(crate) fn save_last_session(
         tab_groups,
         next_group_id,
     );
+    ws.window = Some(window);
     if let Err(e) = write_workspace(&path, &ws) {
         tracing::warn!(?e, "failed to save last session");
     }
@@ -619,6 +658,7 @@ mod tests {
             active_tab: 1,
             tab_groups: Vec::new(),
             next_group_id: 0,
+            window: None,
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -670,6 +710,7 @@ mod tests {
                 },
             ],
             next_group_id: 3,
+            window: None,
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -725,6 +766,7 @@ cwd = "/home"
             active_tab: 0,
             tab_groups: Vec::new(), // group 99 was deleted
             next_group_id: 100,
+            window: None,
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -803,5 +845,42 @@ cwd = "/home"
         let de: WindowConfig = toml::from_str(&toml_text).unwrap();
         assert_eq!(de.restore_session, RestoreSession::LastSession);
         assert!(!de.restore_working_dirs);
+    }
+
+    // ── Window state (geometry / monitor / Quake) ──────────────────────────────
+
+    #[test]
+    fn window_state_roundtrip() {
+        let ws = SavedWorkspace {
+            name: String::new(),
+            tabs: vec![SavedTab {
+                title: None,
+                tree: leaf("PowerShell", "C:/Users/test"),
+                group: None,
+            }],
+            active_tab: 0,
+            tab_groups: Vec::new(),
+            next_group_id: 0,
+            window: Some(SavedWindowState {
+                rect: Some((10, 20, 800, 600)),
+                monitor: Some("DELL U2720Q".into()),
+                quake_visible: true,
+                quake_monitor: Some("DELL U2720Q".into()),
+            }),
+        };
+        let s = toml::to_string_pretty(&ws).unwrap();
+        let de: SavedWorkspace = toml::from_str(&s).unwrap();
+        let w = de.window.expect("window state must roundtrip");
+        assert_eq!(w.rect, Some((10, 20, 800, 600)));
+        assert!(w.quake_visible);
+        assert_eq!(w.quake_monitor.as_deref(), Some("DELL U2720Q"));
+    }
+
+    #[test]
+    fn legacy_session_without_window_loads() {
+        // A session file written before the window-state field existed must
+        // still load, with `window` defaulting to `None`.
+        let de: SavedWorkspace = toml::from_str("tabs = []\n").unwrap();
+        assert!(de.window.is_none());
     }
 }
