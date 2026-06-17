@@ -495,12 +495,8 @@ impl ContextMenuWindow {
         #[link(name = "gdi32")]
         extern "system" {
             fn CreateRectRgn(x1: i32, y1: i32, x2: i32, y2: i32) -> *mut c_void;
-            fn CombineRgn(
-                dst: *mut c_void,
-                src1: *mut c_void,
-                src2: *mut c_void,
-                mode: i32,
-            ) -> i32;
+            fn CombineRgn(dst: *mut c_void, src1: *mut c_void, src2: *mut c_void, mode: i32)
+                -> i32;
             fn DeleteObject(obj: *mut c_void) -> i32;
         }
         #[link(name = "user32")]
@@ -522,27 +518,26 @@ impl ContextMenuWindow {
 
         // Mirror the column placement computed in `build_ui`.
         let flipped = self.flyout_on_left;
-        let base_col_x = if flipped { MENU_WIDTH - FLYOUT_OVERLAP } else { 0.0 };
-        let flyout_col_x = if flipped { 0.0 } else { MENU_WIDTH - FLYOUT_OVERLAP };
+        let base_col_x = if flipped {
+            MENU_WIDTH - FLYOUT_OVERLAP
+        } else {
+            0.0
+        };
+        let flyout_col_x = if flipped {
+            0.0
+        } else {
+            MENU_WIDTH - FLYOUT_OVERLAP
+        };
 
         let base_h = column_height(&self.entries);
         // SAFETY: CreateRectRgn returns an owned region handle; ownership of the
         // final region transfers to the window via SetWindowRgn, intermediate
         // regions are freed with DeleteObject.
         unsafe {
-            let region = CreateRectRgn(
-                px(base_col_x),
-                0,
-                px(base_col_x + MENU_WIDTH),
-                px(base_h),
-            );
+            let region = CreateRectRgn(px(base_col_x), 0, px(base_col_x + MENU_WIDTH), px(base_h));
 
             if let Some(idx) = self.open_submenu_idx {
-                if let Some(children) = self
-                    .entries
-                    .get(idx)
-                    .and_then(|e| e.submenu.as_deref())
-                {
+                if let Some(children) = self.entries.get(idx).and_then(|e| e.submenu.as_deref()) {
                     let flyout_y = row_top_for(&self.entries, idx);
                     let flyout_h = column_height(children);
                     let flyout = CreateRectRgn(

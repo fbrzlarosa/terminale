@@ -63,9 +63,7 @@ impl LoggingConfig {
                 message: "must be between 1 and 365",
             });
         }
-        if self.slow_frame_warn_ms != 0
-            && !(16..=60_000).contains(&self.slow_frame_warn_ms)
-        {
+        if self.slow_frame_warn_ms != 0 && !(16..=60_000).contains(&self.slow_frame_warn_ms) {
             return Err(ConfigError::Invalid {
                 field: "logging.slow_frame_warn_ms",
                 message: "must be 0 (disabled) or between 16 and 60000",
@@ -115,7 +113,10 @@ mod tests {
         c.slow_frame_warn_ms = 60_000;
         assert!(c.validate().is_ok(), "upper bound must be allowed");
         c.slow_frame_warn_ms = 5;
-        assert!(c.validate().is_err(), "below 16 (and non-zero) must be rejected");
+        assert!(
+            c.validate().is_err(),
+            "below 16 (and non-zero) must be rejected"
+        );
         c.slow_frame_warn_ms = 60_001;
         assert!(c.validate().is_err(), "above 60000 must be rejected");
     }
