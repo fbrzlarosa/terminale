@@ -81,6 +81,13 @@ pub(crate) enum SavedPaneTree {
         cwd: Option<String>,
         /// User-set display title (from the inline rename). `None` = automatic.
         title: Option<String>,
+        /// Whether this pane was the focused one in its tab at save time, so a
+        /// restore puts keyboard focus back on the same pane instead of
+        /// defaulting to the last-spawned split. Exactly one leaf per tab is
+        /// `true`. Defaults to `false` for sessions saved before this field
+        /// existed (the restore then keeps the legacy last-spawned focus).
+        #[serde(default)]
+        focused: bool,
     },
     /// An internal split node.
     Split {
@@ -175,8 +182,13 @@ pub(crate) struct SavedWorkspace {
 
 /// Walk a live `PaneNode` tree (from `TabState`) and build its serialisable
 /// counterpart. Leaf metadata is fetched via the closure `leaf_meta` which
-/// takes a `PaneId` and returns `(profile, cwd, title)`.
-pub(crate) fn capture_pane_tree<F>(node: &crate::PaneNode, leaf_meta: &F) -> SavedPaneTree
+/// takes a `PaneId` and returns `(profile, cwd, title)`. The leaf whose id
+/// equals `focused` is marked so a restore re-focuses the same pane.
+pub(crate) fn capture_pane_tree<F>(
+    node: &crate::PaneNode,
+    leaf_meta: &F,
+    focused: crate::PaneId,
+) -> SavedPaneTree
 where
     F: Fn(crate::PaneId) -> (Option<String>, Option<String>, Option<String>),
 {
@@ -187,6 +199,7 @@ where
                 profile,
                 cwd,
                 title,
+                focused: *id == focused,
             }
         }
         crate::PaneNode::Split {
@@ -202,8 +215,8 @@ where
             SavedPaneTree::Split {
                 direction: saved_dir,
                 ratio: *ratio,
-                a: Box::new(capture_pane_tree(a, leaf_meta)),
-                b: Box::new(capture_pane_tree(b, leaf_meta)),
+                a: Box::new(capture_pane_tree(a, leaf_meta, focused)),
+                b: Box::new(capture_pane_tree(b, leaf_meta, focused)),
             }
         }
     }
@@ -261,7 +274,7 @@ pub(crate) fn capture_workspace_with_groups(
             };
             SavedTab {
                 title: tab.user_title.clone(),
-                tree: capture_pane_tree(&tab.tree, &meta),
+                tree: capture_pane_tree(&tab.tree, &meta, tab.focused),
                 group: tab.group,
             }
         })
@@ -297,6 +310,9 @@ pub(crate) struct RestoreLeaf {
     pub(crate) profile: Option<String>,
     pub(crate) cwd: Option<String>,
     pub(crate) title: Option<String>,
+    /// This pane had keyboard focus in its tab at save time; the executor
+    /// re-focuses the spawned pane that corresponds to it.
+    pub(crate) focused: bool,
 }
 
 /// One step in the restore plan produced by [`restore_plan_for_tree`].
@@ -347,11 +363,13 @@ fn collect_restore_steps(
             profile,
             cwd,
             title,
+            focused,
         } => {
             let leaf = RestoreLeaf {
                 profile: profile.clone(),
                 cwd: cwd.clone(),
                 title: title.clone(),
+                focused: *focused,
             };
             if is_first {
                 steps.push(RestoreStep::InitLeaf(leaf));
@@ -392,11 +410,13 @@ fn collect_restore_steps_with_split(
             profile,
             cwd,
             title,
+            focused,
         } => {
             let leaf = RestoreLeaf {
                 profile: profile.clone(),
                 cwd: cwd.clone(),
                 title: title.clone(),
+                focused: *focused,
             };
             if is_first {
                 steps.push(RestoreStep::InitLeaf(leaf));
@@ -434,6 +454,7 @@ fn inject_split_for_b(
             profile,
             cwd,
             title,
+            focused,
         } => {
             steps.push(RestoreStep::SplitLeaf {
                 direction,
@@ -443,6 +464,7 @@ fn inject_split_for_b(
                     profile: profile.clone(),
                     cwd: cwd.clone(),
                     title: title.clone(),
+                    focused: *focused,
                 },
             });
         }
@@ -564,6 +586,7 @@ mod tests {
             profile: Some(profile.into()),
             cwd: Some(cwd.into()),
             title: None,
+            focused: false,
         }
     }
 
@@ -828,6 +851,52 @@ cwd = "/home"
         // 3 leaves → 1 init + 2 splits
         assert_eq!(plan.len(), 3);
         assert!(matches!(plan[0], RestoreStep::InitLeaf(_)));
+    }
+
+    #[test]
+    fn restore_plan_carries_focused_split_leaf() {
+        // left | (top / bottom); the focused pane is the bottom one ("zsh").
+        let focused_leaf = SavedPaneTree::Leaf {
+            profile: Some("zsh".into()),
+            cwd: Some("/c".into()),
+            title: None,
+            focused: true,
+        };
+        let tree = split(
+            SavedSplitDir::Vertical,
+            0.4,
+            leaf("sh", "/a"),
+            split(
+                SavedSplitDir::Horizontal,
+                0.5,
+                leaf("bash", "/b"),
+                focused_leaf,
+            ),
+        );
+        let plan = restore_plan_for_tree(&tree);
+        // Exactly one step must carry the focused flag, and it must be the
+        // "zsh" leaf — not the last-spawned one by default.
+        let focused_steps: Vec<&RestoreLeaf> = plan
+            .iter()
+            .map(|step| match step {
+                RestoreStep::InitLeaf(l) | RestoreStep::SplitLeaf { leaf: l, .. } => l,
+            })
+            .filter(|l| l.focused)
+            .collect();
+        assert_eq!(focused_steps.len(), 1, "exactly one leaf may be focused");
+        assert_eq!(focused_steps[0].profile.as_deref(), Some("zsh"));
+    }
+
+    #[test]
+    fn legacy_leaf_without_focused_defaults_false() {
+        // A leaf serialised before the `focused` field existed must still
+        // deserialise (defaulting to not-focused) so old sessions keep loading.
+        let text = "type = \"leaf\"\nprofile = \"sh\"\ncwd = \"/a\"\n";
+        let de: SavedPaneTree = toml::from_str(text).unwrap();
+        match de {
+            SavedPaneTree::Leaf { focused, .. } => assert!(!focused),
+            _ => panic!("expected Leaf"),
+        }
     }
 
     // ── Config roundtrip ──────────────────────────────────────────────────────

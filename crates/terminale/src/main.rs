@@ -4618,6 +4618,7 @@ impl TerminaleApp {
         type RestoreLeafData = (
             Option<terminale_config::Profile>, // profile
             Option<String>,                    // user_title
+            bool,                              // was the focused pane in its tab
         );
         type RestoreTabPlan = (
             Option<String>,          // tab user_title
@@ -4640,7 +4641,7 @@ impl TerminaleApp {
                 }
                 let init = if let crate::workspace::RestoreStep::InitLeaf(ref leaf) = steps[0] {
                     let profile = self.resolve_leaf_profile(&leaf.profile, &leaf.cwd);
-                    Some((profile, leaf.title.clone()))
+                    Some((profile, leaf.title.clone(), leaf.focused))
                 } else {
                     None
                 };
@@ -4656,7 +4657,12 @@ impl TerminaleApp {
                         } = step
                         {
                             let profile = self.resolve_leaf_profile(&leaf.profile, &leaf.cwd);
-                            Some(((profile, leaf.title.clone()), *direction, *side_b, *ratio))
+                            Some((
+                                (profile, leaf.title.clone(), leaf.focused),
+                                *direction,
+                                *side_b,
+                                *ratio,
+                            ))
                         } else {
                             None
                         }
@@ -4698,7 +4704,7 @@ impl TerminaleApp {
 
         // Spawn each saved tab from the resolved plan.
         for (tab_title, init_leaf, split_leaves) in tab_plans {
-            let Some((init_profile, init_pane_title)) = init_leaf else {
+            let Some((init_profile, init_pane_title, init_focused)) = init_leaf else {
                 continue;
             };
             let mut new_tab = spawn_tab(
@@ -4716,8 +4722,16 @@ impl TerminaleApp {
             if let Some(pane) = new_tab.panes.get_mut(&new_tab.focused) {
                 pane.user_title = init_pane_title;
             }
+            // The leaf that had focus at save time. Spawning splits below moves
+            // `new_tab.focused` to each freshly-created pane, so we record the
+            // id of the saved-focused pane and re-apply it once the layout is
+            // fully rebuilt. The init pane is captured here; a focused split
+            // overwrites it.
+            let mut focused_pane = init_focused.then_some(new_tab.focused);
             // Apply split steps.
-            for ((split_profile, split_pane_title), direction, side_b, ratio) in split_leaves {
+            for ((split_profile, split_pane_title, split_focused), direction, side_b, ratio) in
+                split_leaves
+            {
                 let dir = match direction {
                     crate::workspace::SavedSplitDir::Horizontal => SplitDir::Horizontal,
                     crate::workspace::SavedSplitDir::Vertical => SplitDir::Vertical,
@@ -4737,6 +4751,15 @@ impl TerminaleApp {
                 apply_restore_ratio(&mut new_tab.tree, new_pane_id, ratio, dir);
                 if let Some(pane) = new_tab.panes.get_mut(&new_pane_id) {
                     pane.user_title = split_pane_title;
+                }
+                if split_focused {
+                    focused_pane = Some(new_pane_id);
+                }
+            }
+            // Re-focus the pane the user was on (guard against a stale id).
+            if let Some(id) = focused_pane {
+                if new_tab.panes.contains_key(&id) {
+                    new_tab.focused = id;
                 }
             }
             // Palette + command blocks for each pane.
@@ -6472,11 +6495,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                                         profile: None,
                                         cwd: None,
                                         title: Some("editor pane".to_string()),
+                                        focused: true,
                                     }),
                                     b: Box::new(crate::workspace::SavedPaneTree::Leaf {
                                         profile: None,
                                         cwd: None,
                                         title: Some("output pane".to_string()),
+                                        focused: false,
                                     }),
                                 },
                                 group: None,
@@ -6487,6 +6512,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                                     profile: None,
                                     cwd: None,
                                     title: None,
+                                    focused: false,
                                 },
                                 group: None,
                             },

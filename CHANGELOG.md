@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Session restore now keeps the pane you were working in focused.** When a
+  restored tab had splits, the rebuilt layout always left keyboard focus on the
+  last-spawned pane instead of the one that had it at save time — so reopening
+  the app (including with the Quake drop-down restored) silently shifted focus
+  to a different pane. The focused pane is now recorded per tab and re-applied
+  after the layout is rebuilt. Sessions saved before this change keep their
+  previous behaviour.
+
 ## [0.1.33] — 2026-06-15
 
 ### Changed
