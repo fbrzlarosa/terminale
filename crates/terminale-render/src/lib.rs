@@ -6273,9 +6273,8 @@ impl Renderer {
                 static SURFACE_LOSSES: std::sync::atomic::AtomicU64 =
                     std::sync::atomic::AtomicU64::new(0);
                 if matches!(e, wgpu::SurfaceError::Lost) {
-                    let total = SURFACE_LOSSES
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                        + 1;
+                    let total =
+                        SURFACE_LOSSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
                     tracing::warn!(
                         total,
                         "GPU surface lost (device reset / TDR / sleep-wake); \

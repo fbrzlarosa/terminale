@@ -5764,8 +5764,7 @@ fn apply_restored_window_state(
             monitors
                 .iter()
                 .find(|m| {
-                    crate::monitor_names::friendly_monitor_name(m).as_deref()
-                        == Some(name.as_str())
+                    crate::monitor_names::friendly_monitor_name(m).as_deref() == Some(name.as_str())
                 })
                 .map_or((x, y), |m| {
                     let p = m.position();

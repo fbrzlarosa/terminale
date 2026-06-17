@@ -369,7 +369,10 @@ pub(crate) fn encode_key(
     // reported only when requested and when it actually differs from the base.
     let shifted = if flags.report_alternate_keys && mods.shift_key() {
         if let Key::Character(s) = logical_key {
-            s.chars().next().map(|c| c as u32).filter(|&cp| cp != number)
+            s.chars()
+                .next()
+                .map(|c| c as u32)
+                .filter(|&cp| cp != number)
         } else {
             None
         }
