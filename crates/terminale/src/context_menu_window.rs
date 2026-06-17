@@ -60,7 +60,7 @@ const FLYOUT_OVERLAP: f32 = 4.0;
 ///
 /// The window is sized once, at open, and never resized while the user
 /// navigates: opening, switching, or closing a submenu only changes the
-/// [`ContextMenuWindow::apply_flyout_region`] clip, not the window itself. This
+/// `apply_flyout_region` clip, not the window itself. This
 /// is deliberate — every `request_inner_size` on this surface is a Windows
 /// `SetWindowPos` that recreates the swapchain, and the compositor scales the
 /// stale buffer to the new size for one frame, which reads as a visible
