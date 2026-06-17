@@ -278,6 +278,14 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
+          # Idempotent re-release: `gh release create` errors if a release for
+          # this tag already exists, so re-running the pipeline for the same tag
+          # (e.g. to correct release notes / the title) used to fail here. Delete
+          # any existing release first — KEEPING the git tag (no --cleanup-tag) —
+          # so the create below always starts clean. `|| true` makes the first,
+          # normal release (no pre-existing release) a no-op.
+          gh release delete "${{ needs.plan.outputs.tag }}" --yes 2>/dev/null || true
+
           # `--draft` (hand-added, covered by allow-dirty = ["ci"]): the release
           # must NOT be visible while assets are still uploading. A user whose
           # self-updater fired mid-upload downloaded a partial archive and got a
