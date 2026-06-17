@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.34] — 2026-06-17
+
 ### Fixed
 - **Session restore now keeps the pane you were working in focused.** When a
   restored tab had splits, the rebuilt layout always left keyboard focus on the
@@ -856,7 +858,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.33...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.34...HEAD
+[0.1.34]: https://github.com/fbrzlarosa/terminale/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/fbrzlarosa/terminale/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...v0.1.32
 [0.1.31]: https://github.com/fbrzlarosa/terminale/compare/v0.1.30...v0.1.31
