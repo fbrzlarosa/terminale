@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+- Dependency updates: `russh` 0.61.1 → 0.61.2 (patch, SSH client) and the dev
+  dependency `insta` 1.47.2 → 1.48.0. Dependabot's proposed `swash` 0.1 → 0.2
+  and `windows` 0.58 → 0.62 bumps were intentionally skipped: `swash` is not used
+  directly (it would only add a duplicate copy alongside cosmic-text's), and the
+  `windows` crate is pinned to 0.58 to match `winvd`'s `HWND` type for the Quake
+  virtual-desktop pinning.
+
 ## [0.1.34] — 2026-06-17
 
 ### Fixed
