@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.35]
+
 ### Added
 - **Drag & drop file paths.** Dropping one or more files onto the terminal
   window now inserts their paths into the focused pane as a (bracketed) paste,
