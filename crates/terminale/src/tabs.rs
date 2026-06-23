@@ -36,7 +36,10 @@ pub(crate) fn tab_bar_from(
     maximized: bool,
     groups: &[crate::TabGroup],
 ) -> TabBar {
-    let items = build_tab_bar_items(tabs, active, groups, &None, &mut |t| crate::tab_label(t));
+    // Freshly-built bars (new windows / detached tabs) are always for a focused
+    // window with no pending attention, so `window_focused: true` is correct.
+    let items =
+        build_tab_bar_items(tabs, active, true, groups, &None, &mut |t| crate::tab_label(t));
     TabBar {
         items,
         hovered: None,
@@ -56,6 +59,7 @@ pub(crate) fn tab_bar_from(
 fn build_tab_bar_items(
     tabs: &[&TabState],
     active: usize,
+    window_focused: bool,
     groups: &[crate::TabGroup],
     rename_info: &Option<(usize, crate::RenameTarget, String)>,
     label_for: &mut impl FnMut(&TabState) -> String,
@@ -86,6 +90,9 @@ fn build_tab_bar_items(
                 icon: t.user_icon.clone().or_else(|| t.icon.clone()),
                 active: idx == active,
                 unread: t.unread,
+                // Show the dot on non-active tabs, or on the active tab while
+                // the window is unfocused (a bell arrived while you were away).
+                attention: t.attention && (idx != active || !window_focused),
                 color: t.user_color.or(t.auto_color),
                 badge: t.auto_badge.clone(),
                 pinned: t.pinned,
@@ -97,6 +104,19 @@ fn build_tab_bar_items(
 }
 
 pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
+    // When the window is focused, the active tab is being looked at — it never
+    // carries a pending "waiting for input" dot, so clear it here (before the
+    // fingerprint). This enforces the invariant across every tab-activation
+    // path without patching each `state.active_tab = …` site. When the window
+    // is UNFOCUSED we keep the active tab's flag, so a bell that arrived while
+    // you were in another app/window still shows its dot on a visible-but-
+    // unfocused window; the `WindowEvent::Focused(true)` handler clears it the
+    // moment focus actually returns.
+    if state.window_focused {
+        if let Some(t) = state.tabs.get_mut(state.active_tab) {
+            t.attention = false;
+        }
+    }
     let maximized = state.window.is_maximized();
     // ── Change detection ──
     // This runs every frame; rebuilding the items costs one emulator lock +
@@ -142,6 +162,7 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
             t.custom_title.hash(&mut h);
             t.crashed.hash(&mut h);
             t.unread.hash(&mut h);
+            t.attention.hash(&mut h);
             t.pinned.hash(&mut h);
             t.user_color.hash(&mut h);
             t.auto_color.hash(&mut h);
@@ -220,6 +241,10 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
                 icon: t.user_icon.clone().or_else(|| t.icon.clone()),
                 active: idx == state.active_tab,
                 unread: t.unread && idx != state.active_tab,
+                // Show on non-active tabs, or on the active tab while the
+                // window is unfocused (bell arrived while you were away).
+                attention: t.attention
+                    && (idx != state.active_tab || !state.window_focused),
                 color: t.user_color.or(t.auto_color),
                 badge: t.auto_badge.clone(),
                 pinned: t.pinned,
@@ -237,6 +262,7 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
     let bar = build_tab_bar_items_for_initial(
         &tabs_ref,
         state.active_tab,
+        state.window_focused,
         maximized,
         &groups_ref,
         &rename_info,
@@ -266,13 +292,14 @@ struct SpinnerCtx<'a> {
 fn build_tab_bar_items_for_initial(
     tabs: &[&TabState],
     active: usize,
+    window_focused: bool,
     maximized: bool,
     groups: &[crate::TabGroup],
     rename_info: &Option<(usize, crate::RenameTarget, String)>,
     rename_tab: &Option<(usize, String)>,
     spinner: SpinnerCtx<'_>,
 ) -> TabBar {
-    let mut items = build_tab_bar_items(tabs, active, groups, rename_info, &mut |t| {
+    let mut items = build_tab_bar_items(tabs, active, window_focused, groups, rename_info, &mut |t| {
         crate::tab_label(t)
     });
     // Patch in live tab-rename buffer for Tab/Pane targets,
@@ -435,6 +462,8 @@ pub(crate) fn switch_tab(state: &mut RunningState, idx: usize) {
     state.active_tab = idx;
     if let Some(t) = state.tabs.get_mut(idx) {
         t.unread = false;
+        // Looking at the tab answers its "waiting for input" bell.
+        t.attention = false;
     }
     // Notify plugins that focus moved to the new tab's focused pane.
     if let Some(focused_id) = state.tabs.get(idx).map(|t| t.focused) {
@@ -883,21 +912,128 @@ pub(crate) fn build_paste_payload(text: &str, bracketed: bool) -> Vec<u8> {
 /// 2. From the App loop — when the user confirmed the paste-guard dialog.
 pub(crate) fn send_paste_text(state: &mut RunningState, text: &str) {
     let strip_control_chars = state.paste_strip_control_chars;
-    let Some(tab) = state.tabs.get_mut(state.active_tab) else {
+    let snap_to_bottom = state.scroll_on_input;
+    let mut snapped = false;
+    {
+        let Some(tab) = state.tabs.get_mut(state.active_tab) else {
+            return;
+        };
+        let bracketed = tab.emulator.lock().bracketed_paste_enabled();
+        // Optionally strip control bytes before building the payload.
+        let payload = if strip_control_chars {
+            let stripped = crate::paste_guard::strip_control_chars(text);
+            build_paste_payload(&stripped, bracketed)
+        } else {
+            build_paste_payload(text, bracketed)
+        };
+        let _ = tab.session.write_input(&payload);
+        // Stamp the paste as user input so the busy-spinner fallback can tell
+        // the resulting echo / prompt repaint apart from real command output.
+        tab.focused_pane_mut().last_input_at = Some(std::time::Instant::now());
+        // Snap back to the live edge when pasting while scrolled up in history
+        // (matches the keystroke behaviour). Gated by `scroll_on_input`.
+        if snap_to_bottom && tab.scroll_lines != 0 {
+            tab.scroll_lines = 0;
+            snapped = true;
+        }
+    }
+    if snapped {
+        state.renderer.set_scroll_lines(0);
+    }
+}
+
+// ── Drag & drop ─────────────────────────────────────────────────────────────
+
+/// Insert the path of a file dropped onto the terminal window into the focused
+/// pane, exactly as if it had been pasted. This is what lets you drag an image
+/// (or any file) onto a running program — most usefully Claude Code, which
+/// reads the dropped image from the path it receives. The path goes through
+/// the bracketed-paste-aware [`send_paste_text`], so it is inserted, never
+/// executed on its own. Honours `terminal.drop_paths` (master toggle),
+/// `terminal.drop_path_quoting`, and `terminal.drop_path_trailing_space`.
+///
+/// winit delivers one `DroppedFile` event per file with no cursor position,
+/// so each dropped file is routed to the active tab's focused pane and (when
+/// `drop_path_trailing_space` is on) separated from the next by a space.
+pub(crate) fn handle_file_drop(
+    state: &mut RunningState,
+    config: &terminale_config::Config,
+    path: &std::path::Path,
+) {
+    if !config.terminal.drop_paths {
         return;
+    }
+    let raw = path.to_string_lossy();
+    let text = format_dropped_path(
+        &raw,
+        config.terminal.drop_path_quoting,
+        config.terminal.drop_path_trailing_space,
+        cfg!(windows),
+    );
+    send_paste_text(state, &text);
+}
+
+/// Format a dropped file path for insertion, applying the quoting policy and
+/// optional trailing space. Pure helper so the quoting logic is unit-testable
+/// on both platforms via the explicit `windows` flag (the runtime caller
+/// passes `cfg!(windows)`).
+pub(crate) fn format_dropped_path(
+    raw: &str,
+    quoting: terminale_config::DropPathQuoting,
+    trailing_space: bool,
+    windows: bool,
+) -> String {
+    use terminale_config::DropPathQuoting;
+    let quoted = match quoting {
+        DropPathQuoting::Never => raw.to_string(),
+        DropPathQuoting::Always => quote_path(raw, windows),
+        DropPathQuoting::Auto => {
+            if path_needs_quoting(raw, windows) {
+                quote_path(raw, windows)
+            } else {
+                raw.to_string()
+            }
+        }
     };
-    let bracketed = tab.emulator.lock().bracketed_paste_enabled();
-    // Optionally strip control bytes before building the payload.
-    let payload = if strip_control_chars {
-        let stripped = crate::paste_guard::strip_control_chars(text);
-        build_paste_payload(&stripped, bracketed)
+    if trailing_space {
+        format!("{quoted} ")
     } else {
-        build_paste_payload(text, bracketed)
-    };
-    let _ = tab.session.write_input(&payload);
-    // Stamp the paste as user input so the busy-spinner fallback can tell
-    // the resulting echo / prompt repaint apart from real command output.
-    tab.focused_pane_mut().last_input_at = Some(std::time::Instant::now());
+        quoted
+    }
+}
+
+/// Whether `path` contains characters that would break an unquoted shell
+/// argument: whitespace or common shell metacharacters. An empty path also
+/// "needs quoting" so it round-trips as an explicit empty argument rather than
+/// vanishing.
+fn path_needs_quoting(path: &str, windows: bool) -> bool {
+    // Shell metacharacters that force quoting. On POSIX we additionally treat
+    // backslash (the escape char) and braces (brace expansion) as special —
+    // both are legal filename characters but shell-active, so an unquoted POSIX
+    // path containing them would be mangled on Enter. On Windows the backslash
+    // is the path *separator* (present in essentially every path) and is not
+    // special, so including it would force quoting on every path and defeat the
+    // `Auto` "quote only when needed" contract — hence it is POSIX-only.
+    const COMMON: &str = "\"'`$&|;<>()*?[]#~!";
+    path.is_empty()
+        || path.chars().any(|c| {
+            c.is_whitespace()
+                || COMMON.contains(c)
+                || (!windows && matches!(c, '\\' | '{' | '}'))
+        })
+}
+
+/// Wrap `path` in shell quotes appropriate for the platform. On Windows we use
+/// double quotes: `"` is not a legal filename character there, so a literal
+/// wrap is always safe and backslash path separators stay intact (escaping
+/// them would corrupt the path). Elsewhere we use POSIX single quotes,
+/// escaping any embedded single quote as the standard `'\''` sequence.
+fn quote_path(path: &str, windows: bool) -> String {
+    if windows {
+        format!("\"{path}\"")
+    } else {
+        format!("'{}'", path.replace('\'', r"'\''"))
+    }
 }
 
 /// Outcome of a paste attempt: either the text was sent directly, or a
@@ -1032,5 +1168,94 @@ mod tests {
         }];
         let label = group_label_for(3, 0, &groups, &None);
         assert_eq!(label, Some("Build".to_string()));
+    }
+
+    // ── format_dropped_path / quoting ─────────────────────────────────────────
+
+    use terminale_config::DropPathQuoting::{Always, Auto, Never};
+
+    #[test]
+    fn path_needs_quoting_detects_spaces_and_specials() {
+        // `false` = POSIX detection, `true` = Windows detection.
+        assert!(path_needs_quoting("with space", false));
+        assert!(path_needs_quoting("with space", true));
+        assert!(path_needs_quoting("a&b", false));
+        assert!(path_needs_quoting("", false));
+        assert!(!path_needs_quoting("/home/user/image.png", false));
+        assert!(!path_needs_quoting("plain-name_1.2.png", false));
+        // Backslash (POSIX escape char) and braces (brace expansion) trigger
+        // quoting on POSIX only — both are legal filename chars but shell-active.
+        assert!(path_needs_quoting(r"/tmp/a\b.png", false));
+        assert!(path_needs_quoting("/tmp/{a,b}.png", false));
+        // On Windows the backslash is the path separator, NOT special: a clean
+        // Windows path must stay unquoted in Auto mode (raw paths are what
+        // Claude Code wants), so it does NOT "need quoting".
+        assert!(!path_needs_quoting(r"C:\Users\Rubber\image.png", true));
+        assert!(!path_needs_quoting("C:/Users/Rubber/image.png", true));
+    }
+
+    #[test]
+    fn auto_quotes_posix_path_with_backslash() {
+        // POSIX path containing a literal backslash → single-quoted, backslash
+        // preserved (single quotes don't interpret it).
+        let out = format_dropped_path(r"/tmp/a\b.png", Auto, false, false);
+        assert_eq!(out, r"'/tmp/a\b.png'");
+    }
+
+    #[test]
+    fn auto_quotes_posix_path_with_braces() {
+        let out = format_dropped_path("/tmp/{a,b}.png", Auto, false, false);
+        assert_eq!(out, "'/tmp/{a,b}.png'");
+    }
+
+    #[test]
+    fn auto_leaves_clean_path_unquoted_no_trailing() {
+        // Clean path, Auto, no trailing space → verbatim.
+        let out = format_dropped_path("/tmp/img.png", Auto, false, false);
+        assert_eq!(out, "/tmp/img.png");
+    }
+
+    #[test]
+    fn auto_quotes_path_with_spaces_posix() {
+        let out = format_dropped_path("/tmp/my pic.png", Auto, false, false);
+        assert_eq!(out, "'/tmp/my pic.png'");
+    }
+
+    #[test]
+    fn auto_quotes_path_with_spaces_windows_keeps_backslashes() {
+        let out = format_dropped_path(r"C:\Users\R\Screen Shot.png", Auto, false, true);
+        // Double-quote wrap, backslashes intact (not escaped).
+        assert_eq!(out, "\"C:\\Users\\R\\Screen Shot.png\"");
+    }
+
+    #[test]
+    fn trailing_space_is_appended() {
+        let out = format_dropped_path("/tmp/img.png", Auto, true, false);
+        assert_eq!(out, "/tmp/img.png ");
+    }
+
+    #[test]
+    fn never_inserts_raw_even_with_spaces() {
+        let out = format_dropped_path("/tmp/my pic.png", Never, false, false);
+        assert_eq!(out, "/tmp/my pic.png");
+    }
+
+    #[test]
+    fn always_quotes_clean_path() {
+        assert_eq!(
+            format_dropped_path("/tmp/img.png", Always, false, false),
+            "'/tmp/img.png'"
+        );
+        assert_eq!(
+            format_dropped_path(r"C:\img.png", Always, false, true),
+            "\"C:\\img.png\""
+        );
+    }
+
+    #[test]
+    fn posix_single_quote_in_path_is_escaped() {
+        // A POSIX path containing a single quote must escape it as '\''.
+        let out = format_dropped_path("/tmp/o'brien.png", Always, false, false);
+        assert_eq!(out, r"'/tmp/o'\''brien.png'");
     }
 }

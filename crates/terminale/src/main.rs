@@ -1514,6 +1514,13 @@ struct TabState {
     /// Cleared the moment the user makes this tab active. Tab-level so a
     /// multi-pane future can roll up "any pane produced output".
     unread: bool,
+    /// The program in this tab rang the bell (asked for attention) while the
+    /// tab was not focused — e.g. Claude Code finished its turn and is waiting
+    /// for input. Drives the static amber "waiting" dot in the tab bar.
+    /// Cleared when the tab is activated or the window regains focus on it.
+    /// Distinct from `unread` (any output) — this fires only on a bell, the
+    /// signal a program emits when it specifically wants your attention.
+    attention: bool,
     /// When `Some(id)`, the pane with that id is zoomed — it fills the
     /// whole tab body and all other panes are hidden. Toggled by the
     /// `TogglePaneZoom` action. `None` = normal multi-pane tree layout.
@@ -1555,6 +1562,7 @@ impl TabState {
             focused: 0,
             next_pane_id: 1,
             unread: false,
+            attention: false,
             zoomed_pane: None,
             ssh_host_name: String::new(),
             auto_color: None,
@@ -2493,6 +2501,11 @@ struct TermWindow {
     /// strip non-printable control bytes from pasted text before sending.
     /// Live-updated.
     paste_strip_control_chars: bool,
+    /// Mirror of `config.window.scroll_on_input`. When `true` (default),
+    /// typing a key or pasting while scrolled up into history snaps the
+    /// viewport back to the live edge. Live-updated. Read by the keyboard
+    /// handler and [`tabs::send_paste_text`].
+    scroll_on_input: bool,
 
     /// Whether the snap-layout chooser overlay is currently open.
     /// Driven by the `ShowSnapLayouts` action; cleared on Esc or a cell click.
@@ -2601,6 +2614,11 @@ struct TermWindow {
     /// braille-dots spinner is prepended to busy tab labels and pane headers.
     /// Live-applied from the Appearance settings toggle and config reload.
     tab_activity_spinner: bool,
+    /// Mirror of `config.appearance.tab_attention_on_bell`. When `true`, a bell
+    /// from a non-focused tab raises that tab's `attention` flag (the amber
+    /// "waiting for input" dot). Live-applied from the Appearance settings
+    /// toggle and config reload. Read in `drain_pty_output` / `handle_bell`.
+    tab_attention_on_bell: bool,
     /// Current animation frame index for the busy-tab spinner. Incremented
     /// once every ~90 ms in `about_to_wait` while any pane is busy. Wraps
     /// around via `% SPINNER_FRAMES.len()` before use so it never overflows.
@@ -3066,6 +3084,7 @@ impl TerminaleApp {
             paste_confirm_multiline: self.config.terminal.paste_confirm_multiline,
             paste_confirm_when_unbracketed: self.config.terminal.paste_confirm_when_unbracketed,
             paste_strip_control_chars: self.config.terminal.paste_strip_control_chars,
+            scroll_on_input: self.config.window.scroll_on_input,
             dir_jump_store: {
                 let cfg = &self.config.directory_jump;
                 if cfg.persist {
@@ -3112,6 +3131,7 @@ impl TerminaleApp {
             tab_group_colors: self.config.appearance.tab_group_colors.clone(),
             bundled_icons: self.config.appearance.bundled_icons,
             tab_activity_spinner: self.config.appearance.tab_activity_spinner,
+            tab_attention_on_bell: self.config.appearance.tab_attention_on_bell,
             spinner_frame: 0,
             last_spinner_tick: None,
         };
@@ -5533,6 +5553,10 @@ impl TerminaleApp {
                     state.paste_confirm_when_unbracketed =
                         cfg.terminal.paste_confirm_when_unbracketed;
                     state.paste_strip_control_chars = cfg.terminal.paste_strip_control_chars;
+                    // Live-apply scroll-to-bottom-on-input toggle.
+                    state.scroll_on_input = cfg.window.scroll_on_input;
+                    // Live-apply tab attention-on-bell toggle.
+                    state.tab_attention_on_bell = cfg.appearance.tab_attention_on_bell;
                     // Live-apply prompt-navigation highlight toggle.
                     state.highlight_on_jump = cfg.terminal.highlight_on_jump;
                     // Live-apply minimum contrast.
@@ -7611,6 +7635,11 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.modifiers = ModifiersState::empty();
                     }
                     refresh_quake_last_monitor(state);
+                    // Coming back to the window answers the active tab's bell:
+                    // clear its "waiting for input" dot (refresh_tab_bar clears
+                    // the active tab) and rebuild so any background tabs that
+                    // lit up while we were away show their dots.
+                    crate::tabs::refresh_tab_bar(state);
                 }
                 // Losing focus ends any in-progress mouse gesture: a drag-select
                 // can't continue in an unfocused window, and the button-release
@@ -8272,6 +8301,11 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     )
                 };
                 if let Some(bytes) = key_bytes {
+                    // Snap the viewport back to the live edge when typing while
+                    // scrolled up into history (standard terminal behaviour).
+                    // Read the toggle before the mutable tab borrow.
+                    let snap_to_bottom = state.scroll_on_input;
+                    let mut snapped = false;
                     if let Some(tab) = state.tabs.get_mut(state.active_tab) {
                         if let Err(e) = tab.session.write_input(&bytes) {
                             tracing::warn!(?e, "pty write failed");
@@ -8279,6 +8313,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         // Stamp the keystroke so the busy-spinner fallback can
                         // tell prompt echo apart from real command output.
                         tab.focused_pane_mut().last_input_at = Some(std::time::Instant::now());
+                        if snap_to_bottom && tab.scroll_lines != 0 {
+                            tab.scroll_lines = 0;
+                            snapped = true;
+                        }
+                    }
+                    if snapped {
+                        state.renderer.set_scroll_lines(0);
                     }
                     // Broadcast: when broadcast-input is active, fan the same
                     // raw bytes out to every other live pane in the configured
@@ -8394,6 +8435,20 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 drain_pty_output(state);
                 render_main(state);
             }
+            // A file (or several) was dropped onto the window. winit gives no
+            // cursor position and one event per file, so each path is routed
+            // to the active tab's focused pane and inserted as a paste. This
+            // is what makes dragging an image onto e.g. Claude Code work — it
+            // receives the path and reads the image from it.
+            WindowEvent::DroppedFile(path) => {
+                crate::tabs::handle_file_drop(state, &self.config, &path);
+                state.window.request_redraw();
+            }
+            // Hover phase of a drag. No visual feedback yet (the drop itself is
+            // what inserts the path); the explicit arms keep these events from
+            // being silently swallowed and document where a future drop-target
+            // highlight would hook in.
+            WindowEvent::HoveredFile(_) | WindowEvent::HoveredFileCancelled => {}
             _ => {}
         }
 
@@ -9873,6 +9928,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.paste_confirm_when_unbracketed =
                             cfg.terminal.paste_confirm_when_unbracketed;
                         state.paste_strip_control_chars = cfg.terminal.paste_strip_control_chars;
+                        // Live-apply scroll-to-bottom-on-input toggle.
+                        state.scroll_on_input = cfg.window.scroll_on_input;
+                        // Live-apply tab attention-on-bell toggle.
+                        state.tab_attention_on_bell = cfg.appearance.tab_attention_on_bell;
                         // Live-apply prompt-navigation highlight toggle.
                         state.highlight_on_jump = cfg.terminal.highlight_on_jump;
                         // Live-apply minimum contrast.
@@ -17302,6 +17361,7 @@ mod tests {
             icon: None,
             active: true,
             unread: false,
+            attention: false,
             color: None,
             badge: None,
             pinned: true,
@@ -17313,6 +17373,7 @@ mod tests {
             icon: None,
             active: false,
             unread: false,
+            attention: false,
             color: None,
             badge: None,
             pinned: false,
@@ -17321,6 +17382,25 @@ mod tests {
         };
         assert!(item_pinned.pinned);
         assert!(!item_normal.pinned);
+    }
+
+    /// The `attention` flag round-trips through `TabBarItem` so the tab bar can
+    /// render the "waiting for input" dot.
+    #[test]
+    fn tab_bar_item_attention_flag() {
+        let item = terminale_render::TabBarItem {
+            label: "C".into(),
+            icon: None,
+            active: false,
+            unread: false,
+            attention: true,
+            color: None,
+            badge: None,
+            pinned: false,
+            group_accent: None,
+            group_label: None,
+        };
+        assert!(item.attention);
     }
 
     /// The pin-boundary clamping logic used in `move_active_tab` keeps

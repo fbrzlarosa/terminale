@@ -363,6 +363,48 @@ impl ScrollbackExportFormat {
     }
 }
 
+// ── DropPathQuoting ───────────────────────────────────────────────────────────
+
+/// How file paths are quoted when files are dropped onto the terminal window
+/// and inserted into the focused pane.
+///
+/// Dropping onto a bare shell prompt usually wants quoting so paths with
+/// spaces survive as a single argument; dropping onto an editor / TUI (e.g.
+/// Claude Code, which reads dropped image paths from its input) may prefer the
+/// raw path. `auto` covers the common case without surprising either.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum DropPathQuoting {
+    /// Quote only when the path contains whitespace or shell-special
+    /// characters; bare paths are inserted verbatim. Default.
+    #[default]
+    Auto,
+    /// Always wrap the path in quotes (double quotes on Windows, single
+    /// quotes elsewhere).
+    Always,
+    /// Never quote — insert the path exactly as the OS reports it.
+    Never,
+}
+
+impl DropPathQuoting {
+    /// All variants — useful for UI dropdowns.
+    #[must_use]
+    pub fn all() -> [Self; 3] {
+        [Self::Auto, Self::Always, Self::Never]
+    }
+
+    /// Human-readable label for the settings dropdown.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (quote when needed)",
+            Self::Always => "Always quote",
+            Self::Never => "Never quote",
+        }
+    }
+}
+
 // ── TerminalConfig ────────────────────────────────────────────────────────────
 
 /// Terminal-grid behaviour knobs.
@@ -575,6 +617,24 @@ pub struct TerminalConfig {
     /// `false`.
     pub paste_strip_control_chars: bool,
 
+    // ── Drag & drop ─────────────────────────────────────────────────────────────
+    /// When `true` (default), dropping one or more files onto the terminal
+    /// window inserts their paths into the focused pane — exactly as if you
+    /// had pasted them. This is what lets you drag an image onto a running
+    /// program (e.g. Claude Code, which reads the dropped image from the
+    /// path) instead of the drop being ignored. The paths go through the same
+    /// bracketed-paste-aware path as a clipboard paste, so nothing is executed
+    /// on its own. Set `false` to ignore dropped files entirely.
+    pub drop_paths: bool,
+    /// How dropped-file paths are quoted before insertion — `auto` (quote
+    /// only when the path contains whitespace or shell-special characters,
+    /// the default), `always`, or `never`.
+    pub drop_path_quoting: DropPathQuoting,
+    /// When `true` (default), a single trailing space is appended after each
+    /// dropped path. This separates consecutive drops and lets you keep
+    /// typing after a drop without the path running into the next word.
+    pub drop_path_trailing_space: bool,
+
     // ── Prompt navigation ─────────────────────────────────────────────────────
     /// When `true` (default), briefly highlight the prompt block that the
     /// viewport has jumped to after a `JumpToPrevPrompt`, `JumpToNextPrompt`,
@@ -626,6 +686,9 @@ impl Default for TerminalConfig {
             paste_confirm_multiline: false,
             paste_confirm_when_unbracketed: true,
             paste_strip_control_chars: false,
+            drop_paths: true,
+            drop_path_quoting: DropPathQuoting::default(),
+            drop_path_trailing_space: true,
             highlight_on_jump: true,
         }
     }
@@ -1366,5 +1429,68 @@ paste_strip_control_chars = true
             cfg.terminal.highlight_on_jump,
             "absent highlight_on_jump must default to true"
         );
+    }
+
+    // ── Drag & drop config ────────────────────────────────────────────────────
+
+    #[test]
+    fn drop_paths_config_defaults() {
+        let cfg = TerminalConfig::default();
+        assert!(cfg.drop_paths, "drop_paths must default to true");
+        assert_eq!(
+            cfg.drop_path_quoting,
+            DropPathQuoting::Auto,
+            "drop_path_quoting must default to Auto"
+        );
+        assert!(
+            cfg.drop_path_trailing_space,
+            "drop_path_trailing_space must default to true"
+        );
+    }
+
+    #[test]
+    fn drop_path_quoting_roundtrip_toml() {
+        for q in DropPathQuoting::all() {
+            let mut cfg = crate::Config::default();
+            cfg.terminal.drop_path_quoting = q;
+            let raw = toml::to_string(&cfg).expect("serialise");
+            let back: crate::Config = toml::from_str(&raw).expect("deserialise");
+            assert_eq!(
+                back.terminal.drop_path_quoting, q,
+                "DropPathQuoting::{q:?} must round-trip through Config"
+            );
+        }
+    }
+
+    #[test]
+    fn drop_config_absent_uses_defaults() {
+        let cfg: crate::Config =
+            toml::from_str("[terminal]\n").expect("must parse empty terminal section");
+        assert!(cfg.terminal.drop_paths, "absent drop_paths defaults to true");
+        assert_eq!(cfg.terminal.drop_path_quoting, DropPathQuoting::Auto);
+        assert!(
+            cfg.terminal.drop_path_trailing_space,
+            "absent drop_path_trailing_space defaults to true"
+        );
+    }
+
+    #[test]
+    fn drop_path_quoting_parses_named_variants() {
+        let always: crate::Config =
+            toml::from_str("[terminal]\ndrop_path_quoting = \"always\"\n").expect("parse always");
+        assert_eq!(always.terminal.drop_path_quoting, DropPathQuoting::Always);
+        let never: crate::Config =
+            toml::from_str("[terminal]\ndrop_path_quoting = \"never\"\n").expect("parse never");
+        assert_eq!(never.terminal.drop_path_quoting, DropPathQuoting::Never);
+    }
+
+    #[test]
+    fn drop_path_quoting_labels_non_empty() {
+        for q in DropPathQuoting::all() {
+            assert!(
+                !q.label().is_empty(),
+                "DropPathQuoting::{q:?} label must not be empty"
+            );
+        }
     }
 }

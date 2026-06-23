@@ -120,6 +120,37 @@ impl SettingsWindow {
                 "Accumulate sub-row trackpad deltas across events so slow gestures \
                  scroll by single rows rather than losing the fraction each event.",
             );
+
+            ui.add_space(4.0);
+
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Scroll to bottom on input");
+                let on = self.config.window.scroll_on_input;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.window.scroll_on_input = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Scroll to bottom on input",
+            );
+            sublabel(
+                ui,
+                "Jump back to the live prompt when you type or paste while scrolled up in \
+                 history (like iTerm2 and Windows Terminal). Off keeps the view parked in \
+                 the scrollback while you type.",
+            );
         });
 
         ui.add_space(6.0);
@@ -205,6 +236,99 @@ impl SettingsWindow {
                 ui,
                 "Auto-copy the selection to the clipboard the moment you finish selecting with the mouse.",
             );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Drop files as paths");
+                let on = self.config.terminal.drop_paths;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.terminal.drop_paths = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Terminal, "Drop files as paths");
+            sublabel(
+                ui,
+                "Dragging files onto the window inserts their paths into the focused pane \
+                 (like a paste) — drop an image onto Claude Code and it reads it from the path.",
+            );
+
+            // The quoting + trailing-space knobs only matter when drops are on.
+            ui.add_enabled_ui(self.config.terminal.drop_paths, |ui| {
+                ui.add_space(4.0);
+
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Path quoting");
+                    let current = self.config.terminal.drop_path_quoting;
+                    egui::ComboBox::from_id_salt("drop_path_quoting")
+                        .selected_text(current.label())
+                        .width(220.0)
+                        .show_ui(ui, |ui| {
+                            for q in terminale_config::DropPathQuoting::all() {
+                                if ui
+                                    .selectable_value(
+                                        &mut self.config.terminal.drop_path_quoting,
+                                        q,
+                                        q.label(),
+                                    )
+                                    .clicked()
+                                {
+                                    dirty = true;
+                                }
+                            }
+                        });
+                });
+                self.highlight_row(ui, hr.response.rect, Section::Terminal, "Path quoting");
+                sublabel(
+                    ui,
+                    "How dropped paths are quoted. \"Auto\" quotes only when the path has spaces \
+                     or shell-special characters; \"Never\" inserts the raw path (best when the \
+                     target program parses paths itself).",
+                );
+
+                ui.add_space(4.0);
+
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Trailing space after path");
+                    let on = self.config.terminal.drop_path_trailing_space;
+                    if toggle_switch(ui, on).clicked() {
+                        self.config.terminal.drop_path_trailing_space = !on;
+                        dirty = true;
+                    }
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(
+                            if on {
+                                egui::Color32::from_rgb(120, 220, 140)
+                            } else {
+                                egui::Color32::from_rgb(140, 150, 175)
+                            },
+                        ),
+                    );
+                });
+                self.highlight_row(
+                    ui,
+                    hr.response.rect,
+                    Section::Terminal,
+                    "Trailing space after path",
+                );
+                sublabel(
+                    ui,
+                    "Append a space after each dropped path so consecutive drops stay separated \
+                     and you can keep typing.",
+                );
+            });
         });
 
         ui.add_space(6.0);

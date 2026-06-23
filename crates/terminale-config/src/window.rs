@@ -272,6 +272,14 @@ pub struct WindowConfig {
     /// precision-trackpad gestures scroll smoothly by carrying the leftover
     /// fraction into the next event. Off by default.
     pub smooth_scroll: bool,
+    /// Snap the viewport back to the live edge (newest output) whenever you
+    /// type a key or paste while scrolled up into history — the standard
+    /// "type to return to the prompt" behaviour of iTerm2, Windows Terminal,
+    /// and friends. When `false`, input is sent but the view stays parked in
+    /// the scrollback (you keep reading history while typing blind). On by
+    /// default. Note: this is independent of follow-on-output, which always
+    /// keeps you pinned to the bottom while you are already there.
+    pub scroll_on_input: bool,
     /// Copy the selection to the clipboard automatically as soon as a
     /// mouse selection is made (classic X11 behaviour). Off by default so
     /// it doesn't surprise users by clobbering their clipboard.
@@ -354,6 +362,7 @@ impl Default for WindowConfig {
             alt_screen_scroll_lines: 3,
             touchpad_pixels_per_row: 16.0,
             smooth_scroll: false,
+            scroll_on_input: true,
             copy_on_select: false,
             scrollback_lines: 10_000,
             scrollbar: ScrollbarMode::default(),
@@ -410,6 +419,31 @@ mod tests {
     #[test]
     fn scrollbar_defaults_to_auto() {
         assert_eq!(WindowConfig::default().scrollbar, ScrollbarMode::Auto);
+    }
+
+    #[test]
+    fn scroll_on_input_defaults_to_true() {
+        assert!(
+            WindowConfig::default().scroll_on_input,
+            "scroll_on_input must default to true"
+        );
+    }
+
+    #[test]
+    fn scroll_on_input_roundtrips_and_legacy_defaults_true() {
+        let cfg = WindowConfig {
+            scroll_on_input: false,
+            ..WindowConfig::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let back: WindowConfig = toml::from_str(&toml).unwrap();
+        assert!(!back.scroll_on_input, "scroll_on_input=false must roundtrip");
+        // A config file written before the field existed keeps the default.
+        let legacy: WindowConfig = toml::from_str("").unwrap();
+        assert!(
+            legacy.scroll_on_input,
+            "absent scroll_on_input must default to true"
+        );
     }
 
     #[test]

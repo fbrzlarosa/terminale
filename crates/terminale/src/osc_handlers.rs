@@ -142,6 +142,10 @@ pub(crate) fn pane_is_busy(pane: &Pane) -> bool {
 pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
     let mut any = false;
     let active = state.active_tab;
+    // Captured before any `state.tabs` borrow so the per-tab background bell
+    // loop can read it. Drives the amber "waiting for input" attention dot.
+    let bell_attention_on = state.tab_attention_on_bell;
+    let mut attention_changed = false;
     let mut active_events: Vec<terminale_term::EmulatorEvent> = Vec::new();
     let mut scroll_target: Option<usize> = None;
     // Panes whose PTY channel just closed (EOF). Collected here and processed
@@ -294,6 +298,10 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
             continue;
         }
         let mut got_bytes = false;
+        // A bell from any pane in this background tab means its program is
+        // asking for attention (e.g. Claude Code finished its turn). Collected
+        // per-tab so `tab.attention` can be set after the pane borrow ends.
+        let mut tab_bell = false;
         let pane_ids: Vec<crate::PaneId> = tab.panes.keys().copied().collect();
         for pane_id in pane_ids {
             let Some(pane) = tab.panes.get_mut(&pane_id) else {
@@ -343,8 +351,15 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
             // Same protocol-response duty as the active tab's non-focused
             // panes: background shells block on unanswered DSR/DA queries.
             for ev in pane.emulator.lock().drain_events() {
-                if let terminale_term::EmulatorEvent::PtyWrite(s) = ev {
-                    let _ = pane.session.write_input(s.as_bytes());
+                match ev {
+                    terminale_term::EmulatorEvent::PtyWrite(s) => {
+                        let _ = pane.session.write_input(s.as_bytes());
+                    }
+                    // A bell from a background pane: record it so the owning
+                    // tab gets the amber "waiting for input" dot. Other UI
+                    // events (Title, OSC 52, notifications) stay focused-only.
+                    terminale_term::EmulatorEvent::Bell => tab_bell = true,
+                    _ => {}
                 }
             }
         }
@@ -355,10 +370,24 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
             tab.unread = true;
             any = true;
         }
+        // A backgrounded program rang the bell while you were elsewhere — light
+        // the attention dot. Transition-only so it forces just one repaint.
+        if bell_attention_on && tab_bell && !tab.attention {
+            tab.attention = true;
+            any = true;
+            attention_changed = true;
+        }
     }
-    // Apply events from the focused pane to host state.
+    // Apply events from the focused pane to host state. A focused-pane bell
+    // while the window is unfocused raises the active tab's attention flag (see
+    // `handle_bell`); snapshot around the loop so the tab bar is refreshed when
+    // it does.
+    let attn_before = state.tabs.get(active).is_some_and(|t| t.attention);
     for event in active_events {
         handle_emulator_event(state, event);
+    }
+    if state.tabs.get(active).is_some_and(|t| t.attention) != attn_before {
+        attention_changed = true;
     }
     // ── Handle PTY exits ────────────────────────────────────────────────────
     // Process collected exits now that no tab/pane borrow is held. The
@@ -373,8 +402,9 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
         refresh_autodetect_links(state);
         // Re-evaluate context rules for all tabs; rebuild the tab bar when
         // any tab's auto_color or auto_badge changed (cwd update via OSC 7
-        // is the primary trigger since it arrives with PTY data).
-        if refresh_context_rules(state) {
+        // is the primary trigger since it arrives with PTY data), or when a
+        // tab's attention ("waiting for input") flag just changed.
+        if refresh_context_rules(state) || attention_changed {
             crate::tabs::refresh_tab_bar(state);
         }
         // Track the current working directory of the focused pane in the
@@ -455,6 +485,18 @@ fn inject_exit_message(state: &mut RunningState, tab_idx: usize, pane_id: crate:
 // ── handle_bell / system_beep ─────────────────────────────────────────────────
 
 pub(crate) fn handle_bell(state: &mut RunningState) {
+    // A bell from the focused pane while the window is UNFOCUSED means the
+    // foreground program (e.g. Claude Code) finished its turn and wants
+    // attention while you're looking elsewhere. Light the active tab's dot so a
+    // visible-but-unfocused window (split-screen next to a browser) shows it;
+    // it clears the moment the window regains focus. While the window IS
+    // focused we skip it — you're already watching this tab. (Background-tab
+    // bells are handled directly in `drain_pty_output`.)
+    if state.tab_attention_on_bell && !state.window_focused {
+        if let Some(tab) = state.tabs.get_mut(state.active_tab) {
+            tab.attention = true;
+        }
+    }
     use terminale_config::BellMode;
     match state.bell_mode {
         BellMode::None => {}

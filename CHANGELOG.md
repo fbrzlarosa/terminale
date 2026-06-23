@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **Drag & drop file paths.** Dropping one or more files onto the terminal
+  window now inserts their paths into the focused pane as a (bracketed) paste,
+  so nothing executes on its own — drag an image onto Claude Code and it reads
+  it from the path. Previously drops were silently ignored. Configurable under
+  **Settings → Terminal**: master toggle (`terminal.drop_paths`), quoting policy
+  (`terminal.drop_path_quoting` — `auto`/`always`/`never`, with platform-correct
+  quoting that keeps Windows backslashes intact and escapes POSIX shell
+  metacharacters), and an optional trailing space (`terminal.drop_path_trailing_space`).
+- **Scroll to bottom on input.** Typing or pasting while scrolled up into
+  history now snaps the viewport back to the live prompt (the standard
+  iTerm2 / Windows Terminal behaviour). Toggle under **Settings → Terminal**
+  (`window.scroll_on_input`, on by default).
+- **Per-tab "waiting for input" indicator.** When the program in a background
+  tab rings the terminal bell (e.g. Claude Code finishing its turn and waiting
+  for you), a static amber dot now appears on that tab's chip — distinct from
+  the blue unread dot (any output) and the busy spinner (a command is still
+  running) — and clears when you focus the tab. It also shows on the active tab
+  while the window is unfocused, so a visible-but-unfocused window surfaces it.
+  Toggle under **Settings → Appearance** (`appearance.tab_attention_on_bell`,
+  on by default).
+
 ## [0.1.34]
 
 ### Fixed
