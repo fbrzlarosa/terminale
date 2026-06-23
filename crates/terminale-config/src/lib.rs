@@ -89,8 +89,8 @@ pub use snippets::Snippet;
 pub use status_bar::{StatusBarConfig, StatusBarPosition, StatusSegment};
 pub use terminal::{
     default_hyperlink_rules, BroadcastScope, ClipboardReadPolicy, CommandHistoryScope,
-    EditorConfig, ExitBehavior, HyperlinkRule, ImageProtocolsConfig, KeyboardEncoding,
-    LinkUnderline, ScrollbackExportFormat, TerminalConfig,
+    DropPathQuoting, EditorConfig, ExitBehavior, HyperlinkRule, ImageProtocolsConfig,
+    KeyboardEncoding, LinkUnderline, ScrollbackExportFormat, TerminalConfig,
 };
 pub use updates::UpdatesConfig;
 pub use window::{

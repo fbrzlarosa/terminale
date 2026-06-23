@@ -32,11 +32,14 @@ ligatures = true               # enable programming ligatures
 
 ```toml
 [appearance]
-theme          = "Tokyo Night" # name of a built-in or user theme
-tab_drop_merge = true          # drop a dragged tab/pane onto a terminal body
+theme                 = "Tokyo Night" # name of a built-in or user theme
+tab_drop_merge        = true   # drop a dragged tab/pane onto a terminal body
                                # to merge it there as a split pane (a tinted
                                # zone previews the half it will occupy).
                                # false = body drops tear out a new window
+tab_attention_on_bell = true   # light an amber dot on a background tab when
+                               # its program rings the bell (e.g. Claude Code
+                               # finished and is waiting); clears on focus
 ```
 
 See [`theming.md`](theming.md) to add your own themes.
@@ -49,6 +52,9 @@ opacity          = 0.97        # 0.0–1.0
 padding          = 8           # inner padding, px
 scrollback_lines = 10000       # 0 disables scrollback; applied live
 copy_on_select   = false       # copy to clipboard on selection
+scroll_on_input  = true        # typing/pasting while scrolled up in history
+                               # snaps the view back to the live prompt
+                               # (iTerm2 / Windows Terminal behaviour)
 scrollbar        = "auto"      # interactive scrollback scrollbar: drag the
                                # thumb, click the track to jump. auto = shown
                                # while scrolled or on right-edge hover;
@@ -127,6 +133,12 @@ ctrl_c_copies_selection = true # Ctrl+C with text selected copies it instead of
                                # interrupting (like Tabby / Windows Terminal);
                                # the selection clears on copy, so a second
                                # Ctrl+C interrupts as usual. false = always ^C
+# Drag & drop: dropping files onto the window inserts their paths into the
+# focused pane (like a paste) — drop an image onto Claude Code and it reads it.
+drop_paths               = true # master toggle; false ignores dropped files
+drop_path_quoting        = "auto" # auto = quote only when the path has spaces
+                               # or shell-special chars; always | never
+drop_path_trailing_space = true # append a space after each dropped path
 ```
 
 ### `[terminal.image_protocols]`

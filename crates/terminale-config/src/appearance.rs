@@ -356,6 +356,14 @@ pub struct AppearanceConfig {
     /// command running or received output recently. Set `false` to disable the
     /// animation entirely. Live-applied from the Settings window.
     pub tab_activity_spinner: bool,
+    /// When `true` (default), light a static amber "attention" dot on a tab
+    /// when the program running in it rings the terminal bell (BEL) while you
+    /// are not looking at that tab — i.e. it finished its turn and is waiting
+    /// for input. This is the signal Claude Code (and most TUIs) emit when they
+    /// want your attention. The dot clears the moment you focus that tab. The
+    /// dot is distinct from the blue unread dot (any output) and the busy
+    /// spinner (a command is still running). Set `false` to disable it.
+    pub tab_attention_on_bell: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -404,6 +412,7 @@ impl Default for AppearanceConfig {
                 [0xff, 0x70, 0xd0],
             ],
             tab_activity_spinner: true,
+            tab_attention_on_bell: true,
         }
     }
 }
@@ -1460,5 +1469,37 @@ mod tests {
         parsed
             .validate()
             .expect("roundtripped config must validate");
+    }
+
+    // ── tab_attention_on_bell ─────────────────────────────────────────────────
+
+    #[test]
+    fn tab_attention_on_bell_default_is_true() {
+        let cfg = AppearanceConfig::default();
+        assert!(
+            cfg.tab_attention_on_bell,
+            "tab_attention_on_bell must default to true"
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn tab_attention_on_bell_roundtrips_and_legacy_defaults_true() {
+        let cfg = AppearanceConfig {
+            tab_attention_on_bell: false,
+            ..Default::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let parsed: AppearanceConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            !parsed.tab_attention_on_bell,
+            "tab_attention_on_bell=false must survive a TOML roundtrip"
+        );
+        // A config file written before the field existed keeps the default.
+        let legacy: AppearanceConfig = toml::from_str("").unwrap();
+        assert!(
+            legacy.tab_attention_on_bell,
+            "absent tab_attention_on_bell must default to true"
+        );
     }
 }

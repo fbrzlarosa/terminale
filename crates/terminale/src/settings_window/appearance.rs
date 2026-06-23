@@ -864,6 +864,31 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                let r = ui.checkbox(
+                    &mut self.config.appearance.tab_attention_on_bell,
+                    "Waiting-for-input indicator",
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+                r
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Waiting-for-input indicator",
+            );
+            sublabel(
+                ui,
+                "Light a static amber dot on a background tab when its program rings the bell — i.e. it finished and is waiting for you (e.g. Claude Code). The dot clears when you switch to the tab. Distinct from the blue unread dot (any output) and the busy spinner (still running).",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 let r = ui.checkbox(&mut self.config.appearance.pane_tear_out, "Tear out panes");
                 if r.changed() {
                     dirty = true;

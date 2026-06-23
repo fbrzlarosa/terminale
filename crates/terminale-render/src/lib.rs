@@ -385,8 +385,13 @@ pub struct TabBarItem {
     /// Whether this tab is the currently-active one.
     pub active: bool,
     /// Background tab has produced new output since the user last
-    /// looked at it. The bar renders a small accent dot.
+    /// looked at it. The bar renders a small blue accent dot.
     pub unread: bool,
+    /// The program in this tab rang the bell (asked for attention) while the
+    /// tab was not focused — e.g. Claude Code finished its turn and is waiting
+    /// for input. The bar renders a distinct static amber dot, in the opposite
+    /// corner from the blue `unread` dot. Only honoured on inactive tabs.
+    pub attention: bool,
     /// Context-rule tint colour for the tab chip background (`[R, G, B]`).
     /// `None` = use the default tab colour. Set automatically when a
     /// `[[context_rules]]` entry matches the tab's SSH host or cwd.
@@ -4747,6 +4752,26 @@ impl Renderer {
                 ));
             }
 
+            // Static "waiting for input" dot — bottom-left of tabs whose
+            // program rang the bell (e.g. Claude Code awaiting input). Amber
+            // and in the opposite corner from the blue unread dot so the two
+            // never collide. Independent `if` (not part of the
+            // active/accent/unread chain) so it also shows on tinted tabs. The
+            // build side already decides visibility (non-active tabs, or the
+            // active tab while the window is unfocused), so no `!active` here.
+            if item.attention {
+                let dot = 6.0 * scale;
+                quads.push(Quad::new(
+                    [
+                        (strip_x_log + 8.0) * scale,
+                        (row_y_log + row_h - 12.0) * scale,
+                    ],
+                    [dot, dot],
+                    [0xe0, 0x90, 0x30],
+                    1.0,
+                ));
+            }
+
             // ── Group accent: 3-px stripe on the leading inner edge ───────────
             // Vertical tab bars show the accent on the opposite inner edge so
             // it is distinct from the active-tab indicator.
@@ -7112,6 +7137,26 @@ impl Renderer {
                                 ],
                                 [dot, dot],
                                 [0x7d, 0xa6, 0xff],
+                                1.0,
+                            ));
+                        }
+
+                        // Static "waiting for input" dot — bottom-right of tabs
+                        // whose program rang the bell (e.g. Claude Code awaiting
+                        // input). Amber, opposite corner from the blue unread
+                        // dot so they never collide. Independent of the
+                        // accent/unread chain so it shows on tinted tabs too.
+                        // Visibility is decided build-side (see TabBarItem),
+                        // so no `!active` guard here.
+                        if item.attention {
+                            let dot = 6.0 * scale;
+                            quads.push(Quad::new(
+                                [
+                                    (tab_rect.x + tab_rect.w - 14.0) * scale,
+                                    (tab_y_log + tab_rect.y + tab_rect.h - 12.0) * scale,
+                                ],
+                                [dot, dot],
+                                [0xe0, 0x90, 0x30],
                                 1.0,
                             ));
                         }

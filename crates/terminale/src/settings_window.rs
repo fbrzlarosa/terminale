@@ -1523,6 +1523,10 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Appearance,
+            label: "Waiting-for-input indicator",
+        },
+        SearchEntry {
+            section: Section::Appearance,
             label: "Tear out panes",
         },
         SearchEntry {
@@ -1790,11 +1794,27 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Terminal,
+            label: "Scroll to bottom on input",
+        },
+        SearchEntry {
+            section: Section::Terminal,
             label: "Scrollback",
         },
         SearchEntry {
             section: Section::Terminal,
             label: "Copy on select",
+        },
+        SearchEntry {
+            section: Section::Terminal,
+            label: "Drop files as paths",
+        },
+        SearchEntry {
+            section: Section::Terminal,
+            label: "Path quoting",
+        },
+        SearchEntry {
+            section: Section::Terminal,
+            label: "Trailing space after path",
         },
         SearchEntry {
             section: Section::Terminal,
