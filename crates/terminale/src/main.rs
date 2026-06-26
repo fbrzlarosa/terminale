@@ -830,6 +830,8 @@ fn main() -> Result<()> {
         plugins,
         plugin_snap_key: None,
         config_save_due: None,
+        session_autosave_due: None,
+        last_session_text: None,
         sgr_demo_reseed_at: if std::env::var_os("TERMINALE_DEMO_PALETTE")
             .is_some_and(|v| v == "sgr")
         {
@@ -1228,6 +1230,15 @@ struct TerminaleApp {
     /// write to disk. We coalesce bursts of slider drags into a single
     /// write that fires after the user pauses for ~600 ms.
     config_save_due: Option<std::time::Instant>,
+    /// `Some(deadline)` for the next periodic last-session autosave. `None`
+    /// until the first tick arms it, then re-armed each time it fires while
+    /// session restore is enabled. Cadence is `window.session_autosave_secs`.
+    /// This is what makes the saved session survive a crash / power loss
+    /// instead of only a graceful close. See [`Self::autosave_last_session_if_changed`].
+    session_autosave_due: Option<std::time::Instant>,
+    /// Serialised TOML of the last-session snapshot we most recently wrote, so
+    /// an idle window isn't rewritten (with an `fsync`) every autosave interval.
+    last_session_text: Option<String>,
     /// `Some(deadline)` for the one-shot SGR demo re-seed when the
     /// `TERMINALE_DEMO_PALETTE=sgr` env var is set. After the deadline
     /// fires (≈700 ms after the first frame) we re-emit the sample text
@@ -5699,6 +5710,40 @@ impl TerminaleApp {
         );
     }
 
+    /// Periodic, crash-safe autosave of the last-session snapshot for the first
+    /// window. Captures the current layout, and writes it (atomically) only when
+    /// it differs from what we last wrote, so an idle session doesn't churn the
+    /// disk. Driven by the `session_autosave_due` timer in `about_to_wait`; the
+    /// graceful-close paths still save independently on a clean exit.
+    fn autosave_last_session_if_changed(&mut self) {
+        let Some(state) = self.windows.first() else {
+            return;
+        };
+        if state.tabs.is_empty() {
+            return;
+        }
+        let Some((path, text)) = crate::workspace::capture_last_session_text(
+            &state.tabs,
+            state.active_tab,
+            self.config.window.restore_working_dirs,
+            &state.tab_groups,
+            state.next_group_id,
+            capture_window_state(state),
+        ) else {
+            return;
+        };
+        // Unchanged since the last autosave — skip the write and its fsync.
+        if self.last_session_text.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        if let Err(e) = crate::workspace::write_workspace_text(&path, &text) {
+            tracing::warn!(?e, "periodic last-session autosave failed");
+        } else {
+            self.last_session_text = Some(text);
+            tracing::trace!("last session autosaved");
+        }
+    }
+
     /// Drop any windows whose tab list is empty (the last tab was closed via
     /// `close_tab`). When the very last window is reaped, save the last
     /// session (if configured) and then exit the process.
@@ -5836,8 +5881,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 PTY_WAKE_PENDING.store(false, std::sync::atomic::Ordering::Release);
                 // A single proxy feeds every window's PTY readers, so we
                 // can't tell which window produced output — drain them ALL.
+                let drain_budget = self.config.terminal.output_drain_budget_ms;
                 for state in &mut self.windows {
-                    if drain_pty_output(state) {
+                    if drain_pty_output(state, drain_budget) {
                         state.window.request_redraw();
                     }
                 }
@@ -6058,7 +6104,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if let Some(tab) = state.tabs.get(state.active_tab) {
                         tab.emulator.lock().advance(b"\x1b]2;vim ~/main.rs\x07");
                     }
-                    drain_pty_output(state);
+                    // Demo injects a fixed tiny payload — drain it all (no budget).
+                    drain_pty_output(state, 0);
                 } else if demo == "osc52" {
                     // Inject OSC 52 set-clipboard (base64 "dGVzdA==" = "test")
                     // and drain so the ClipboardStore event reaches the
@@ -6066,7 +6113,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if let Some(tab) = state.tabs.get(state.active_tab) {
                         tab.emulator.lock().advance(b"\x1b]52;c;dGVzdA==\x07");
                     }
-                    drain_pty_output(state);
+                    drain_pty_output(state, 0);
                 } else if demo == "newtab" {
                     // Announce a cwd via OSC 7 on the active tab, then open a
                     // new tab — it must spawn the default shell IN that cwd
@@ -7542,9 +7589,10 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             }
         }
 
+        let drain_budget = self.config.terminal.output_drain_budget_ms;
         let state = &mut self.windows[idx];
 
-        drain_pty_output(state);
+        drain_pty_output(state, drain_budget);
 
         match event {
             WindowEvent::CloseRequested => unreachable!("handled above"),
@@ -8430,9 +8478,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     refresh_quake_last_monitor(state);
                     // Post-resize drain: parse any PTY bytes that arrived
                     // between the resize event and now at the new grid size.
-                    drain_pty_output(state);
+                    drain_pty_output(state, drain_budget);
                 }
-                drain_pty_output(state);
+                drain_pty_output(state, drain_budget);
                 render_main(state);
             }
             // A file (or several) was dropped onto the window. winit gives no
@@ -10079,6 +10127,27 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 }
             }
         }
+        // Periodic crash-safe autosave of the last session: a power loss or
+        // crash now loses at most `session_autosave_secs` of layout instead of
+        // the whole window. The graceful-close saves still cover a clean exit;
+        // this fills the gap that previously left a stale (and, after a torn
+        // write, all-NUL) snapshot on disk. Gated on session restore being
+        // enabled and a non-zero interval; the content-diff inside the helper
+        // skips idle rewrites.
+        if self.config.window.restore_session == terminale_config::RestoreSession::LastSession
+            && self.config.window.session_autosave_secs > 0
+        {
+            let now = std::time::Instant::now();
+            let due = match self.session_autosave_due {
+                Some(d) => now >= d,
+                None => true,
+            };
+            if due {
+                let interval = u64::from(self.config.window.session_autosave_secs);
+                self.session_autosave_due = Some(now + std::time::Duration::from_secs(interval));
+                self.autosave_last_session_if_changed();
+            }
+        }
 
         // Drive the egui sub-windows' animations between input events:
         // pump any elapsed repaint, then remember how soon each next needs
@@ -10109,8 +10178,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // window (cursor blink, visual bell, settings egui animations).
         // Without this winit would park forever and animations would stall.
         let mut next_wake: Option<std::time::Duration> = settings_wake;
+        let drain_budget = self.config.terminal.output_drain_budget_ms;
         for state in &mut self.windows {
-            if drain_pty_output(state) {
+            if drain_pty_output(state, drain_budget) {
                 state.window.request_redraw();
             }
             // While the window is fully covered or minimized, skip scheduling
@@ -11044,8 +11114,15 @@ fn render_main(state: &mut RunningState) {
     if state.slow_frame_warn_ms != 0 {
         let frame_ms = frame_started.elapsed().as_millis();
         if frame_ms >= u128::from(state.slow_frame_warn_ms) {
+            // Attribute the stall to a phase so the log says WHICH part blocked
+            // (surface acquire / compositor, glyph prepare = atlas growth +
+            // shaping, or GPU submit+present) instead of just "slow frame".
+            let phases = state.renderer.last_frame_phases();
             tracing::warn!(
                 frame_ms = frame_ms as u64,
+                acquire_ms = phases.acquire.as_millis() as u64,
+                prepare_ms = phases.prepare.as_millis() as u64,
+                submit_present_ms = phases.submit_present.as_millis() as u64,
                 threshold_ms = state.slow_frame_warn_ms,
                 "slow render frame (possible freeze) — main window stalled"
             );

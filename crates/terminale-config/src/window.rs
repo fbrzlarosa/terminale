@@ -239,6 +239,11 @@ fn default_restore_working_dirs() -> bool {
     true
 }
 
+/// Serde default for [`WindowConfig::session_autosave_secs`].
+fn default_session_autosave_secs() -> u32 {
+    15
+}
+
 fn default_restore_window_geometry() -> bool {
     true
 }
@@ -351,6 +356,14 @@ pub struct WindowConfig {
     /// window opens at its default geometry. Default `true`.
     #[serde(default = "default_restore_window_geometry")]
     pub restore_window_geometry: bool,
+    /// How often the "last session" snapshot is auto-saved to disk while the
+    /// app is running, in seconds. `0` means "save only on graceful close"
+    /// (the legacy behaviour — a crash or power loss will lose the session).
+    /// Any non-zero value triggers a periodic autosave on that cadence, so an
+    /// unexpected exit still leaves a recent snapshot to restore from. Must be
+    /// `0` or in `5..=3600`. Default `15`.
+    #[serde(default = "default_session_autosave_secs")]
+    pub session_autosave_secs: u32,
 }
 
 impl Default for WindowConfig {
@@ -376,6 +389,7 @@ impl Default for WindowConfig {
             restore_session: RestoreSession::Off,
             restore_working_dirs: true,
             restore_window_geometry: true,
+            session_autosave_secs: default_session_autosave_secs(),
         }
     }
 }
@@ -404,6 +418,14 @@ impl WindowConfig {
             return Err(ConfigError::Invalid {
                 field: "window.padding",
                 message: "must be at most 64",
+            });
+        }
+        if self.session_autosave_secs != 0
+            && !(5..=3600).contains(&self.session_autosave_secs)
+        {
+            return Err(ConfigError::Invalid {
+                field: "window.session_autosave_secs",
+                message: "must be 0 (save on close only) or between 5 and 3600",
             });
         }
         Ok(())

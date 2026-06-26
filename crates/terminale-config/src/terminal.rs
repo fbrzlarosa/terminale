@@ -648,6 +648,19 @@ pub struct TerminalConfig {
     /// Set to `false` to disable the highlight entirely (viewport scrolls
     /// silently, as before).
     pub highlight_on_jump: bool,
+
+    // ── Output throughput ─────────────────────────────────────────────────────
+    /// Maximum wall-clock time, in milliseconds, the UI thread may spend
+    /// draining queued PTY output in a single pass before yielding back to the
+    /// event loop. This bounds the head-of-line stall during heavy output
+    /// bursts (`cat` of a large file, a chatty build, `yes`): instead of
+    /// parsing the entire backlog in one frame — which freezes the window
+    /// until it finishes — the drain stops once this budget is spent, renders
+    /// a frame, and resumes on the next tick. Lower values stay smoother under
+    /// floods at a small cost to bulk throughput; higher values finish bulk
+    /// output faster but allow longer hitches. Must be in `1..=200`. Default
+    /// `8` (about one frame at 120 Hz).
+    pub output_drain_budget_ms: u16,
 }
 
 impl Default for TerminalConfig {
@@ -690,6 +703,7 @@ impl Default for TerminalConfig {
             drop_path_quoting: DropPathQuoting::default(),
             drop_path_trailing_space: true,
             highlight_on_jump: true,
+            output_drain_budget_ms: 8,
         }
     }
 }
@@ -730,6 +744,12 @@ impl TerminalConfig {
             return Err(ConfigError::Invalid {
                 field: "terminal.command_history_max_entries",
                 message: "must be between 1 and 10_000",
+            });
+        }
+        if !(1..=200).contains(&self.output_drain_budget_ms) {
+            return Err(ConfigError::Invalid {
+                field: "terminal.output_drain_budget_ms",
+                message: "must be between 1 and 200",
             });
         }
         Ok(())

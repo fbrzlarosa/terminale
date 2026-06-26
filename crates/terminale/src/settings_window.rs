@@ -39,6 +39,7 @@ enum Section {
     ClipboardHistory,
     DirectoryJump,
     Integration,
+    Logging,
     About,
 }
 
@@ -94,6 +95,7 @@ mod directory_jump;
 mod font;
 mod gpu;
 mod integration;
+mod logging;
 mod plugins;
 mod profiles;
 mod quake;
@@ -1123,6 +1125,7 @@ impl SettingsWindow {
                             Section::ClipboardHistory => self.section_clipboard_history(ui),
                             Section::DirectoryJump => self.section_directory_jump(ui),
                             Section::Integration => self.section_integration(ui),
+                            Section::Logging => self.section_logging(ui),
                             Section::About => self.section_about(ui),
                         }
                     });
@@ -1437,6 +1440,12 @@ fn sidebar_entries() -> &'static [SidebarEntry] {
             icon: &icons::PLUG,
             label: "Desktop integration",
         },
+        SidebarEntry {
+            group: "System",
+            section: Section::Logging,
+            icon: &icons::FILE,
+            label: "Logging",
+        },
     ]
 }
 
@@ -1465,6 +1474,41 @@ struct SearchEntry {
 #[allow(clippy::too_many_lines)]
 fn search_index() -> &'static [SearchEntry] {
     &[
+        // section_terminal -> output throughput
+        SearchEntry {
+            section: Section::Terminal,
+            label: "Output drain budget",
+        },
+        // section_workspaces -> session autosave
+        SearchEntry {
+            section: Section::Workspaces,
+            label: "Autosave session",
+        },
+        SearchEntry {
+            section: Section::Workspaces,
+            label: "Autosave interval",
+        },
+        // section_logging
+        SearchEntry {
+            section: Section::Logging,
+            label: "Write log file",
+        },
+        SearchEntry {
+            section: Section::Logging,
+            label: "Log level",
+        },
+        SearchEntry {
+            section: Section::Logging,
+            label: "Log retention",
+        },
+        SearchEntry {
+            section: Section::Logging,
+            label: "Warn on slow frames",
+        },
+        SearchEntry {
+            section: Section::Logging,
+            label: "Slow-frame threshold",
+        },
         // section_profiles
         SearchEntry {
             section: Section::Profiles,
@@ -3776,6 +3820,7 @@ mod tests {
             include_str!("settings_window/clipboard_history.rs"),
             include_str!("settings_window/directory_jump.rs"),
             include_str!("settings_window/integration.rs"),
+            include_str!("settings_window/logging.rs"),
         );
         // Use a single owned string so `matches()` scans one contiguous slice.
         let combined = format!("{root}{sections}");
