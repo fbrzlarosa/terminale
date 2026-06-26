@@ -540,6 +540,35 @@ pub struct MenuOverlay {
     pub hovered: Option<usize>,
 }
 
+/// Per-frame phase timings for the freeze watchdog, so a slow frame can be
+/// attributed to the phase that actually blocked — surface acquisition (a
+/// compositor / vsync park or a `Lost`/`Outdated` reconfigure), glyph `prepare`
+/// (atlas growth + shaping on the CPU), or GPU `submit`+`present` — instead of
+/// just "the frame was slow". Updated every render; read by the host's
+/// slow-frame watchdog when it fires.
+#[derive(Clone, Copy, Default)]
+pub struct FramePhases {
+    /// Time inside `get_current_texture` (incl. any surface reconfigure+retry).
+    pub acquire: std::time::Duration,
+    /// Time inside glyphon `prepare` (atlas rasterize/upload + text shaping),
+    /// summed across the main and overlay text passes.
+    pub prepare: std::time::Duration,
+    /// Time inside `queue.submit` + `frame.present` (GPU submission + present).
+    pub submit_present: std::time::Duration,
+}
+
+// Backing counters for [`FramePhases`], in nanoseconds. Rendering is
+// single-threaded (the UI thread), so plain relaxed atomics are sufficient and
+// avoid threading a field through the renderer's three constructors.
+static FRAME_ACQUIRE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FRAME_PREPARE_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static FRAME_SUBMIT_PRESENT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Saturating `Duration`-nanos → `u64` for the phase counters.
+fn phase_ns(d: std::time::Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// Holds every piece of GPU + text state needed to draw a terminal frame.
 pub struct Renderer {
     instance: Arc<Instance>,
@@ -6285,8 +6314,21 @@ impl Renderer {
     /// errors. Without the reconfigure the surface never heals and every
     /// subsequent frame fails the same way: a permanently frozen window
     /// until some resize happens to call `configure` again.
+    /// Phase timings of the most recently rendered frame (see [`FramePhases`]).
+    /// Read by the host's freeze watchdog to attribute a slow frame.
+    #[must_use]
+    pub fn last_frame_phases(&self) -> FramePhases {
+        use std::sync::atomic::Ordering::Relaxed;
+        FramePhases {
+            acquire: std::time::Duration::from_nanos(FRAME_ACQUIRE_NS.load(Relaxed)),
+            prepare: std::time::Duration::from_nanos(FRAME_PREPARE_NS.load(Relaxed)),
+            submit_present: std::time::Duration::from_nanos(FRAME_SUBMIT_PRESENT_NS.load(Relaxed)),
+        }
+    }
+
     fn acquire_frame(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
-        match self.surface.get_current_texture() {
+        let acquire_start = std::time::Instant::now();
+        let result = match self.surface.get_current_texture() {
             Ok(frame) => Ok(frame),
             Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                 // `Lost` is a *real* device reset — GPU TDR, driver crash,
@@ -6309,12 +6351,17 @@ impl Renderer {
                     tracing::debug!("surface outdated; reconfiguring and retrying");
                 }
                 self.surface.configure(&self.device, &self.config);
-                Ok(self.surface.get_current_texture()?)
+                self.surface.get_current_texture().map_err(RenderError::from)
             }
             // Timeout = compositor hiccup, skip the frame; OutOfMemory and
             // friends bubble to the caller (logged, frame dropped).
             Err(e) => Err(e.into()),
-        }
+        };
+        FRAME_ACQUIRE_NS.store(
+            phase_ns(acquire_start.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        result
     }
 
     /// Single-pane render entry point — kept for the simple cases (the
@@ -8168,6 +8215,7 @@ impl Renderer {
             },
         );
 
+        let prepare_start = std::time::Instant::now();
         self.text_renderer.prepare(
             &self.device,
             &self.queue,
@@ -8177,6 +8225,10 @@ impl Renderer {
             text_areas_iter,
             &mut self.swash_cache,
         )?;
+        FRAME_PREPARE_NS.store(
+            phase_ns(prepare_start.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         // Drain the per-frame buffers now that `prepare` consumed them.
         // Header titles are rebuilt by `render_panes` every frame; the
@@ -8214,6 +8266,7 @@ impl Renderer {
                 default_color: GlyphonColor::rgb(0xe6, 0xea, 0xf8),
                 custom_glyphs: &[],
             }));
+        let overlay_prepare_start = std::time::Instant::now();
         self.overlay_text_renderer.prepare(
             &self.device,
             &self.queue,
@@ -8223,6 +8276,10 @@ impl Renderer {
             palette_areas_iter,
             &mut self.swash_cache,
         )?;
+        FRAME_PREPARE_NS.fetch_add(
+            phase_ns(overlay_prepare_start.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
 
         // ── Encode the pass ──
         let clear = clear_color(self.background_rgb, self.background_alpha);
@@ -8278,8 +8335,13 @@ impl Renderer {
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         }
 
+        let submit_present_start = std::time::Instant::now();
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        FRAME_SUBMIT_PRESENT_NS.store(
+            phase_ns(submit_present_start.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         self.atlas.trim();
         // Body-origin overrides are one-shot — clear them so the next
         // `render(emu)` call (without a wrapping `render_panes` setup)

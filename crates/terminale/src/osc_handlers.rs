@@ -139,8 +139,18 @@ pub(crate) fn pane_is_busy(pane: &Pane) -> bool {
 
 // ── drain_pty_output ──────────────────────────────────────────────────────────
 
-pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
+pub(crate) fn drain_pty_output(state: &mut RunningState, budget_ms: u16) -> bool {
     let mut any = false;
+    // Per-pass drain budget: bound how long we parse queued PTY output before
+    // yielding a frame, so a flood (`cat` of a huge file, a chatty build, `yes`)
+    // can no longer freeze the window while its whole backlog is parsed in one
+    // uninterruptible pass. `0` disables the budget (drain everything — the
+    // legacy behaviour). When the budget is spent with data still queued we
+    // re-arm a redraw at the end and resume on the next tick, so the UI stays
+    // responsive AND the backlog still drains, a slice per frame.
+    let drain_deadline = (budget_ms > 0)
+        .then(|| Instant::now() + std::time::Duration::from_millis(u64::from(budget_ms)));
+    let mut budget_hit = false;
     let active = state.active_tab;
     // Captured before any `state.tabs` borrow so the per-tab background bell
     // loop can read it. Drives the amber "waiting for input" attention dot.
@@ -212,6 +222,12 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                         if chunk.len() > 1 || chunk.contains(&b'\n') {
                             pane.last_output_at = Some(Instant::now());
                         }
+                        // Stop once the per-pass budget is spent; the channel
+                        // keeps the rest and we resume after rendering a frame.
+                        if drain_deadline.is_some_and(|d| Instant::now() >= d) {
+                            budget_hit = true;
+                            break;
+                        }
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
                     Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
@@ -272,6 +288,11 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                     }
                 }
             }
+            // Budget spent inside this pane's drain — stop sweeping the rest of
+            // the active tab's panes too; they get serviced on the next pass.
+            if budget_hit {
+                break;
+            }
         }
         let _ = active_pane_changed;
     }
@@ -294,6 +315,12 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
     // noisy without per-tab dimming, OSC 52 has to come from the
     // focused app anyway.
     for (idx, tab) in state.tabs.iter_mut().enumerate() {
+        // Out of budget already (the active tab consumed it, or a previous
+        // background tab did): defer the remaining background tabs to the next
+        // pass so we don't blow the frame.
+        if budget_hit {
+            break;
+        }
         if idx == active {
             continue;
         }
@@ -332,6 +359,11 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
                         // the spinner when the tab is switched to.
                         if chunk.len() > 1 || chunk.contains(&b'\n') {
                             pane.last_output_at = Some(Instant::now());
+                        }
+                        // Same per-pass budget guard as the active tab.
+                        if drain_deadline.is_some_and(|d| Instant::now() >= d) {
+                            budget_hit = true;
+                            break;
                         }
                     }
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
@@ -412,6 +444,15 @@ pub(crate) fn drain_pty_output(state: &mut RunningState) -> bool {
         // emulator's `current_dir()` method, so we read it here rather
         // than hooking into the EmulatorEvent path.
         update_dir_jump(state);
+    }
+    // Stopped early on the per-pass budget with bytes still queued: guarantee
+    // we run again by requesting a redraw (which re-enters the drain after the
+    // frame) and reporting activity so callers that gate on the return value
+    // also schedule the next pass. This is what turns "freeze until the whole
+    // flood is parsed" into "drain a slice, paint a frame, repeat".
+    if budget_hit {
+        state.window.request_redraw();
+        any = true;
     }
     any
 }

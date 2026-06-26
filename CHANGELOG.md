@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Open tabs survive a crash or power loss.** The last-session snapshot was
+  written only on a graceful close (window close / last-tab close) and via a
+  non-atomic truncating write, so an unclean exit left either a stale file or —
+  as actually happened on a power cut — an all-NUL torn file that failed to
+  parse, losing every open tab. Saving is now **crash-safe** (write to a temp
+  file, `fsync`, then atomic rename, so an interrupted write can never corrupt
+  the session) and runs on a **periodic autosave** while the app is open, not
+  only on exit — a crash now loses at most a few seconds of layout. Configurable
+  under **Settings → Workspaces** (`window.session_autosave_secs`, default 15s;
+  `0` = save on close only).
+- **No more freeze while a command floods output.** Draining queued PTY output
+  parsed the entire backlog in one uninterruptible pass on the UI thread, so a
+  burst (`cat` of a large file, a verbose build, `yes`) froze the window until
+  it finished, then recovered. The drain is now bounded by a per-pass time
+  budget: it parses a slice, paints a frame, and resumes next tick — the UI
+  stays responsive during floods. Configurable under **Settings → Terminal**
+  (`terminal.output_drain_budget_ms`, default 8 ms).
+
+### Added
+- **Logging settings.** The diagnostic log file and freeze watchdog now have a
+  dedicated **Settings → Logging** section: enable/disable the rolling log file
+  (`logging.file_enabled`), log level (`logging.file_level`), retention in days
+  (`logging.retention_days`), and the slow-frame warning threshold
+  (`logging.slow_frame_warn_ms`, applies live). Previously these existed only in
+  the config file with no in-app control.
+- **Phase-attributed freeze watchdog.** When a frame exceeds the slow-frame
+  threshold, the logged warning now breaks the time down by phase —
+  `acquire_ms` (surface acquire / compositor), `prepare_ms` (glyph atlas growth
+  + text shaping), and `submit_present_ms` (GPU submit + present) — so a
+  transient freeze can be attributed to the phase that actually stalled instead
+  of just "slow frame".
+
+### Changed
+- **Larger initial glyph atlas (256 → 2048 px).** Starting the atlas small
+  forced several synchronous grow passes — each re-rasterizing and re-uploading
+  every cached glyph — the first time a buffer introduced many new glyphs at
+  once (CJK/emoji bursts), a one-off multi-hundred-ms UI-thread hitch. The
+  larger initial size avoids that early grow storm at negligible VRAM cost.
+
 ## [0.1.35]
 
 ### Added

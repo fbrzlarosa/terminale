@@ -118,6 +118,58 @@ impl SettingsWindow {
             );
         });
 
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let on = self.config.window.session_autosave_secs > 0;
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Autosave session");
+                if toggle_switch(ui, on).clicked() {
+                    // Off stores 0 (save on close only); on restores the default cadence.
+                    self.config.window.session_autosave_secs = if on { 0 } else { 15 };
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Workspaces, "Autosave session");
+            if self.config.window.session_autosave_secs > 0 {
+                let hr2 = ui.horizontal(|ui| {
+                    field_label(ui, "Autosave interval");
+                    let r = ui.add(
+                        egui::Slider::new(&mut self.config.window.session_autosave_secs, 5..=300)
+                            .suffix(" s")
+                            .text(""),
+                    );
+                    if r.changed() {
+                        dirty = true;
+                    }
+                    if ui.small_button("Reset").clicked() {
+                        self.config.window.session_autosave_secs = 15;
+                        dirty = true;
+                    }
+                });
+                self.highlight_row(
+                    ui,
+                    hr2.response.rect,
+                    Section::Workspaces,
+                    "Autosave interval",
+                );
+            }
+            sublabel(
+                ui,
+                "Periodically save the last session to disk so a crash or power loss can \
+                 restore your tabs — not just a clean exit. Layout only (no running \
+                 processes). Disable to save on close only.",
+            );
+        });
+
         ui.add_space(12.0);
 
         // ── Saved workspaces ─────────────────────────────────────────────────

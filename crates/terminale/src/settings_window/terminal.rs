@@ -15,6 +15,33 @@ impl SettingsWindow {
 
         card(ui, |ui| {
             let hr = ui.horizontal(|ui| {
+                field_label(ui, "Output drain budget");
+                let r = ui.add(
+                    egui::Slider::new(&mut self.config.terminal.output_drain_budget_ms, 1..=200)
+                        .suffix(" ms")
+                        .text(""),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+                if ui.small_button("Reset").clicked() {
+                    self.config.terminal.output_drain_budget_ms = 8;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Terminal, "Output drain budget");
+            sublabel(
+                ui,
+                "Max time spent parsing queued output per frame before painting. Lower \
+                 keeps the UI responsive during heavy output (a big `cat`, a verbose \
+                 build); higher finishes bulk output a little faster. Applies live.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
                 field_label(ui, "Scroll step");
                 let r = ui.add(
                     egui::Slider::new(&mut self.config.window.scroll_step_lines, 1..=50)

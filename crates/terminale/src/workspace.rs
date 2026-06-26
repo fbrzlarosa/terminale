@@ -491,12 +491,47 @@ fn inject_split_for_b(
 ///
 /// Returns `Err` on TOML serialisation or filesystem error.
 pub(crate) fn write_workspace(path: &Path, ws: &SavedWorkspace) -> std::io::Result<()> {
+    let text = toml::to_string_pretty(ws)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    write_workspace_text(path, &text)
+}
+
+/// Atomically write pre-serialised workspace TOML to `path`.
+///
+/// Split out from [`write_workspace`] so the periodic last-session autosave can
+/// serialise once (to diff against the previously written text) and still reuse
+/// the same crash-safe write.
+///
+/// # Errors
+///
+/// Returns `Err` on any filesystem error.
+pub(crate) fn write_workspace_text(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let text = toml::to_string_pretty(ws)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, text)
+    // Crash-safe atomic write: serialise into a sibling temp file, flush it all
+    // the way to the disk platter (`sync_all`), then rename it over the target.
+    // A crash or power loss can then only ever leave EITHER the previous intact
+    // file OR the fully-written new one — never the half-written, all-NUL file a
+    // direct `fs::write` truncate leaves behind (which is exactly how a black-out
+    // wiped the saved session: the file existed but read back as zero bytes).
+    // `fs::rename` maps to `MoveFileExW(.., MOVEFILE_REPLACE_EXISTING)` on
+    // Windows and atomically replaces the destination on the same volume; the
+    // temp file is a sibling so it always shares the destination's volume.
+    // (Durability comes from the explicit `sync_all` above, not from the rename.)
+    let tmp = path.with_extension("toml.tmp");
+    {
+        use std::io::Write as _;
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(text.as_bytes())?;
+        f.sync_all()?;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // Don't leave a stray temp file behind on a failed rename.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// Read a [`SavedWorkspace`] from disk.
@@ -560,6 +595,34 @@ pub(crate) fn save_last_session(
     if let Err(e) = write_workspace(&path, &ws) {
         tracing::warn!(?e, "failed to save last session");
     }
+}
+
+/// Build the last-session snapshot and serialise it, returning the target path
+/// and the TOML text WITHOUT writing anything.
+///
+/// Used by the periodic autosave so it can diff the fresh text against what was
+/// last written and skip the disk write (and its `fsync`) when nothing changed.
+/// Returns `None` if no data directory is available or serialisation fails.
+pub(crate) fn capture_last_session_text(
+    tabs: &[crate::TabState],
+    active_tab: usize,
+    restore_working_dirs: bool,
+    tab_groups: &[crate::TabGroup],
+    next_group_id: u32,
+    window: SavedWindowState,
+) -> Option<(PathBuf, String)> {
+    let path = terminale_config::paths::last_session_path()?;
+    let mut ws = capture_workspace_with_groups(
+        tabs,
+        active_tab,
+        "",
+        restore_working_dirs,
+        tab_groups,
+        next_group_id,
+    );
+    ws.window = Some(window);
+    let text = toml::to_string_pretty(&ws).ok()?;
+    Some((path, text))
 }
 
 /// Load the last-session snapshot from disk. Returns `None` if no file exists

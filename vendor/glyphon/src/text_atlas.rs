@@ -27,7 +27,13 @@ pub(crate) struct InnerAtlas {
 }
 
 impl InnerAtlas {
-    const INITIAL_SIZE: u32 = 256;
+    // Starting at 256 px forces several synchronous grow() passes the first time a buffer
+    // introduces many new glyphs at once (e.g. CJK or emoji bursts): each pass re-rasterizes
+    // and re-uploads every cached glyph to a newly allocated texture, causing a one-off
+    // multi-hundred-ms hitch on the UI thread. 2048 px is well under the typical
+    // max_texture_dimension_2d of 8192–16384 on all modern GPUs (and is clamped to that limit
+    // in new() and grow() anyway), so this avoids the early grow storm at negligible VRAM cost.
+    const INITIAL_SIZE: u32 = 2048;
 
     fn new(device: &Device, _queue: &Queue, kind: Kind) -> Self {
         let max_texture_dimension_2d = device.limits().max_texture_dimension_2d;
