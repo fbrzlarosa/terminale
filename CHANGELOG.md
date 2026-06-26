@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.36]
+
 ### Fixed
 - **Open tabs survive a crash or power loss.** The last-session snapshot was
   written only on a graceful close (window close / last-tab close) and via a
@@ -930,7 +932,9 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.34...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...HEAD
+[0.1.36]: https://github.com/fbrzlarosa/terminale/compare/v0.1.35...v0.1.36
+[0.1.35]: https://github.com/fbrzlarosa/terminale/compare/v0.1.34...v0.1.35
 [0.1.34]: https://github.com/fbrzlarosa/terminale/compare/v0.1.33...v0.1.34
 [0.1.33]: https://github.com/fbrzlarosa/terminale/compare/v0.1.32...v0.1.33
 [0.1.32]: https://github.com/fbrzlarosa/terminale/compare/v0.1.31...v0.1.32
