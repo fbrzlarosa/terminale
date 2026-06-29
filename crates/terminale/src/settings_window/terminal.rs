@@ -29,7 +29,12 @@ impl SettingsWindow {
                     dirty = true;
                 }
             });
-            self.highlight_row(ui, hr.response.rect, Section::Terminal, "Output drain budget");
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Output drain budget",
+            );
             sublabel(
                 ui,
                 "Max time spent parsing queued output per frame before painting. Lower \
@@ -284,7 +289,12 @@ impl SettingsWindow {
                     }),
                 );
             });
-            self.highlight_row(ui, hr.response.rect, Section::Terminal, "Drop files as paths");
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Terminal,
+                "Drop files as paths",
+            );
             sublabel(
                 ui,
                 "Dragging files onto the window inserts their paths into the focused pane \
@@ -335,13 +345,11 @@ impl SettingsWindow {
                     }
                     ui.add_space(8.0);
                     ui.label(
-                        egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(
-                            if on {
-                                egui::Color32::from_rgb(120, 220, 140)
-                            } else {
-                                egui::Color32::from_rgb(140, 150, 175)
-                            },
-                        ),
+                        egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                            egui::Color32::from_rgb(120, 220, 140)
+                        } else {
+                            egui::Color32::from_rgb(140, 150, 175)
+                        }),
                     );
                 });
                 self.highlight_row(

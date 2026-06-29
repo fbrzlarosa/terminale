@@ -6351,7 +6351,9 @@ impl Renderer {
                     tracing::debug!("surface outdated; reconfiguring and retrying");
                 }
                 self.surface.configure(&self.device, &self.config);
-                self.surface.get_current_texture().map_err(RenderError::from)
+                self.surface
+                    .get_current_texture()
+                    .map_err(RenderError::from)
             }
             // Timeout = compositor hiccup, skip the frame; OutOfMemory and
             // friends bubble to the caller (logged, frame dropped).

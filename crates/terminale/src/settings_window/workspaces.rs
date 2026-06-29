@@ -138,7 +138,12 @@ impl SettingsWindow {
                     }),
                 );
             });
-            self.highlight_row(ui, hr.response.rect, Section::Workspaces, "Autosave session");
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Workspaces,
+                "Autosave session",
+            );
             if self.config.window.session_autosave_secs > 0 {
                 let hr2 = ui.horizontal(|ui| {
                     field_label(ui, "Autosave interval");

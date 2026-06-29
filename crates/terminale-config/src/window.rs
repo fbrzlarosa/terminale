@@ -420,9 +420,7 @@ impl WindowConfig {
                 message: "must be at most 64",
             });
         }
-        if self.session_autosave_secs != 0
-            && !(5..=3600).contains(&self.session_autosave_secs)
-        {
+        if self.session_autosave_secs != 0 && !(5..=3600).contains(&self.session_autosave_secs) {
             return Err(ConfigError::Invalid {
                 field: "window.session_autosave_secs",
                 message: "must be 0 (save on close only) or between 5 and 3600",
@@ -459,7 +457,10 @@ mod tests {
         };
         let toml = toml::to_string(&cfg).unwrap();
         let back: WindowConfig = toml::from_str(&toml).unwrap();
-        assert!(!back.scroll_on_input, "scroll_on_input=false must roundtrip");
+        assert!(
+            !back.scroll_on_input,
+            "scroll_on_input=false must roundtrip"
+        );
         // A config file written before the field existed keeps the default.
         let legacy: WindowConfig = toml::from_str("").unwrap();
         assert!(
