@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.37]
+
+### Security
+- **Dependency bumps clearing two RustSec advisories.** Updated `quinn-proto`
+  to 0.11.15 to fix **RUSTSEC-2026-0185** (high severity: remote memory
+  exhaustion from unbounded out-of-order stream reassembly), reached through
+  the HTTPS stack behind the in-app updater and the AI integration; and
+  replaced a yanked `crypto-bigint` (transitive via the SSH stack) with 0.7.5.
+  Lockfile-only — no behaviour or API change.
+
 ## [0.1.36]
 
 ### Fixed
@@ -932,7 +942,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...HEAD
+[0.1.37]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...v0.1.37
 [0.1.36]: https://github.com/fbrzlarosa/terminale/compare/v0.1.35...v0.1.36
 [0.1.35]: https://github.com/fbrzlarosa/terminale/compare/v0.1.34...v0.1.35
 [0.1.34]: https://github.com/fbrzlarosa/terminale/compare/v0.1.33...v0.1.34
