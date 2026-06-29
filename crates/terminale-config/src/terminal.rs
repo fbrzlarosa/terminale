@@ -1486,7 +1486,10 @@ paste_strip_control_chars = true
     fn drop_config_absent_uses_defaults() {
         let cfg: crate::Config =
             toml::from_str("[terminal]\n").expect("must parse empty terminal section");
-        assert!(cfg.terminal.drop_paths, "absent drop_paths defaults to true");
+        assert!(
+            cfg.terminal.drop_paths,
+            "absent drop_paths defaults to true"
+        );
         assert_eq!(cfg.terminal.drop_path_quoting, DropPathQuoting::Auto);
         assert!(
             cfg.terminal.drop_path_trailing_space,

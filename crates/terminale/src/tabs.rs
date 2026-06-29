@@ -38,8 +38,9 @@ pub(crate) fn tab_bar_from(
 ) -> TabBar {
     // Freshly-built bars (new windows / detached tabs) are always for a focused
     // window with no pending attention, so `window_focused: true` is correct.
-    let items =
-        build_tab_bar_items(tabs, active, true, groups, &None, &mut |t| crate::tab_label(t));
+    let items = build_tab_bar_items(tabs, active, true, groups, &None, &mut |t| {
+        crate::tab_label(t)
+    });
     TabBar {
         items,
         hovered: None,
@@ -243,8 +244,7 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
                 unread: t.unread && idx != state.active_tab,
                 // Show on non-active tabs, or on the active tab while the
                 // window is unfocused (bell arrived while you were away).
-                attention: t.attention
-                    && (idx != state.active_tab || !state.window_focused),
+                attention: t.attention && (idx != state.active_tab || !state.window_focused),
                 color: t.user_color.or(t.auto_color),
                 badge: t.auto_badge.clone(),
                 pinned: t.pinned,
@@ -299,9 +299,14 @@ fn build_tab_bar_items_for_initial(
     rename_tab: &Option<(usize, String)>,
     spinner: SpinnerCtx<'_>,
 ) -> TabBar {
-    let mut items = build_tab_bar_items(tabs, active, window_focused, groups, rename_info, &mut |t| {
-        crate::tab_label(t)
-    });
+    let mut items = build_tab_bar_items(
+        tabs,
+        active,
+        window_focused,
+        groups,
+        rename_info,
+        &mut |t| crate::tab_label(t),
+    );
     // Patch in live tab-rename buffer for Tab/Pane targets,
     // and prepend the spinner frame for busy tabs when enabled.
     for (idx, item) in items.iter_mut().enumerate() {
@@ -1017,9 +1022,7 @@ fn path_needs_quoting(path: &str, windows: bool) -> bool {
     const COMMON: &str = "\"'`$&|;<>()*?[]#~!";
     path.is_empty()
         || path.chars().any(|c| {
-            c.is_whitespace()
-                || COMMON.contains(c)
-                || (!windows && matches!(c, '\\' | '{' | '}'))
+            c.is_whitespace() || COMMON.contains(c) || (!windows && matches!(c, '\\' | '{' | '}'))
         })
 }
 
