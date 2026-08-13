@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.39]
+
+### Fixed
+- **macOS release artifacts are now complete.** v0.1.38 shipped without the
+  macOS Intel `.dmg` and both in-app-updater `.app` bundles: the two macOS
+  packaging jobs upload their assets to the same release in parallel, and
+  `gh release upload --clobber` (list + delete + upload) raced on GitHub's
+  asset API so some uploads failed. The upload steps now retry with backoff, so
+  every macOS asset publishes reliably.
+- **CI advisory audit honours the ignore list.** The `cargo-audit` gate ran via
+  `rustsec/audit-check`, which does not read `.cargo/audit.toml`, so it failed
+  on advisories accepted with justification. It now runs `cargo audit` directly,
+  matching `cargo deny check`.
+
+### Security
+- **Cleared outstanding RustSec advisories.** Upgraded `crossbeam-epoch`,
+  `webbrowser`, `anyhow`, `event-listener`, and `lru` to patched versions; the
+  remaining advisories (unmaintained `ttf-parser`/`rustybuzz` in the font stack,
+  and `quick-xml` instances pinned below the fix by a direct parent) are
+  documented and accepted in `.cargo/audit.toml` and `deny.toml`.
+
+### Changed
+- Minor dependency bumps: `tokio`, `bytes`, `open`, `notify-rust`; CI action
+  bumps (`actions/checkout` 4→7, `github/codeql-action` pin).
+
 ## [0.1.38]
 
 ### Added
@@ -972,7 +997,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...HEAD
+[0.1.39]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...v0.1.37
 [0.1.36]: https://github.com/fbrzlarosa/terminale/compare/v0.1.35...v0.1.36
