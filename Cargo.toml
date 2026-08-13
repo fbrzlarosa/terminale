@@ -168,12 +168,15 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 futures-util = "0.3"
 async-trait = "0.1"
 serde_json = "1"
-# 0.61.1+ — earlier lines carry RUSTSEC/GHSA advisories (oversized-packet and
-# pre-auth allocation DoS, unchecked CryptoVec growth). russh-keys is merged
-# into russh as `russh::keys` since 0.46, so it is no longer a separate dep.
-# Crypto backend: `ring` instead of the default `aws-lc-rs` — aws-lc-sys
-# needs CMake/NASM toolchains that the Windows dev/CI boxes don't carry.
-russh = { version = "0.61.1", default-features = false, features = ["flate2", "ring", "rsa"] }
+# 0.62.5+ — earlier lines carry RUSTSEC/GHSA advisories. <=0.62.3 add four
+# GHSAs (client wrong-length X25519 pre-auth DoS GHSA-g9hv-x236-4qp3, all-zero
+# Curve25519 encode_mpint OOB, pty-req terminal-mode panic, channel-scoped
+# callbacks reachable without an open channel); the client-side DoS is patched
+# in 0.62.4. russh-keys is merged into russh as `russh::keys` since 0.46, so it
+# is no longer a separate dep. Crypto backend: `ring` instead of the default
+# `aws-lc-rs` — aws-lc-sys needs CMake/NASM toolchains that the Windows dev/CI
+# boxes don't carry.
+russh = { version = "0.62.5", default-features = false, features = ["flate2", "ring", "rsa"] }
 mlua = { version = "0.11", features = ["lua54", "vendored", "send"] }
 resvg = { version = "0.47", default-features = false }
 usvg = { version = "0.47", default-features = false }
