@@ -1528,6 +1528,7 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
             ) {
                 state.quake_anim = None;
                 state.window.focus_window();
+                assert_quake_focus(state);
                 return;
             }
         }
@@ -1560,6 +1561,7 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
             }
             state.window.set_visible(true);
             state.window.focus_window();
+            assert_quake_focus(state);
             state.quake_anim = Some(QuakeAnim {
                 start: std::time::Instant::now(),
                 duration: dur,
@@ -1580,6 +1582,34 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     set_window_alpha(&state.window, 255);
     state.window.set_visible(true);
     state.window.focus_window();
+    assert_quake_focus(state);
+}
+
+/// Force the app's own idea of "this window is focused" to match immediately
+/// after a Quake SHOW, instead of waiting for the OS to round-trip a
+/// `WindowEvent::Focused(true)` back to us.
+///
+/// `focus_window()` above already asked the OS for real keyboard focus, but
+/// that notification can lag — or, since the global hotkey reaches us via a
+/// cross-thread channel (`UserEvent::GlobalHotkey`) rather than synchronously
+/// inside the OS's own hotkey callback, it can arrive late enough that the
+/// very first keystrokes land while the app still *thinks* it's unfocused.
+/// The terminal keeps routing keystrokes to the active tab's focused pane
+/// regardless (`TabState::focused` is untouched by hide/show — it lives in
+/// memory the whole time the window is hidden), but the cursor renders
+/// hollow/unfocused and the active tab's attention dot doesn't clear until
+/// the real `Focused(true)` event shows up, which reads as "the window isn't
+/// really focused yet" and trains the user to click before typing.
+///
+/// Setting the internal state here — mirroring exactly what the
+/// `WindowEvent::Focused(true)` handler does — makes the last-used pane look
+/// and behave focused the instant the window reappears, whether or not (or
+/// however late) the OS event eventually arrives. Idempotent: harmless if the
+/// real event follows right after.
+pub(crate) fn assert_quake_focus(state: &mut RunningState) {
+    state.window_focused = true;
+    state.renderer.set_focused(true);
+    crate::tabs::refresh_tab_bar(state);
 }
 
 // ── compute_quake_target ──────────────────────────────────────────────────────

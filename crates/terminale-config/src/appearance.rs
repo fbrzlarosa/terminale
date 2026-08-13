@@ -364,6 +364,20 @@ pub struct AppearanceConfig {
     /// dot is distinct from the blue unread dot (any output) and the busy
     /// spinner (a command is still running). Set `false` to disable it.
     pub tab_attention_on_bell: bool,
+    /// When `true`, each tab chip shows an icon (the profile's auto-detected
+    /// icon, or an explicit user-set one). When `false` (default), tabs
+    /// render with no icon at all — a cleaner, text-only bar. Note this is
+    /// independent of [`Self::bundled_icons`], which only picks which icon
+    /// *style* is drawn when icons are shown elsewhere in the UI (menus,
+    /// buttons, ...); this toggle controls whether the tab bar draws one.
+    pub show_tab_icons: bool,
+    /// When `true` (default), a faint 1px vertical stroke is drawn between
+    /// every pair of adjacent tab chips — subtle enough to be almost
+    /// invisible, just enough to separate tabs without the harder accent
+    /// stripe a tab group already carries. Set `false` for no separators at
+    /// all. Independent of the group accent stripe / label, which are
+    /// controlled by [`Self::show_tab_group_labels`] and always shown.
+    pub show_tab_separators: bool,
 }
 
 impl Default for AppearanceConfig {
@@ -413,6 +427,8 @@ impl Default for AppearanceConfig {
             ],
             tab_activity_spinner: true,
             tab_attention_on_bell: true,
+            show_tab_icons: false,
+            show_tab_separators: true,
         }
     }
 }
@@ -1500,6 +1516,70 @@ mod tests {
         assert!(
             legacy.tab_attention_on_bell,
             "absent tab_attention_on_bell must default to true"
+        );
+    }
+
+    // ── show_tab_icons ────────────────────────────────────────────────────────
+
+    #[test]
+    fn show_tab_icons_default_is_false() {
+        let cfg = AppearanceConfig::default();
+        assert!(
+            !cfg.show_tab_icons,
+            "show_tab_icons must default to false (clean, icon-free tab bar)"
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn show_tab_icons_roundtrips_and_legacy_defaults_false() {
+        let cfg = AppearanceConfig {
+            show_tab_icons: true,
+            ..Default::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let parsed: AppearanceConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            parsed.show_tab_icons,
+            "show_tab_icons=true must survive a TOML roundtrip"
+        );
+        // A config file written before the field existed keeps the default.
+        let legacy: AppearanceConfig = toml::from_str("").unwrap();
+        assert!(
+            !legacy.show_tab_icons,
+            "absent show_tab_icons must default to false"
+        );
+    }
+
+    // ── show_tab_separators ───────────────────────────────────────────────────
+
+    #[test]
+    fn show_tab_separators_default_is_true() {
+        let cfg = AppearanceConfig::default();
+        assert!(
+            cfg.show_tab_separators,
+            "show_tab_separators must default to true"
+        );
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn show_tab_separators_roundtrips_and_legacy_defaults_true() {
+        let cfg = AppearanceConfig {
+            show_tab_separators: false,
+            ..Default::default()
+        };
+        let toml = toml::to_string(&cfg).unwrap();
+        let parsed: AppearanceConfig = toml::from_str(&toml).unwrap();
+        assert!(
+            !parsed.show_tab_separators,
+            "show_tab_separators=false must survive a TOML roundtrip"
+        );
+        // A config file written before the field existed keeps the default.
+        let legacy: AppearanceConfig = toml::from_str("").unwrap();
+        assert!(
+            legacy.show_tab_separators,
+            "absent show_tab_separators must default to true"
         );
     }
 }

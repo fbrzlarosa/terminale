@@ -35,12 +35,21 @@ pub(crate) fn tab_bar_from(
     active: usize,
     maximized: bool,
     groups: &[crate::TabGroup],
+    show_icons: bool,
+    show_separators: bool,
 ) -> TabBar {
     // Freshly-built bars (new windows / detached tabs) are always for a focused
     // window with no pending attention, so `window_focused: true` is correct.
-    let items = build_tab_bar_items(tabs, active, true, groups, &None, &mut |t| {
-        crate::tab_label(t)
-    });
+    let items = build_tab_bar_items(
+        tabs,
+        active,
+        true,
+        groups,
+        &None,
+        show_icons,
+        show_separators,
+        &mut |t| crate::tab_label(t),
+    );
     TabBar {
         items,
         hovered: None,
@@ -56,13 +65,16 @@ pub(crate) fn tab_bar_from(
 ///
 /// `rename_info` is `Some((tab_idx, target, buffer))` when an inline rename
 /// is in progress — used by [`group_label_for`] to show the live buffer on
-/// the pill when the target is a group.
+/// the pill when the target is a group. `show_icons` / `show_separators`
+/// mirror `appearance.show_tab_icons` / `appearance.show_tab_separators`.
 fn build_tab_bar_items(
     tabs: &[&TabState],
     active: usize,
     window_focused: bool,
     groups: &[crate::TabGroup],
     rename_info: &Option<(usize, crate::RenameTarget, String)>,
+    show_icons: bool,
+    show_separators: bool,
     label_for: &mut impl FnMut(&TabState) -> String,
 ) -> Vec<terminale_render::TabBarItem> {
     tabs.iter()
@@ -88,7 +100,14 @@ fn build_tab_bar_items(
             };
             terminale_render::TabBarItem {
                 label: label_for(t),
-                icon: t.user_icon.clone().or_else(|| t.icon.clone()),
+                // The global toggle is authoritative: when off, no tab shows
+                // an icon at all — including an explicit user-set one — so
+                // the bar is guaranteed icon-free out of the box (default is
+                // off). When on, an explicit `user_icon` still wins over the
+                // profile-derived `icon`, as before.
+                icon: show_icons
+                    .then(|| t.user_icon.clone().or_else(|| t.icon.clone()))
+                    .flatten(),
                 active: idx == active,
                 unread: t.unread,
                 // Show the dot on non-active tabs, or on the active tab while
@@ -98,6 +117,9 @@ fn build_tab_bar_items(
                 badge: t.auto_badge.clone(),
                 pinned: t.pinned,
                 group_accent,
+                // Never on the first tab, and never at a group-pill boundary
+                // (that gap already carries the pill, not a plain gap).
+                separator_before: show_separators && idx > 0 && group_label.is_none(),
                 group_label,
             }
         })
@@ -141,6 +163,8 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
         maximized.hash(&mut h);
         state.active_tab.hash(&mut h);
         state.tab_activity_spinner.hash(&mut h);
+        state.show_tab_icons.hash(&mut h);
+        state.show_tab_separators.hash(&mut h);
         tab_busy_pre.hash(&mut h);
         // Spinner glyph only matters while something is actually busy.
         if tab_busy_pre.iter().any(|b| *b) {
@@ -239,7 +263,13 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
             };
             bar.items.push(TabBarItem {
                 label: label_for(idx, t),
-                icon: t.user_icon.clone().or_else(|| t.icon.clone()),
+                // See `build_tab_bar_items`: the global toggle is
+                // authoritative — off means no icon anywhere, even an
+                // explicit user-set one.
+                icon: state
+                    .show_tab_icons
+                    .then(|| t.user_icon.clone().or_else(|| t.icon.clone()))
+                    .flatten(),
                 active: idx == state.active_tab,
                 unread: t.unread && idx != state.active_tab,
                 // Show on non-active tabs, or on the active tab while the
@@ -249,6 +279,7 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
                 badge: t.auto_badge.clone(),
                 pinned: t.pinned,
                 group_accent,
+                separator_before: state.show_tab_separators && idx > 0 && group_label.is_none(),
                 group_label,
             });
         }
@@ -267,6 +298,8 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
         &groups_ref,
         &rename_info,
         &rename_tab,
+        state.show_tab_icons,
+        state.show_tab_separators,
         SpinnerCtx {
             tab_busy: &tab_busy,
             prefix: spinner_prefix,
@@ -289,6 +322,11 @@ struct SpinnerCtx<'a> {
 /// Builds a full [`TabBar`] from scratch (used only on first frame / when no
 /// bar exists yet). Extracted so the patch-in-place path and the from-scratch
 /// path share the same group-label logic.
+#[allow(clippy::too_many_arguments)]
+// window_focused / maximized / show_icons / show_separators are four
+// independent, unrelated toggles — bundling them into an enum or struct
+// would be over-engineering for a private, single-call-site helper.
+#[allow(clippy::fn_params_excessive_bools)]
 fn build_tab_bar_items_for_initial(
     tabs: &[&TabState],
     active: usize,
@@ -297,6 +335,8 @@ fn build_tab_bar_items_for_initial(
     groups: &[crate::TabGroup],
     rename_info: &Option<(usize, crate::RenameTarget, String)>,
     rename_tab: &Option<(usize, String)>,
+    show_icons: bool,
+    show_separators: bool,
     spinner: SpinnerCtx<'_>,
 ) -> TabBar {
     let mut items = build_tab_bar_items(
@@ -305,6 +345,8 @@ fn build_tab_bar_items_for_initial(
         window_focused,
         groups,
         rename_info,
+        show_icons,
+        show_separators,
         &mut |t| crate::tab_label(t),
     );
     // Patch in live tab-rename buffer for Tab/Pane targets,
@@ -377,6 +419,53 @@ pub(crate) fn start_rename_pane(state: &mut RunningState, pane_id: PaneId) {
     state.window.request_redraw();
 }
 
+/// Apply a finished rename buffer to its target (empty buffer = clear the
+/// override, keeping the previous name for a group) and refresh the tab bar.
+/// Shared by the Enter key and by [`finish_rename_on_click_away`] so both
+/// commit paths apply identical trim / empty-buffer rules.
+fn commit_rename(state: &mut RunningState, rename: RenameState) {
+    let name = rename.buffer.trim().to_string();
+    let idx = rename.tab_idx;
+    match rename.target {
+        RenameTarget::Group(gid) => {
+            // Keep the old name if the buffer is empty.
+            if !name.is_empty() {
+                crate::tab_groups::rename_group(state, gid, name);
+            }
+        }
+        RenameTarget::Pane(pid) => {
+            if let Some(tab) = state.tabs.get_mut(idx) {
+                let new_title = (!name.is_empty()).then_some(name);
+                if let Some(pane) = tab.panes.get_mut(&pid) {
+                    pane.user_title = new_title;
+                }
+            }
+        }
+        RenameTarget::Tab => {
+            if let Some(tab) = state.tabs.get_mut(idx) {
+                tab.user_title = (!name.is_empty()).then_some(name);
+            }
+        }
+    }
+    refresh_tab_bar(state);
+}
+
+/// Finish an in-progress rename as if Enter had been pressed, triggered by
+/// the user clicking somewhere other than the field being edited.
+///
+/// The inline editor has no click-to-position-cursor support (it isn't a
+/// real text-input widget, just a keyboard listener painted over the tab
+/// pill) — without this, `state.renaming` stayed `Some` after a click
+/// elsewhere and kept hijacking every keystroke intended for the newly
+/// clicked tab or the terminal, exactly like a normal inline editor is
+/// expected NOT to do. Called from the mouse handler on every button press;
+/// no-op when no rename is in progress.
+pub(crate) fn finish_rename_on_click_away(state: &mut RunningState) {
+    if let Some(rename) = state.renaming.take() {
+        commit_rename(state, rename);
+    }
+}
+
 /// Handle one keypress while the inline rename editor is open. Returns `true`
 /// when the key was consumed (so it must not reach the PTY).
 pub(crate) fn handle_rename_input(
@@ -385,52 +474,33 @@ pub(crate) fn handle_rename_input(
     text: Option<winit::keyboard::SmolStr>,
 ) -> bool {
     use winit::keyboard::{Key, NamedKey};
-    let Some(rename) = state.renaming.as_mut() else {
+    if state.renaming.is_none() {
         return false;
-    };
+    }
     match logical_key {
         Key::Named(NamedKey::Enter) => {
-            let name = rename.buffer.trim().to_string();
-            let idx = rename.tab_idx;
-            let target = rename.target;
-            state.renaming = None;
-            match target {
-                RenameTarget::Group(gid) => {
-                    // Keep the old name if the buffer is empty.
-                    if !name.is_empty() {
-                        crate::tab_groups::rename_group(state, gid, name);
-                    }
-                }
-                RenameTarget::Pane(pid) => {
-                    if let Some(tab) = state.tabs.get_mut(idx) {
-                        let new_title = (!name.is_empty()).then_some(name);
-                        if let Some(pane) = tab.panes.get_mut(&pid) {
-                            pane.user_title = new_title;
-                        }
-                    }
-                }
-                RenameTarget::Tab => {
-                    if let Some(tab) = state.tabs.get_mut(idx) {
-                        tab.user_title = (!name.is_empty()).then_some(name);
-                    }
-                }
+            if let Some(rename) = state.renaming.take() {
+                commit_rename(state, rename);
             }
-            refresh_tab_bar(state);
         }
         Key::Named(NamedKey::Escape) => {
             state.renaming = None;
             refresh_tab_bar(state);
         }
         Key::Named(NamedKey::Backspace) => {
-            rename.buffer.pop();
+            if let Some(rename) = state.renaming.as_mut() {
+                rename.buffer.pop();
+            }
             refresh_tab_bar(state);
         }
         _ => {
             // Append printable text (ignore control chars / pure modifiers).
             if let Some(t) = text {
-                for ch in t.chars() {
-                    if !ch.is_control() {
-                        rename.buffer.push(ch);
+                if let Some(rename) = state.renaming.as_mut() {
+                    for ch in t.chars() {
+                        if !ch.is_control() {
+                            rename.buffer.push(ch);
+                        }
                     }
                 }
                 refresh_tab_bar(state);

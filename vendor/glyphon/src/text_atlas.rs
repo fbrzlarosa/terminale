@@ -1,15 +1,15 @@
 use crate::{
     text_render::GlyphonCacheKey, Cache, ContentType, RasterizeCustomGlyphRequest, FontSystem,
-    GlyphDetails, GpuCacheStatus, RasterizedCustomGlyph, SwashCache,
+    GlyphDetails, RasterizedCustomGlyph, SwashCache,
 };
 use etagere::{size2, Allocation, BucketedAtlasAllocator};
 use lru::LruCache;
 use rustc_hash::FxHasher;
 use std::{collections::HashSet, hash::BuildHasherDefault, sync::Arc};
 use wgpu::{
-    BindGroup, DepthStencilState, Device, Extent3d, ImageCopyTexture, ImageDataLayout,
-    MultisampleState, Origin3d, Queue, RenderPipeline, Texture, TextureAspect, TextureDescriptor,
-    TextureDimension, TextureFormat, TextureUsages, TextureView, TextureViewDescriptor,
+    BindGroup, DepthStencilState, Device, Extent3d, MultisampleState, Queue, RenderPipeline,
+    Texture, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages, TextureView,
+    TextureViewDescriptor,
 };
 
 type Hasher = BuildHasherDefault<FxHasher>;
@@ -53,7 +53,11 @@ impl InnerAtlas {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: kind.texture_format(),
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            // COPY_SRC so that when the atlas later grows, this texture can be
+            // GPU-copied into the larger one (see `grow`).
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
             view_formats: &[],
         });
 
@@ -127,10 +131,14 @@ impl InnerAtlas {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        font_system: &mut FontSystem,
-        cache: &mut SwashCache,
-        scale_factor: f32,
-        mut rasterize_custom_glyph: impl FnMut(
+        // The re-rasterization arguments (font system, swash cache, scale, and
+        // the custom-glyph rasterizer) are no longer needed: growth now copies
+        // the existing atlas on the GPU instead of re-rasterizing each glyph.
+        // They are kept in the signature so the call site is unchanged.
+        _font_system: &mut FontSystem,
+        _cache: &mut SwashCache,
+        _scale_factor: f32,
+        _rasterize_custom_glyph: impl FnMut(
             RasterizeCustomGlyphRequest,
         ) -> Option<RasterizedCustomGlyph>,
     ) -> bool {
@@ -141,12 +149,14 @@ impl InnerAtlas {
         // Grow each dimension by a factor of 2. The growth factor was chosen to match the growth
         // factor of `Vec`.`
         const GROWTH_FACTOR: u32 = 2;
+        let old_size = self.size;
         let new_size = (self.size * GROWTH_FACTOR).min(self.max_texture_dimension_2d);
 
         self.packer.grow(size2(new_size as i32, new_size as i32));
 
-        // Create a texture to use for our atlas
-        self.texture = device.create_texture(&TextureDescriptor {
+        // Create the larger atlas texture. It is COPY_SRC-capable too, so the
+        // NEXT grow can in turn copy from it.
+        let new_texture = device.create_texture(&TextureDescriptor {
             label: Some("glyphon atlas"),
             size: Extent3d {
                 width: new_size,
@@ -157,74 +167,33 @@ impl InnerAtlas {
             sample_count: 1,
             dimension: TextureDimension::D2,
             format: self.kind.texture_format(),
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::COPY_SRC,
             view_formats: &[],
         });
 
-        // Re-upload glyphs
-        for (&cache_key, glyph) in &self.glyph_cache {
-            let (x, y) = match glyph.gpu_cache {
-                GpuCacheStatus::InAtlas { x, y, .. } => (x, y),
-                GpuCacheStatus::SkipRasterization => continue,
-            };
-
-            let (image_data, width, height) = match cache_key {
-                GlyphonCacheKey::Text(cache_key) => {
-                    let image = cache.get_image_uncached(font_system, cache_key).unwrap();
-                    let width = image.placement.width as usize;
-                    let height = image.placement.height as usize;
-
-                    (image.data, width, height)
-                }
-                GlyphonCacheKey::Custom(cache_key) => {
-                    let input = RasterizeCustomGlyphRequest {
-                        id: cache_key.glyph_id,
-                        width: cache_key.width,
-                        height: cache_key.height,
-                        x_bin: cache_key.x_bin,
-                        y_bin: cache_key.y_bin,
-                        scale: scale_factor,
-                    };
-
-                    let Some(rasterized_glyph) = (rasterize_custom_glyph)(input) else {
-                        panic!("Custom glyph rasterizer returned `None` when it previously returned `Some` for the same input {:?}", &input);
-                    };
-
-                    // Sanity checks on the rasterizer output
-                    rasterized_glyph.validate(&input, Some(self.kind.as_content_type()));
-
-                    (
-                        rasterized_glyph.data,
-                        cache_key.width as usize,
-                        cache_key.height as usize,
-                    )
-                }
-            };
-
-            queue.write_texture(
-                ImageCopyTexture {
-                    texture: &self.texture,
-                    mip_level: 0,
-                    origin: Origin3d {
-                        x: x as u32,
-                        y: y as u32,
-                        z: 0,
-                    },
-                    aspect: TextureAspect::All,
-                },
-                &image_data,
-                ImageDataLayout {
-                    offset: 0,
-                    bytes_per_row: Some(width as u32 * self.kind.num_channels() as u32),
-                    rows_per_image: None,
-                },
-                Extent3d {
-                    width: width as u32,
-                    height: height as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        // The packer keeps every existing allocation at its original (x, y), so
+        // the whole populated old-atlas region maps 1:1 onto the top-left of the
+        // new texture. A single GPU-side copy migrates every cached glyph at
+        // once — instead of re-rasterizing and re-uploading each glyph on the UI
+        // thread, which caused multi-hundred-ms "grow storms" proportional to
+        // the number of cached glyphs (and worse at each larger level). Growth
+        // is now O(1) work on the CPU regardless of how many glyphs are cached.
+        let old_texture = std::mem::replace(&mut self.texture, new_texture);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("glyphon atlas grow copy"),
+        });
+        encoder.copy_texture_to_texture(
+            old_texture.as_image_copy(),
+            self.texture.as_image_copy(),
+            Extent3d {
+                width: old_size,
+                height: old_size,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(std::iter::once(encoder.finish()));
 
         self.texture_view = self.texture.create_view(&TextureViewDescriptor::default());
         self.size = new_size;
@@ -264,6 +233,9 @@ impl Kind {
         }
     }
 
+    // Kept for parity with upstream glyphon; the only caller (per-glyph
+    // re-rasterization on atlas grow) was replaced by a GPU texture copy.
+    #[allow(dead_code)]
     fn as_content_type(&self) -> ContentType {
         match self {
             Self::Mask => ContentType::Mask,
