@@ -25,5 +25,5 @@ license = "MIT OR Apache-2.0 OR Zlib"
 wgpu = { version = "22", default-features = false, features = ["wgsl"] }
 etagere = "0.2.10"
 cosmic-text = "0.12"
-lru = { version = "0.16", default-features = false }
+lru = { version = "0.18", default-features = false }
 rustc-hash = "2.0"

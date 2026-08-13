@@ -8,7 +8,7 @@ all-features = true
 version = 2
 yanked = "deny"
 # Each entry is transitive (not our direct dep) and unfixable upstream today.
-# Re-audited 2026-06-02; revisit on the noted upstream bumps. Keep this list
+# Re-audited 2026-08-13; revisit on the noted upstream bumps. Keep this list
 # tight — only suppress what's unactionable.
 ignore = [
     # rsa "Marvin" timing side-channel. Reached through `terminale-ssh`
@@ -20,6 +20,39 @@ ignore = [
     { id = "RUSTSEC-2023-0071", reason = "rsa Marvin attack: no constant-time rsa release exists; prefer ed25519 keys" },
     # `paste` unmaintained — transitive via wgpu-hal's macOS `metal` backend.
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained: transitive via wgpu metal; revisit on wgpu bump" },
+    # `rustybuzz` unmaintained (maintainer stated no further fixes). Reached
+    # via cosmic-text's text-shaping backend (cosmic-text → rustybuzz →
+    # terminale-render). No patched release exists and no upstream fix is
+    # coming; the suggested alternative (`harfrust`) requires migrating the
+    # whole cosmic-text shaping stack. Low real-world risk for a terminal
+    # renderer (shapes locally-owned glyph runs, no untrusted font network
+    # input). Revisit if/when the render stack migrates off cosmic-text 0.12.
+    { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained: no patched release, transitive via cosmic-text text shaping" },
+    # `ttf-parser` unmaintained (author stated no further fixes). Reached via
+    # two independent paths: cosmic-text → rustybuzz → ttf-parser (font
+    # shaping) and ab_glyph → egui/egui-wgpu (UI glyph rendering). No patched
+    # release exists; the suggested alternative (`skrifa`) requires migrating
+    # both the cosmic-text and egui font stacks. Low real-world risk here —
+    # only locally-bundled/user-selected font files are parsed. Revisit on
+    # the same cosmic-text/egui migration as RUSTSEC-2026-0206.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained: no patched release, transitive via cosmic-text/rustybuzz and ab_glyph/egui font stacks" },
+    # `quick-xml` quadratic-time duplicate-attribute check. Three separate
+    # locked instances, each pinned below the 0.41 fix by a different direct
+    # parent's caret requirement — `cargo update -p quick-xml@<ver>` cannot
+    # cross a major boundary a parent still requires:
+    #   - 0.37.5 via tauri-winrt-notification 0.7.2 (`^0.37`) ← notify-rust 4.17.0
+    #   - 0.38.4 via self_update 0.44.0 (`^0.38`), our direct dependency
+    #   - 0.39.4 via wayland-scanner 0.31.10 (`^0.39`) ← smithay-client-toolkit
+    #     0.19.2 ← winit 0.30.13 (Wayland-only build-time codegen)
+    # All three parents would need a version bump of their own (self_update's
+    # next release is a pre-1.0 RC; the wayland stack needs winit 0.30→0.31+)
+    # — out of scope for a lockfile-only advisory sweep. Low real-world risk:
+    # quick-xml here parses trusted, locally-generated/small XML (Wayland
+    # protocol XML at build time; toast-notification and update-manifest XML
+    # at runtime), not attacker-supplied documents. Revisit when
+    # self_update/winit are bumped.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml quadratic attribute-dup check: 3 locked instances each pinned <0.41 by tauri-winrt-notification/self_update/wayland-scanner" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml unbounded namespace-decl allocation: same 3 pinned instances as RUSTSEC-2026-0194" },
 ]
 
 [licenses]

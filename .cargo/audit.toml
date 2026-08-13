@@ -2,12 +2,15 @@
 # CI step). Mirrors the `[advisories] ignore` list in deny.toml — see there for
 # the per-advisory justifications. All entries are transitive and unfixable
 # upstream today; revisit on the noted dependency bumps.
-# Re-audited 2026-06-02.
+# Re-audited 2026-08-13.
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071", # rsa Marvin attack — no constant-time rsa release exists (russh 0.61 bump did NOT clear it); prefer ed25519
     "RUSTSEC-2024-0436", # paste unmaintained — transitive via wgpu metal
     "RUSTSEC-2017-0008", # serial unmaintained — transitive via portable-pty
-    "RUSTSEC-2026-0002", # lru unsound IterMut — transitive via glyphon
     "RUSTSEC-2025-0119", # number_prefix unmaintained — transitive via self_update/indicatif
+    "RUSTSEC-2026-0206", # rustybuzz unmaintained, no upstream fix — transitive via cosmic-text
+    "RUSTSEC-2026-0192", # ttf-parser unmaintained, no upstream fix — transitive via cosmic-text/rustybuzz and ab_glyph/egui
+    "RUSTSEC-2026-0194", # quick-xml quadratic attribute-dup check — 3 locked instances each pinned <0.41 by a direct parent; see deny.toml
+    "RUSTSEC-2026-0195", # quick-xml unbounded namespace-decl allocation — same 3 pinned instances; see deny.toml
 ]
