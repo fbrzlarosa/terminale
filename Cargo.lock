@@ -224,9 +224,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.102"
+version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "arbitrary"
@@ -1238,9 +1238,9 @@ dependencies = [
 
 [[package]]
 name = "crossbeam-epoch"
-version = "0.9.18"
+version = "0.9.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
+checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -1883,11 +1883,10 @@ dependencies = [
 
 [[package]]
 name = "event-listener"
-version = "5.4.1"
+version = "5.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+checksum = "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
 dependencies = [
- "concurrent-queue",
  "parking",
  "pin-project-lite",
 ]
@@ -3256,9 +3255,9 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "lru"
-version = "0.16.4"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
+checksum = "5d2f2f9b4ba7e6b24d95e7e899329d35be83bcded72c8540cdd5368932d1d90a"
 
 [[package]]
 name = "lru-slab"
@@ -6277,7 +6276,7 @@ dependencies = [
 
 [[package]]
 name = "terminale"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6332,7 +6331,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ai"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6347,7 +6346,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-config"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "argon2 0.5.3",
  "chacha20poly1305",
@@ -6366,7 +6365,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-core"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "bytes",
  "parking_lot",
@@ -6380,7 +6379,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-plugin"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "mlua",
  "parking_lot",
@@ -6392,7 +6391,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-render"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "bytemuck",
  "cosmic-text",
@@ -6413,7 +6412,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ssh"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6428,7 +6427,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-term"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "alacritty_terminal",
  "image",
@@ -6442,7 +6441,7 @@ dependencies = [
 
 [[package]]
 name = "terminale-ui"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "arboard",
  "global-hotkey",
@@ -7488,15 +7487,15 @@ dependencies = [
 
 [[package]]
 name = "webbrowser"
-version = "1.2.1"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0fc95580916af1e68ff6a7be07446fc5db73ebf71cf092de939bbf5f7e189f72"
+checksum = "62c35be770821a214dbc362fc26908c853e776c0004294d0b10b8a6bad582f94"
 dependencies = [
- "core-foundation 0.10.1",
  "jni",
  "log",
  "ndk-context",
  "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "url",
  "web-sys",
@@ -7669,7 +7668,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8493,7 +8492,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.1.37"
+version = "0.1.38"
 dependencies = [
  "anyhow",
  "clap",
