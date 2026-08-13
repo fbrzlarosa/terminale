@@ -27,9 +27,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      # Run cargo-audit directly rather than via rustsec/audit-check@v2: the
+      # action does not honour the `[advisories] ignore` list in
+      # `.cargo/audit.toml`, so it fails on advisories we have deliberately
+      # accepted (unmaintained transitive font-stack crates, and quick-xml
+      # instances blocked by a direct parent's caret bound). `cargo audit`
+      # reads that ignore list, so this gate matches `cargo deny check` and the
+      # local `cargo audit --deny warnings` verification.
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: cargo audit (honours .cargo/audit.toml ignores)
+        run: cargo audit --deny warnings
 
   cargo-deny:
     name: cargo-deny (licenses + sources + bans)
