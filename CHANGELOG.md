@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+- **Upgraded `russh` 0.61 → 0.62.6, clearing four upstream advisories.** GHSA
+  advisories against russh `<= 0.62.3` include a client-side pre-auth
+  denial-of-service (GHSA-g9hv-x236-4qp3 / CVE-2026-73429): a malicious or
+  man-in-the-middle SSH server can panic the client key-exchange with a
+  wrong-length Curve25519 reply, before the host key is verified. terminale's
+  SSH client uses the affected path, so an attacker in that position could drop
+  a connection attempt (per-connection DoS; the app process stays up). The bump
+  also covers three further russh panics (all-zero Curve25519 peer value,
+  oversized `pty-req` terminal-mode list, and channel-scoped callbacks reachable
+  without an open channel). No source changes were required; `cargo audit` and
+  `cargo deny check` stay green.
+
 ## [0.1.39]
 
 ### Fixed
