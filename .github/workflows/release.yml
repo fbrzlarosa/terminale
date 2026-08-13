@@ -336,7 +336,16 @@ jobs:
         run: |
           pkg=$(ls target/terminale-v*-${{ matrix.target }}.dmg)
           ( cd "$(dirname "$pkg")" && shasum -a 256 "$(basename "$pkg")" > "$(basename "$pkg").sha256" )
-          gh release upload "${{ needs.plan.outputs.tag }}" "$pkg" "$pkg.sha256" --clobber
+          # The two macOS matrix jobs (aarch64 + x86_64) upload to the same
+          # release concurrently. `gh release upload --clobber` does a
+          # list + delete + upload, so two concurrent runs race on GitHub's
+          # asset API and one fails transiently. Retry with backoff.
+          n=0
+          until gh release upload "${{ needs.plan.outputs.tag }}" "$pkg" "$pkg.sha256" --clobber; do
+            n=$((n+1))
+            if [ "$n" -ge 5 ]; then echo "::error::gh release upload (.dmg) failed after $n attempts"; exit 1; fi
+            echo "release upload failed (attempt $n) — retrying in $((n*15))s"; sleep $((n*15))
+          done
       - name: Upload zipped .app (+ checksum) for the in-app updater
         # The in-app updater downloads this bundle archive and swaps
         # terminale.app in place — silent, no Gatekeeper prompt (a bundle we
@@ -348,7 +357,13 @@ jobs:
           app="terminale-${{ matrix.target }}-app.zip"
           ditto -c -k --sequesterRsrc --keepParent target/terminale.app "target/$app"
           ( cd target && shasum -a 256 "$app" > "$app.sha256" )
-          gh release upload "${{ needs.plan.outputs.tag }}" "target/$app" "target/$app.sha256" --clobber
+          # Same concurrent-upload race as the .dmg step above — retry with backoff.
+          n=0
+          until gh release upload "${{ needs.plan.outputs.tag }}" "target/$app" "target/$app.sha256" --clobber; do
+            n=$((n+1))
+            if [ "$n" -ge 5 ]; then echo "::error::gh release upload (.app zip) failed after $n attempts"; exit 1; fi
+            echo "release upload failed (attempt $n) — retrying in $((n*15))s"; sleep $((n*15))
+          done
 
   # `host` writes the release notes before `macos-app-dmg` uploads its
   # assets, so cargo-dist's "Download" table never mentions the .dmg files.
