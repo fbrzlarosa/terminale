@@ -1095,6 +1095,47 @@ impl SettingsWindow {
         ui.add_space(6.0);
 
         card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Show tab icons");
+                let on = self.config.appearance.show_tab_icons;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.appearance.show_tab_icons = !on;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Appearance, "Show tab icons");
+            sublabel(
+                ui,
+                "Show the profile / auto-detected icon (or an explicit per-tab icon override) before each tab's label. Off by default for a clean, text-only tab bar; off also hides an explicit per-tab icon override.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Show tab separators");
+                let on = self.config.appearance.show_tab_separators;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.appearance.show_tab_separators = !on;
+                    dirty = true;
+                }
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Appearance,
+                "Show tab separators",
+            );
+            sublabel(
+                ui,
+                "Draw a faint, near-invisible vertical line between adjacent tabs. Independent of the group accent spine, which is always shown for grouped tabs.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
             ui.label(egui::RichText::new("Group colours").strong());
             ui.add_space(4.0);
             sublabel(

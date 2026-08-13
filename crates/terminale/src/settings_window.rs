@@ -1706,6 +1706,14 @@ fn search_index() -> &'static [SearchEntry] {
             section: Section::Appearance,
             label: "Show tab group labels",
         },
+        SearchEntry {
+            section: Section::Appearance,
+            label: "Show tab icons",
+        },
+        SearchEntry {
+            section: Section::Appearance,
+            label: "Show tab separators",
+        },
         // section_appearance -> Icons
         SearchEntry {
             section: Section::Appearance,

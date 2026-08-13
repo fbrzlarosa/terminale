@@ -2630,6 +2630,15 @@ struct TermWindow {
     /// "waiting for input" dot). Live-applied from the Appearance settings
     /// toggle and config reload. Read in `drain_pty_output` / `handle_bell`.
     tab_attention_on_bell: bool,
+    /// Mirror of `config.appearance.show_tab_icons`. When `false` (default),
+    /// tab chips render with no icon at all. Live-applied from the Appearance
+    /// settings toggle and config reload; read in `tabs::build_tab_bar_items`.
+    show_tab_icons: bool,
+    /// Mirror of `config.appearance.show_tab_separators`. When `true`
+    /// (default), a faint vertical stroke is drawn between adjacent tab
+    /// chips. Live-applied from the Appearance settings toggle and config
+    /// reload; read in `tabs::build_tab_bar_items`.
+    show_tab_separators: bool,
     /// Current animation frame index for the busy-tab spinner. Incremented
     /// once every ~90 ms in `about_to_wait` while any pane is busy. Wraps
     /// around via `% SPINNER_FRAMES.len()` before use so it never overflows.
@@ -3143,6 +3152,8 @@ impl TerminaleApp {
             bundled_icons: self.config.appearance.bundled_icons,
             tab_activity_spinner: self.config.appearance.tab_activity_spinner,
             tab_attention_on_bell: self.config.appearance.tab_attention_on_bell,
+            show_tab_icons: self.config.appearance.show_tab_icons,
+            show_tab_separators: self.config.appearance.show_tab_separators,
             spinner_frame: 0,
             last_spinner_tick: None,
         };
@@ -3254,7 +3265,14 @@ impl TerminaleApp {
         }
         let bar = {
             let refs: Vec<&TabState> = new_win.tabs.iter().collect();
-            tab_bar_from(&refs, 0, false, &new_win.tab_groups)
+            tab_bar_from(
+                &refs,
+                0,
+                false,
+                &new_win.tab_groups,
+                new_win.show_tab_icons,
+                new_win.show_tab_separators,
+            )
         };
         new_win.renderer.set_tab_bar(Some(bar));
         // Paint the first frame into the hidden window, then reveal it
@@ -3800,38 +3818,37 @@ impl TerminaleApp {
         }
         for w in &mut self.windows {
             let id = w.window.id();
-            if !floating_ghost_alive && id == ghost_win {
-                let pos = w.window.outer_position().unwrap_or_default();
-                let scale = w.window.scale_factor() as f32;
-                // Cursor in this window's logical coords.
-                let cursor_lx = (drag.cursor_screen.0 - pos.x) as f32 / scale;
-                let cursor_ly = (drag.cursor_screen.1 - pos.y) as f32 / scale;
-                let center_x = cursor_lx - drag.grab_offset_x;
-                // Sit in the bar band; lift toward the cursor when detaching.
-                let center_y = if detaching {
-                    cursor_ly
-                } else {
-                    terminale_render::TAB_BAR_HEIGHT * 0.5
-                };
-                w.renderer
-                    .set_tab_drag_ghost(Some(terminale_render::TabGhost {
+            let new_ghost: Option<terminale_render::TabGhost> =
+                if !floating_ghost_alive && id == ghost_win {
+                    let pos = w.window.outer_position().unwrap_or_default();
+                    let scale = w.window.scale_factor() as f32;
+                    // Cursor in this window's logical coords.
+                    let cursor_lx = (drag.cursor_screen.0 - pos.x) as f32 / scale;
+                    let cursor_ly = (drag.cursor_screen.1 - pos.y) as f32 / scale;
+                    let center_x = cursor_lx - drag.grab_offset_x;
+                    // Sit in the bar band; lift toward the cursor when detaching.
+                    let center_y = if detaching {
+                        cursor_ly
+                    } else {
+                        terminale_render::TAB_BAR_HEIGHT * 0.5
+                    };
+                    Some(terminale_render::TabGhost {
                         label: drag.label.clone(),
                         center_x,
                         center_y,
                         width: drag.slot_width,
-                    }));
+                    })
+                } else {
+                    None
+                };
+            let new_indicator: Option<f32> = if Some(id) == indicator_win {
+                w.renderer.drop_boundary_x(indicator_slot)
             } else {
-                w.renderer.set_tab_drag_ghost(None);
-            }
-            if Some(id) == indicator_win {
-                let x = w.renderer.drop_boundary_x(indicator_slot);
-                w.renderer.set_tab_drop_indicator(x);
-            } else {
-                w.renderer.set_tab_drop_indicator(None);
-            }
+                None
+            };
             // Merge drop-zone highlight: tint the half of the target pane
             // the dragged item would occupy on release.
-            let zone = match merge_zone {
+            let new_zone: Option<[f32; 4]> = match merge_zone {
                 Some((zone_win, pane, side)) if zone_win == id => {
                     crate::panes::active_tab_pane_rects(w)
                         .into_iter()
@@ -3843,8 +3860,24 @@ impl TerminaleApp {
                 }
                 _ => None,
             };
-            w.renderer.set_drop_zone(zone);
-            w.window.request_redraw();
+            // Only the floating ghost window's own surface needs a redraw
+            // every cursor move (it visually tracks the cursor 1:1, handled
+            // above); a terminal window's visuals only actually change when
+            // the ghost/indicator/zone value assigned to it differs from
+            // what's already there — e.g. the drop indicator only moves
+            // between tab-slot boundaries, not on every pixel of motion. On
+            // most drags none of the OTHER (non-hovered) windows change at
+            // all, so redrawing them on every `CursorMoved` was pure wasted
+            // GPU work — visible as graphical lag while tearing out a tab.
+            let changed = w.renderer.tab_drag_ghost() != new_ghost.as_ref()
+                || w.renderer.tab_drop_indicator() != new_indicator
+                || w.renderer.drop_zone() != new_zone;
+            w.renderer.set_tab_drag_ghost(new_ghost);
+            w.renderer.set_tab_drop_indicator(new_indicator);
+            w.renderer.set_drop_zone(new_zone);
+            if changed {
+                w.window.request_redraw();
+            }
         }
     }
 
@@ -3929,7 +3962,13 @@ impl TerminaleApp {
             // Skip the taskbar / dock — this is a transient drag adornment,
             // not a real top-level window. (Best-effort: not all platforms
             // honour this.)
-            .with_visible(true);
+            //
+            // Created HIDDEN and revealed only after the pill is painted
+            // into its surface (cloak-around-show, mirroring
+            // `reveal_window`) — showing it immediately would
+            // let the OS present the unpainted surface for a frame, which
+            // read as a white rectangle flashing at the start of every drag.
+            .with_visible(false);
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -3961,13 +4000,23 @@ impl TerminaleApp {
                 return;
             }
         };
-        // Seed the ghost so the very first redraw paints the pill.
+        // Seed the ghost and paint it into the still-hidden surface before
+        // revealing the window, so the very first frame the OS shows is the
+        // pill itself, never a blank/white one.
         renderer.set_tab_drag_ghost(Some(terminale_render::TabGhost {
             label: label.to_string(),
             center_x: 0.0,
             center_y: 0.0,
             width: slot_width_logical,
         }));
+        if let Err(e) = renderer.render_ghost_only() {
+            tracing::debug!(?e, "ghost-window initial paint failed");
+        }
+        #[cfg(windows)]
+        set_dwm_cloak(&window, true);
+        window.set_visible(true);
+        #[cfg(windows)]
+        set_dwm_cloak(&window, false);
         window.request_redraw();
 
         self.ghost_window = Some(GhostWindow {
@@ -4527,7 +4576,14 @@ impl TerminaleApp {
         }
         let bar = {
             let refs: Vec<&TabState> = new_win.tabs.iter().collect();
-            tab_bar_from(&refs, 0, false, &new_win.tab_groups)
+            tab_bar_from(
+                &refs,
+                0,
+                false,
+                &new_win.tab_groups,
+                new_win.show_tab_icons,
+                new_win.show_tab_separators,
+            )
         };
         new_win.renderer.set_tab_bar(Some(bar));
         new_win.window.set_visible(true);
@@ -4593,7 +4649,14 @@ impl TerminaleApp {
         let program_name = profile
             .as_ref()
             .map_or_else(|| "shell".to_string(), |p| p.name.clone());
-        let bar = tab_bar_from(&[&first_tab], 0, false, &new_win.tab_groups);
+        let bar = tab_bar_from(
+            &[&first_tab],
+            0,
+            false,
+            &new_win.tab_groups,
+            new_win.show_tab_icons,
+            new_win.show_tab_separators,
+        );
         new_win.renderer.set_tab_bar(Some(bar));
         new_win.tabs.push(first_tab);
         new_win.active_tab = 0;
@@ -5039,7 +5102,14 @@ impl TerminaleApp {
         }
         let bar = {
             let refs: Vec<&TabState> = new_win.tabs.iter().collect();
-            tab_bar_from(&refs, 0, false, &new_win.tab_groups)
+            tab_bar_from(
+                &refs,
+                0,
+                false,
+                &new_win.tab_groups,
+                new_win.show_tab_icons,
+                new_win.show_tab_separators,
+            )
         };
         new_win.renderer.set_tab_bar(Some(bar));
         reveal_window(&mut new_win);
@@ -5476,6 +5546,8 @@ impl TerminaleApp {
                     state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                     state.bundled_icons = cfg.appearance.bundled_icons;
                     state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                    state.show_tab_icons = cfg.appearance.show_tab_icons;
+                    state.show_tab_separators = cfg.appearance.show_tab_separators;
                     state
                         .renderer
                         .set_inactive_pane_dim(cfg.appearance.inactive_pane_dim);
@@ -5586,6 +5658,8 @@ impl TerminaleApp {
                     state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                     state.bundled_icons = cfg.appearance.bundled_icons;
                     state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                    state.show_tab_icons = cfg.appearance.show_tab_icons;
+                    state.show_tab_separators = cfg.appearance.show_tab_separators;
                     // Live-apply inactive-pane and unfocused-window dim.
                     state
                         .renderer
@@ -5919,6 +5993,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                             self.active_window_id.and_then(|id| self.window_index(id))
                         {
                             self.windows[idx].window.focus_window();
+                            crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
                         }
                     }
                 }
@@ -5986,7 +6061,14 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         );
         // Build the initial tab bar (single tab, but still visible — gives
         // users a clear "+ to add" affordance).
-        let bar = tab_bar_from(&[&first_tab], 0, false, &state.tab_groups);
+        let bar = tab_bar_from(
+            &[&first_tab],
+            0,
+            false,
+            &state.tab_groups,
+            state.show_tab_icons,
+            state.show_tab_separators,
+        );
         state.renderer.set_tab_bar(Some(bar));
         // Capture program label before the tab is moved into the window.
         let startup_program = self
@@ -8005,6 +8087,18 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 let scale = state.window.scale_factor() as f32;
                 let pointer_phys = (px * scale, py * scale);
 
+                // Any press anywhere else finishes an in-progress inline
+                // rename first — like every normal inline editor, clicking
+                // away commits (or cancels, if left empty) instead of
+                // leaving the rename silently hijacking the keyboard. Runs
+                // before every other press intercept below (snap chooser,
+                // divider, pane header, tab bar, ...) so it also fires for
+                // a click that lands on one of those, not just plain tab /
+                // terminal clicks.
+                if matches!(btn_state, ElementState::Pressed) {
+                    finish_rename_on_click_away(state);
+                }
+
                 // Snap-layout chooser: a left-press dispatches the chosen snap
                 // (or closes on a miss) and consumes the event.
                 if state.snap_chooser_open
@@ -9998,6 +10092,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                         state.bundled_icons = cfg.appearance.bundled_icons;
                         state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                        state.show_tab_icons = cfg.appearance.show_tab_icons;
+                        state.show_tab_separators = cfg.appearance.show_tab_separators;
                         // Live-apply inactive-pane and unfocused-window dim.
                         state
                             .renderer
@@ -17444,6 +17540,7 @@ mod tests {
             pinned: true,
             group_accent: None,
             group_label: None,
+            separator_before: false,
         };
         let item_normal = terminale_render::TabBarItem {
             label: "B".into(),
@@ -17456,6 +17553,7 @@ mod tests {
             pinned: false,
             group_accent: None,
             group_label: None,
+            separator_before: false,
         };
         assert!(item_pinned.pinned);
         assert!(!item_normal.pinned);
@@ -17476,6 +17574,7 @@ mod tests {
             pinned: false,
             group_accent: None,
             group_label: None,
+            separator_before: false,
         };
         assert!(item.attention);
     }

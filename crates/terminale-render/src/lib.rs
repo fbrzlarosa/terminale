@@ -412,6 +412,13 @@ pub struct TabBarItem {
     /// tab of a consecutive run of tabs that belong to the same group — used
     /// to place the group label once, at the group boundary.
     pub group_label: Option<String>,
+    /// Draw a faint separator in the gap immediately before this tab — a 1px
+    /// vertical stroke in the horizontal tab bar, a 1px horizontal stroke
+    /// above the row in a vertical strip. Controlled by
+    /// `appearance.show_tab_separators`; always `false` for the first tab
+    /// and for a tab that starts a group-label pill run (that gap already
+    /// carries the pill instead of a plain inter-tab gap).
+    pub separator_before: bool,
 }
 
 /// State of the top tab bar passed to [`Renderer::set_tab_bar`].
@@ -970,7 +977,7 @@ pub struct DividerStroke {
 /// Chrome-style tab drag, drawn in the overlay layer above every tab pill
 /// and label. All coordinates are **logical** pixels; the renderer scales
 /// them by the DPI factor at draw time, matching the tab-bar geometry.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TabGhost {
     /// Label to render on the ghost (icon + title, same as a normal tab).
     pub label: String,
@@ -4438,10 +4445,25 @@ impl Renderer {
         self.tab_drag_ghost = ghost;
     }
 
+    /// The floating drag ghost currently set, if any. Lets the App compare
+    /// against a candidate value before calling [`Self::set_tab_drag_ghost`]
+    /// so it can skip a redundant redraw when nothing actually changed.
+    #[must_use]
+    pub fn tab_drag_ghost(&self) -> Option<&TabGhost> {
+        self.tab_drag_ghost.as_ref()
+    }
+
     /// Set or clear the drop indicator — a vertical insertion bar drawn in
     /// this window's tab bar at the given **logical-px** x. `None` hides it.
     pub fn set_tab_drop_indicator(&mut self, x: Option<f32>) {
         self.tab_drop_indicator = x;
+    }
+
+    /// The drop indicator x currently set, if any. See
+    /// [`Self::tab_drag_ghost`] for why the App needs to read this back.
+    #[must_use]
+    pub fn tab_drop_indicator(&self) -> Option<f32> {
+        self.tab_drop_indicator
     }
 
     /// Hit-test the tab bar at a window pixel coordinate.
@@ -4826,6 +4848,19 @@ impl Renderer {
                     [strip_w_log * scale, 1.0 * scale],
                     sep_color,
                     1.0,
+                ));
+            }
+            // Faint separator between adjacent rows (config:
+            // appearance.show_tab_separators) — the vertical-strip
+            // counterpart of the horizontal bar's inter-tab separator. Never
+            // set at a group-run start; the boundary line above already
+            // covers that case.
+            if item.separator_before {
+                quads.push(Quad::new(
+                    [strip_x_log * scale, row_y_log * scale],
+                    [strip_w_log * scale, 1.0 * scale],
+                    [0x2a, 0x32, 0x48],
+                    0.45,
                 ));
             }
 
@@ -5511,6 +5546,13 @@ impl Renderer {
     /// brighter frame.
     pub fn set_drop_zone(&mut self, zone: Option<[f32; 4]>) {
         self.drop_zone = zone;
+    }
+
+    /// The merge drop-zone rect currently set, if any. See
+    /// [`Self::tab_drag_ghost`] for why the App needs to read this back.
+    #[must_use]
+    pub fn drop_zone(&self) -> Option<[f32; 4]> {
+        self.drop_zone
     }
 
     /// `true` when the scrollbar is currently visible to the user (geometry
@@ -7128,6 +7170,21 @@ impl Renderer {
                         let hovered = bar.hovered == Some(idx);
 
                         // (Group boundary separator removed — replaced by pill + spines)
+
+                        // Faint separator between adjacent tabs (config:
+                        // appearance.show_tab_separators). Drawn in the 2px
+                        // gap `tab_layout` leaves between rects, so it never
+                        // overlaps either tab's own background fill — the
+                        // build side already skips it at a group-pill
+                        // boundary, where that gap carries the pill instead.
+                        if item.separator_before {
+                            quads.push(Quad::new(
+                                [(tab_rect.x - 1.0) * scale, (tab_y_log + tab_rect.y) * scale],
+                                [1.0 * scale, tab_rect.h * scale],
+                                [0x2a, 0x32, 0x48],
+                                0.45,
+                            ));
+                        }
 
                         // Tab pill background — use the context-rule tint when set.
                         let base_bg: [u8; 3] = if active {
