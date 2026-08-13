@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.38]
+
+### Added
+- **Cleaner tab bar: no icons by default, with a faint separator.** Tabs no
+  longer show a per-tab icon by default, and a barely-visible separator is drawn
+  between adjacent tabs. Both are configurable under **Settings → Appearance**:
+  `appearance.show_tab_icons` (default `false`) and `appearance.show_tab_separators`
+  (default `true`). If you preferred tab icons, re-enable them there.
+
+### Fixed
+- **No more freeze on glyph-heavy bursts.** Growing the glyph atlas used to
+  re-rasterize and re-upload *every* cached glyph on the UI thread — an
+  O(cached-glyphs) stall that could freeze the window for up to ~1s on CJK/emoji
+  bursts or a font-size change, and got worse at each larger atlas level (the
+  v0.1.36 initial-size bump only hid the common case). Growth now migrates the
+  existing atlas with a single GPU texture copy, so it is constant CPU work
+  regardless of how many glyphs are cached — the stall can no longer occur at
+  any level.
+- **Quake mode restores focus to the last-used terminal.** After the drop-down
+  reappeared, the app's internal focus state lagged behind the OS window focus,
+  so the first keystroke was dropped until you clicked. The focused pane is now
+  re-asserted immediately on show, so you can type right away.
+- **Smooth tab tear-out.** Dragging a tab into its own window no longer flashes a
+  white rectangle at drag start (the drag-ghost window is painted before it is
+  revealed) and no longer stutters (a redraw is requested only when the ghost or
+  drop indicator actually moves).
+- **Renaming a tab ends when you click away.** Clicking anywhere outside the
+  inline tab-rename editor now commits (or cancels, if empty) the rename instead
+  of leaving it silently capturing your keystrokes. Enter/Esc are unchanged.
+
 ## [0.1.37]
 
 ### Security
@@ -942,7 +972,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...HEAD
+[0.1.38]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...v0.1.37
 [0.1.36]: https://github.com/fbrzlarosa/terminale/compare/v0.1.35...v0.1.36
 [0.1.35]: https://github.com/fbrzlarosa/terminale/compare/v0.1.34...v0.1.35
