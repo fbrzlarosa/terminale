@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.40]
+
 ### Security
 - **Upgraded `russh` 0.61 → 0.62.6, clearing four upstream advisories.** GHSA
   advisories against russh `<= 0.62.3` include a client-side pre-auth
@@ -1010,7 +1012,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...HEAD
+[0.1.40]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...v0.1.40
 [0.1.39]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...v0.1.38
 [0.1.37]: https://github.com/fbrzlarosa/terminale/compare/v0.1.36...v0.1.37
