@@ -1321,7 +1321,19 @@ pub(crate) fn monitor_index_for_point(
 /// `Slide`/`Bounce`/`Scale` interpolate the OS **window geometry**
 /// (sliding the window in/out from the dock edge); `None` is instant.
 /// All in-content shader overlays have been removed.
-pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_config::QuakeConfig) {
+///
+/// `focus_on_show` controls whether a SHOW also grabs OS keyboard focus for
+/// this window. It is `true` for a normal single-window toggle. It is `false`
+/// when several windows are revealed together (multi-window Quake): the caller
+/// then focuses exactly ONE window afterwards, because issuing `focus_window()`
+/// for every window in a row is a burst of foreground-steal requests the OS
+/// resolves unpredictably (focus lands on whichever window was shown last, not
+/// the one the user left off in). Hiding ignores this flag.
+pub(crate) fn toggle_quake(
+    state: &mut RunningState,
+    quake_cfg: &terminale_config::QuakeConfig,
+    focus_on_show: bool,
+) {
     use terminale_config::QuakeAnimation;
     let animated = !matches!(quake_cfg.animation, QuakeAnimation::None);
     let dur = std::time::Duration::from_millis(u64::from(quake_cfg.animation_ms.clamp(0, 2000)));
@@ -1527,8 +1539,10 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
                 true,
             ) {
                 state.quake_anim = None;
-                state.window.focus_window();
-                assert_quake_focus(state);
+                if focus_on_show {
+                    state.window.focus_window();
+                    assert_quake_focus(state);
+                }
                 return;
             }
         }
@@ -1560,8 +1574,10 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
                 set_window_alpha(&state.window, 0);
             }
             state.window.set_visible(true);
-            state.window.focus_window();
-            assert_quake_focus(state);
+            if focus_on_show {
+                state.window.focus_window();
+                assert_quake_focus(state);
+            }
             state.quake_anim = Some(QuakeAnim {
                 start: std::time::Instant::now(),
                 duration: dur,
@@ -1581,8 +1597,10 @@ pub(crate) fn toggle_quake(state: &mut RunningState, quake_cfg: &terminale_confi
     // interrupted with alpha < 255, an instant show must come back opaque.
     set_window_alpha(&state.window, 255);
     state.window.set_visible(true);
-    state.window.focus_window();
-    assert_quake_focus(state);
+    if focus_on_show {
+        state.window.focus_window();
+        assert_quake_focus(state);
+    }
 }
 
 /// Force the app's own idea of "this window is focused" to match immediately

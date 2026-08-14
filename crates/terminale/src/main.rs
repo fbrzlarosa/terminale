@@ -5941,7 +5941,7 @@ fn apply_restored_window_state(
         // the drop-down. (The window was revealed as a normal window a moment
         // ago; this transitions it into Quake on the saved monitor.)
         state.quake_visible = false;
-        crate::window_anim::toggle_quake(state, quake_cfg);
+        crate::window_anim::toggle_quake(state, quake_cfg, true);
     }
 }
 
@@ -5974,23 +5974,30 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if any_visible {
                         for w in &mut self.windows {
                             if w.quake_visible {
-                                toggle_quake(w, &quake);
+                                toggle_quake(w, &quake, true);
                             }
                         }
                     } else {
+                        // Reveal every saved window WITHOUT grabbing focus per
+                        // window: focusing each in turn is a burst of
+                        // foreground-steal requests, and the OS ends up focusing
+                        // whichever window was shown LAST (e.g. the right-most on
+                        // a multi-monitor / multi-desktop layout) instead of the
+                        // one the user left off in. So show them all unfocused…
                         for w in &mut self.windows {
                             if !w.quake_visible {
-                                toggle_quake(w, &quake);
+                                toggle_quake(w, &quake, false);
                             }
                         }
-                        // Each toggle_quake above called focus_window(), so
-                        // OS focus landed on whichever window the loop showed
-                        // LAST — not the one the user was actually working in
-                        // before the hide. Re-assert focus on the tracked
-                        // most-recently-focused terminal window (falls back
-                        // to the loop's natural winner when it's gone).
-                        if let Some(idx) =
-                            self.active_window_id.and_then(|id| self.window_index(id))
+                        // …then focus EXACTLY ONE: the most-recently-focused
+                        // terminal window (falls back to the last window if that
+                        // one is gone). A single focus request is one the OS
+                        // reliably honours, so focus lands where the user left
+                        // off instead of on the last-shown window.
+                        if let Some(idx) = self
+                            .active_window_id
+                            .and_then(|id| self.window_index(id))
+                            .or_else(|| self.windows.len().checked_sub(1))
                         {
                             self.windows[idx].window.focus_window();
                             crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
@@ -8752,7 +8759,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     .is_some_and(|a| a.window.has_focus());
             if !focus_within_app {
                 let cfg = self.config.quake.clone();
-                toggle_quake(state, &cfg);
+                toggle_quake(state, &cfg, true);
             }
         }
 
