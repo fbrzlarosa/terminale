@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Quake mode restores focus to the terminal you were actually using.** With
+  several windows open across multiple monitors or desktops, the Quake hotkey
+  revealed them by focusing each in turn, so the OS settled focus on whichever
+  window was shown last (typically the right-most) instead of the one you left
+  off in. The reveal now shows every window without stealing focus and then
+  focuses exactly one — the most-recently-used window.
+
 ## [0.1.40]
 
 ### Security
