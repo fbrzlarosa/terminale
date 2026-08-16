@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.41]
+
 ### Fixed
 - **Quake mode restores focus to the terminal you were actually using.** With
   several windows open across multiple monitors or desktops, the Quake hotkey
@@ -1020,7 +1022,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.41...HEAD
+[0.1.41]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...v0.1.41
 [0.1.40]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...v0.1.40
 [0.1.39]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...v0.1.39
 [0.1.38]: https://github.com/fbrzlarosa/terminale/compare/v0.1.37...v0.1.38
