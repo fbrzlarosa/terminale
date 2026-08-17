@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **Every translucent surface was rendered too dark — alpha was applied twice.**
+  `Quad::new` premultiplies its colour by alpha and the fragment shader passes it
+  straight through, but the pipeline asked for `ALPHA_BLENDING`, whose source
+  factor is `SrcAlpha` — so the GPU multiplied by alpha a *second* time and every
+  translucent quad came out as `rgb·α² + dst·(1-α)`. Anything fully opaque was
+  unaffected, which is why it went unnoticed; everything below it was wrong, and
+  worse the more transparent it was. The `░` shade character (α=0.25) rendered at
+  an effective 0.0625 — nearly invisible against the background — and window
+  background-opacity, cell backgrounds under opacity, the selection highlight,
+  the cursor cell tint, hairline separators and every panel shadow were all
+  darker than configured. Now `PREMULTIPLIED_ALPHA_BLENDING`, verified by
+  sampling the rendered output: the 25/50/75/100% shade steps measure 91/125/150/171
+  against a predicted 93/125/149/171, where before they were 47/90/132/171.
+
 - **The find bar no longer renders on top of the resource strip.** It pinned
   itself to the absolute bottom edge of the window, which is where the
   CPU/RAM/GPU indicators live — two rows of text in the same 26 logical pixels,

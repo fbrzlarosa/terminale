@@ -184,7 +184,17 @@ impl BgPipeline {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // PREMULTIPLIED, not ALPHA_BLENDING: `Quad::new` already
+                    // multiplies rgb by alpha (see its `color` field), and the
+                    // fragment shader passes that through untouched. Asking for
+                    // `ALPHA_BLENDING` — whose src factor is `SrcAlpha` — applied
+                    // alpha a *second* time, so every translucent quad rendered as
+                    // `rgb·α² + dst·(1-α)` instead of `rgb·α + dst·(1-α)`. Nothing
+                    // at α=1 was affected, which is why it went unnoticed; but
+                    // everything below it was too dark, worst at the bottom of the
+                    // range — the ░ shade character (α=0.25) came out at an
+                    // effective 0.0625, near-invisible against the background.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
