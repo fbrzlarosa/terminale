@@ -113,7 +113,7 @@ glyphon = "0.6"
 epaint_default_fonts = "=0.29.1"
 bytemuck = { version = "1", features = ["derive"] }
 raw-window-handle = "0.6"
-pollster = "0.4"
+pollster = "1.0"
 parking_lot = "0.12"
 
 # egui-based settings panel
