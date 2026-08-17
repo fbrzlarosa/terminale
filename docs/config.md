@@ -148,6 +148,8 @@ drop_path_trailing_space = true # append a space after each dropped path
 shell_integration  = true      # let terminale instrument the shell it launches
 command_blocks     = true      # assemble command blocks from the marks
 max_command_blocks = 200       # per pane; oldest are dropped
+show_prompt_marks  = true      # status dot in the left margin at each prompt:
+                               # green = exit 0, red = non-zero, neutral = unknown
 ```
 
 A terminal cannot tell a prompt from output, or know that a command failed,

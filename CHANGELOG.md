@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+- **Prompt status dots are on by default.** `terminal.show_prompt_marks` draws a
+  small dot in the left margin at each prompt — green for exit 0, red for a
+  failure — and it defaulted to off for a reason that no longer holds: nothing
+  installed the `OSC 133` marks it reads, so on a stock install it could only ever
+  do nothing. Shell integration, command blocks and the dots are one feature, and
+  the dots are the part you can actually see: a red one is how a failed command
+  stays findable in a long scrollback. Where a shell still emits no marks, no dots
+  appear and the setting costs nothing.
+
 ### Fixed
 - **A hidden window no longer renders once a second, forever.** `SurfaceError::
   Timeout` — the compositor declining to hand over a swapchain image, which is

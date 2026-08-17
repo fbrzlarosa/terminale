@@ -452,8 +452,15 @@ pub struct TerminalConfig {
     /// When `true`, draw a small status dot in the left margin at each
     /// OSC 133 prompt-start row. The dot colour reflects the exit status of
     /// that command: neutral (no status known), green (exit 0), or red (any
-    /// non-zero exit). Requires shell integration to emit OSC 133 sequences.
-    /// Default `false`.
+    /// non-zero exit).
+    ///
+    /// Default `true`. It used to default to `false`, for a reason that no longer
+    /// holds: nothing installed the OSC 133 marks it reads, so on a stock install
+    /// the setting could only ever do nothing. Now that
+    /// [`TerminalConfig::shell_integration`] instruments the shell, the dots are
+    /// the one affordance that makes a failed command findable at a glance in a
+    /// long scrollback. Where a shell still emits no marks, no dots appear and
+    /// the setting costs nothing.
     pub show_prompt_marks: bool,
     /// When `true`, programs may send OS desktop notifications via OSC 9
     /// (body-only form) or OSC 777 (title + body form). Notifications are
@@ -675,7 +682,7 @@ impl Default for TerminalConfig {
             offer_save_ssh_hosts: true,
             live_pane_resize: true,
             pane_resize_step_cells: 2,
-            show_prompt_marks: false,
+            show_prompt_marks: true,
             os_notifications: true,
             os_notification_rate_limit: default_os_notification_rate_limit(),
             // Empty means "use built-in detection only" — existing behaviour.
@@ -779,6 +786,22 @@ mod tests {
     #[test]
     fn ctrl_c_copies_selection_defaults_on() {
         assert!(TerminalConfig::default().ctrl_c_copies_selection);
+    }
+
+    // ── show_prompt_marks ─────────────────────────────────────────────────────
+
+    /// On by default, and deliberately so: the three settings below are one
+    /// feature. Shell integration installs the OSC 133 marks, command blocks
+    /// assemble them, and the prompt dots are the only part of it the user
+    /// actually *sees* — a red dot is how a failed command stays findable in a
+    /// long scrollback. Shipping the first two on and the third off (as this did
+    /// while nothing emitted marks) means the feature is invisible.
+    #[test]
+    fn prompt_marks_default_on_alongside_the_rest_of_shell_integration() {
+        let cfg = TerminalConfig::default();
+        assert!(cfg.shell_integration);
+        assert!(cfg.command_blocks);
+        assert!(cfg.show_prompt_marks);
     }
 
     #[test]
