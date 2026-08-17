@@ -274,11 +274,20 @@ enum UserEvent {
     /// hand a client a system-wide key grab, so [`Self::GlobalHotkey`] never
     /// fires there. Carries no id — the sender is already authenticated by
     /// owning the socket / holding the portal session.
+    ///
+    /// Only ever constructed on Unix (the control socket) and Linux/BSD (the
+    /// portal), so on Windows it is matched but never built — which the
+    /// dead-code lint rightly points out, and CI turns into an error.
+    #[cfg_attr(not(unix), allow(dead_code))]
     ToggleQuake,
     /// The XDG global-shortcuts portal accepted our Quake binding, so the
     /// desktop now owns it. The OS key grab is released on receipt: under a
     /// Wayland session it can still fire while an XWayland window has focus,
     /// and having both live would toggle twice per press (a visible no-op).
+    ///
+    /// The portal exists only on Linux/BSD, so elsewhere this variant is
+    /// matched but never built.
+    #[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
     PortalShortcutBound,
     /// An incremental AI-assistant streaming event, forwarded from the
     /// Tokio task running the provider call so rendering stays on the
