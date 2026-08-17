@@ -1689,9 +1689,11 @@ struct Pane {
     /// Lines scrolled up into history (`0` = pinned to live output).
     /// Auto-resets to 0 whenever the PTY produces new bytes.
     scroll_lines: usize,
-    /// Set when the emulator panicked while processing PTY bytes. We
-    /// stop feeding new chunks into a crashed pane — the user can still
-    /// read its existing buffer until they close it.
+    /// Set when the emulator panicked while processing PTY bytes, or the
+    /// backing session never came up in the first place (spawn failure, a
+    /// failed SSH connect). We stop feeding new chunks into a crashed pane —
+    /// the user can still read its existing buffer until they close it, or
+    /// restart it once the underlying problem is fixed.
     crashed: bool,
     /// Autodetected URL ranges in the visible viewport. Refreshed
     /// every time the active grid changes. Each entry is
@@ -10966,13 +10968,26 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     && sg_trigger == terminale_config::SuggestionTrigger::Auto
                     && sg_provider_ok
                 {
-                    if suggestions::should_auto_fire(
-                        &state.suggestions,
-                        sg_trigger,
-                        sg_enabled,
-                        sg_idle,
-                        now,
-                    ) {
+                    // A full-screen TUI (Claude Code, vim, less, btop, …) owns
+                    // the alternate screen; auto-firing the suggestion bar
+                    // over it draws terminale's own overlay on top of a
+                    // session that's simply idle waiting for input, not
+                    // sitting at a shell prompt. Only the automatic trigger
+                    // is suppressed — the manual request handled above still
+                    // fires regardless of alt-screen state.
+                    let alt_screen = state
+                        .tabs
+                        .get(state.active_tab)
+                        .is_some_and(|tab| tab.emulator.lock().is_alt_screen());
+                    if !alt_screen
+                        && suggestions::should_auto_fire(
+                            &state.suggestions,
+                            sg_trigger,
+                            sg_enabled,
+                            sg_idle,
+                            now,
+                        )
+                    {
                         sg_fire.push(idx);
                     } else if !state.suggestions.fired_for_prompt {
                         if let Some(t) = state.suggestions.last_output_at {
@@ -11067,6 +11082,39 @@ fn spawn_tab(
     ))
 }
 
+/// User-visible text for a failed PTY spawn, fed straight into the crashed
+/// pane's emulator (`Emulator::advance`) so the failure is readable in the
+/// pane itself rather than only in the log — a `tracing::warn!` alone is
+/// invisible to anyone not tailing the log file.
+///
+/// Pure and independent of `Session`/`Renderer`, so it's testable without a
+/// real PTY or GPU context.
+fn spawn_failure_message(command: &str, err: &terminale_core::CoreError) -> String {
+    format!(
+        "\r\n\x1b[31mFailed to launch \"{command}\":\x1b[0m {err}\r\n\r\n\
+         Fix the shell/profile in Settings, then restart this pane.\r\n"
+    )
+}
+
+/// A dead-end [`Session`] to back a pane whose PTY failed to spawn: a
+/// never-fed receiver plus no-op write/resize closures, so the pane behaves
+/// like any other crashed tab (read-only, restartable) instead of holding a
+/// `None` session or a live PTY handle. Mirrors the recovery shape
+/// `ssh_tabs::finish_ssh_tab` already uses for a failed SSH connect.
+fn crashed_pty_backing(
+    cols: u16,
+    rows: u16,
+) -> (Session, tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>) {
+    let (_dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel();
+    let noop_write: terminale_core::RemoteWriter = Arc::new(|_: &[u8]| Ok(()));
+    let noop_resize: terminale_core::RemoteResizer = Arc::new(|_: u16, _: u16| Ok(()));
+    let mut session = Session::from_remote(cols, rows, dead_rx, noop_write, noop_resize);
+    let output_rx = session
+        .take_output()
+        .expect("a freshly built Session::from_remote always has an output channel");
+    (session, output_rx)
+}
+
 /// Like [`spawn_tab`] but produces a raw [`Pane`] without wrapping it in
 /// a fresh `TabState`. Used by the split-pane actions to seed a sibling
 /// leaf inside an existing tab's tree.
@@ -11095,13 +11143,37 @@ fn spawn_pane(
             let _ = proxy.send_event(UserEvent::PtyDataReady);
         }
     });
-    let mut session = Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier)
-        .expect("failed to spawn shell behind PTY");
-    let output_rx = session.take_output().expect("session must have output");
     let (cols, rows) = renderer.pixels_to_cells(width_px, height_px);
-    session.resize(cols, rows).ok();
     let mut emu = Emulator::new(cols, rows);
     emu.set_scrollback(scrollback);
+
+    // A spawn failure (bad shell path in a profile / `--shell` override, fd
+    // exhaustion, no usable PTY on this platform/sandbox) must degrade to one
+    // crashed pane, never take the whole process down — this is reachable
+    // from a plain "new tab" / split action, and from replaying a saved
+    // session whose profile no longer resolves to a real binary, which used
+    // to crash-loop the app on every launch. `restart_focused_pane` already
+    // knows how to respawn a crashed pane once the user fixes the profile.
+    let (session, output_rx, crashed) =
+        match Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier) {
+            Ok(mut session) => {
+                let output_rx = session
+                    .take_output()
+                    .expect("freshly spawned session must expose an output channel");
+                session.resize(cols, rows).ok();
+                (session, output_rx, false)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    command = %spec.command,
+                    ?e,
+                    "failed to spawn shell behind PTY; pane marked as crashed"
+                );
+                emu.advance(spawn_failure_message(&spec.command, &e).as_bytes());
+                let (session, output_rx) = crashed_pty_backing(cols, rows);
+                (session, output_rx, true)
+            }
+        };
     let emulator = Arc::new(Mutex::new(emu));
 
     let name = profile
@@ -11121,7 +11193,7 @@ fn spawn_pane(
         cols,
         rows,
         scroll_lines: 0,
-        crashed: false,
+        crashed,
         autodetect_links: Vec::new(),
         link_scan_generation: u64::MAX, // force scan on first refresh
         last_output_at: None,
@@ -15251,6 +15323,71 @@ mod tests {
 
         // No profile → default shell.
         assert_eq!(build_spawn_spec(None, None, false).command, default_shell());
+    }
+
+    // ── spawn-failure recovery (regression: a bad shell path used to
+    // `.expect()`-panic the whole process instead of crashing one pane) ──
+
+    #[test]
+    fn spawn_failure_message_names_the_command_and_the_underlying_error() {
+        let err = terminale_core::CoreError::Pty(
+            "spawn `/nonexistent/nosuchshell` failed: No such file or directory".into(),
+        );
+        let msg = spawn_failure_message("/nonexistent/nosuchshell", &err);
+        assert!(msg.contains("/nonexistent/nosuchshell"));
+        assert!(msg.contains("No such file or directory"));
+        // Fed straight into `Emulator::advance` — must start on its own line
+        // and never panic regardless of what the error text contains.
+        assert!(msg.starts_with("\r\n"));
+    }
+
+    #[test]
+    fn crashed_pty_backing_is_a_harmless_no_op_session() {
+        let (mut session, mut output_rx) = crashed_pty_backing(80, 24);
+        // Writing to / resizing a crashed pane's session must never error or
+        // panic — the pane is read-only but still gets driven by the normal
+        // per-frame code paths (resize on window resize, etc.).
+        assert!(session.write_input(b"echo hi\n").is_ok());
+        assert!(session.resize(100, 40).is_ok());
+        // Never fed: the crashed pane shows only the message written into
+        // its emulator, nothing arrives from a "process" that never started.
+        assert!(output_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn spawn_pane_falls_back_to_a_crashed_pane_instead_of_panicking() {
+        // Exercises the exact recovery path `spawn_pane` takes on a spawn
+        // failure, without needing a real PTY or a GPU-backed `Renderer`:
+        // build the crashed backing directly (as `spawn_pane` does inside
+        // its `Err` arm) and assert the resulting `Pane` is safe to use.
+        let err = terminale_core::CoreError::Pty("spawn `/bad/shell` failed: ENOENT".into());
+        let mut emu = terminale_term::Emulator::new(80, 24);
+        emu.advance(spawn_failure_message("/bad/shell", &err).as_bytes());
+        let (session, output_rx) = crashed_pty_backing(80, 24);
+        let pane = Pane {
+            profile_name: "bad profile".into(),
+            icon: None,
+            custom_title: None,
+            user_title: None,
+            session,
+            output_rx,
+            emulator: Arc::new(Mutex::new(emu)),
+            cols: 80,
+            rows: 24,
+            scroll_lines: 0,
+            crashed: true,
+            autodetect_links: Vec::new(),
+            link_scan_generation: u64::MAX,
+            last_output_at: None,
+            last_input_at: None,
+        };
+        assert!(pane.crashed);
+        assert!(pane
+            .emulator
+            .lock()
+            .buffer_lines_text()
+            .iter()
+            .any(|l| l.contains("Failed to launch")));
     }
 
     #[test]

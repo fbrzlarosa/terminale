@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **A shell that fails to launch no longer takes the whole app down.** The PTY
+  spawn was `.expect()`-ed, so a profile or `--shell` pointing at a missing or
+  non-executable binary panicked the process — killing every other tab and pane
+  with it. Worse, a *saved session* referencing a since-removed shell hit the same
+  path on restore, which meant a crash on every launch, forever, with no way in.
+  A failed spawn now degrades to a single crashed pane: the tab reads
+  `⚠ <name> (crashed)`, the pane itself shows the real error in red
+  (`… (ENOENT: No such file or directory)`) and what to do about it, and the
+  existing restart-pane action brings it back once the profile is fixed. Verified
+  end to end against a live instance launched with a nonexistent shell.
+- **The AI suggestion bar no longer fires over a full-screen program.** Auto-fire
+  checked the idle timer but not the alternate screen, so once a TUI — Claude
+  Code, vim, less, btop — went quiet waiting for input, terminale drew its own
+  suggestion overlay on top of it. Only the automatic trigger is suppressed; asking
+  for a suggestion explicitly still works anywhere.
+
 - **Ten rebindable actions had no row in Settings.** `next_failed_command`,
   `prev_failed_command`, `open_failed_command_picker`, `suggest_command`,
   `open_snippets`, `save_workspace`, `open_workspace`, `open_command_history`,
