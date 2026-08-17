@@ -16,12 +16,18 @@ mod context_menu_window;
 mod copy_mode;
 #[cfg(target_os = "linux")]
 mod desktop_entry;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod desktop_shortcut;
 mod dir_jump;
 mod egui_icons;
 pub mod icons;
+#[cfg(unix)]
+mod ipc;
 mod keymap;
 mod kitty_keyboard;
 mod links;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod linux_window;
 mod markdown;
 mod monitor_names;
 mod mouse;
@@ -30,6 +36,8 @@ mod palette;
 mod panes;
 mod password_prompt;
 mod paste_guard;
+#[cfg(all(unix, not(target_os = "macos")))]
+mod portal_shortcuts;
 mod process_job;
 mod quick_select;
 mod resources;
@@ -259,6 +267,19 @@ enum UserEvent {
     /// window is hidden (the winit loop is otherwise parked in `Wait`
     /// with nothing to wake it).
     GlobalHotkey(u32),
+    /// Toggle Quake visibility, requested by something other than the OS key
+    /// grab: the control socket (`terminale --toggle-quake`, which is how a
+    /// window-manager or desktop keybinding drives it) or the XDG
+    /// global-shortcuts portal. Both exist because Wayland compositors never
+    /// hand a client a system-wide key grab, so [`Self::GlobalHotkey`] never
+    /// fires there. Carries no id — the sender is already authenticated by
+    /// owning the socket / holding the portal session.
+    ToggleQuake,
+    /// The XDG global-shortcuts portal accepted our Quake binding, so the
+    /// desktop now owns it. The OS key grab is released on receipt: under a
+    /// Wayland session it can still fire while an XWayland window has focus,
+    /// and having both live would toggle twice per press (a visible no-op).
+    PortalShortcutBound,
     /// An incremental AI-assistant streaming event, forwarded from the
     /// Tokio task running the provider call so rendering stays on the
     /// main thread.
@@ -356,6 +377,15 @@ struct Cli {
     /// Launch in Quake mode (slide-down system-wide terminal).
     #[arg(long)]
     quake: bool,
+
+    /// Ask the already-running terminale to show or hide its Quake drop-down,
+    /// then exit. Bind this to a key in your desktop / window manager to get a
+    /// working Quake hotkey under Wayland, where no application is allowed to
+    /// grab keys globally. Requires `integration.control_socket` (on by
+    /// default). Unix only.
+    #[cfg(unix)]
+    #[arg(long)]
+    toggle_quake: bool,
 
     /// Log level filter (e.g. `info`, `debug`, `terminale=trace`).
     #[arg(long, default_value = "warn", env = "TERMINALE_LOG")]
@@ -544,6 +574,30 @@ fn main() -> Result<()> {
         let schema = schemars::schema_for!(Config);
         println!("{}", serde_json::to_string_pretty(&schema)?);
         return Ok(());
+    }
+
+    // Drive the running instance, then exit. Handled before anything else that
+    // costs time (config load, tracing setup, GPU) because this path is on the
+    // critical path of a keypress: a desktop keybinding spawns this process
+    // every time the user hits the Quake key.
+    #[cfg(unix)]
+    if cli.toggle_quake {
+        match ipc::send_command(ipc::CMD_TOGGLE_QUAKE) {
+            Ok(reply) if reply == "ok" => return Ok(()),
+            Ok(reply) => {
+                eprintln!("terminale refused the request: {reply}");
+                std::process::exit(1);
+            }
+            Err(e) => {
+                eprintln!(
+                    "could not reach a running terminale on {}: {e}\n\
+                     Start terminale first (its control socket is what this flag talks to), \
+                     or check that `integration.control_socket` is enabled.",
+                    ipc::socket_path().display()
+                );
+                std::process::exit(1);
+            }
+        }
     }
 
     if cli.check_update {
@@ -754,7 +808,7 @@ fn main() -> Result<()> {
         .enable_all()
         .build()?;
 
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
+    let event_loop = build_event_loop(config.integration.linux_backend)?;
     event_loop.set_control_flow(ControlFlow::Wait);
 
     let (hotkeys, quake_hotkey_id) = match install_quake_hotkey(&config.keybinds.quake) {
@@ -808,6 +862,30 @@ fn main() -> Result<()> {
         config.window.auto_reload_config,
     );
 
+    // The two Wayland-era paths into the Quake toggle. Neither replaces the OS
+    // key grab installed above — they run alongside it, because the grab is
+    // still the right mechanism on Windows, macOS and a real X11 session.
+    //
+    //  * the control socket lets any desktop / window-manager keybinding run
+    //    `terminale --toggle-quake` (works everywhere, needs one manual bind);
+    //  * the global-shortcuts portal is the sanctioned Wayland replacement for
+    //    a key grab (GNOME 48+, KDE Plasma 6+) and needs no manual setup.
+    #[cfg(unix)]
+    let _control_socket = if config.integration.control_socket {
+        ipc::serve(event_loop.create_proxy())
+    } else {
+        None
+    };
+    // Only under a Wayland session: on X11 the key grab already works and a
+    // portal binding on top would double-fire the toggle.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if config.integration.global_shortcuts_portal
+        && linux_window::session_is_wayland()
+        && !config.keybinds.quake.trim().is_empty()
+    {
+        portal_shortcuts::spawn(&runtime, &config.keybinds.quake, event_loop.create_proxy());
+    }
+
     let mut app = TerminaleApp {
         config,
         config_path,
@@ -827,6 +905,7 @@ fn main() -> Result<()> {
         hotkeys,
         quake_hotkey_id,
         quake_binding_registered,
+        portal_shortcut_active: false,
         plugins,
         plugin_snap_key: None,
         config_save_due: None,
@@ -982,6 +1061,66 @@ fn install_plugins(config: &Config) -> Option<terminale_plugin::PluginHost> {
         }
     }
     Some(host)
+}
+
+/// Build the winit event loop, choosing the windowing backend on Linux/BSD.
+///
+/// This choice decides whether half the app works. Wayland refuses to let a
+/// client position its own windows — `set_outer_position` is a no-op there — so
+/// Quake edge docking, the Snap actions, `window.startup_position`,
+/// cursor-anchored menus/dialogs and tab tear-out all silently do nothing on a
+/// native Wayland surface. X11 supports all of them, and every mainstream
+/// Wayland session ships XWayland, so `auto` (the default) asks for X11
+/// whenever `$DISPLAY` names a reachable server and falls back to Wayland
+/// otherwise.
+///
+/// An explicit `x11` that cannot be satisfied (no X server at all) would
+/// otherwise abort startup, so a failed build retries with winit's own default
+/// backend selection rather than leaving the user with no window.
+///
+/// On Windows and macOS there is one backend and the parameter is ignored.
+fn build_event_loop(backend: terminale_config::LinuxBackend) -> Result<EventLoop<UserEvent>> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use terminale_config::LinuxBackend;
+        use winit::platform::wayland::EventLoopBuilderExtWayland;
+        use winit::platform::x11::EventLoopBuilderExtX11;
+
+        let want_x11 = match backend {
+            LinuxBackend::Auto => linux_window::x_display_available(),
+            LinuxBackend::X11 => true,
+            LinuxBackend::Wayland => false,
+        };
+        let mut builder = EventLoop::<UserEvent>::with_user_event();
+        if want_x11 {
+            builder.with_x11();
+        } else {
+            builder.with_wayland();
+        }
+        match builder.build() {
+            Ok(ev) => {
+                tracing::info!(
+                    requested = ?backend,
+                    backend = if want_x11 { "x11" } else { "wayland" },
+                    wayland_session = linux_window::session_is_wayland(),
+                    "windowing backend selected"
+                );
+                return Ok(ev);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    ?e,
+                    requested = ?backend,
+                    "could not start the requested windowing backend; \
+                     falling back to winit's default"
+                );
+            }
+        }
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = backend;
+
+    Ok(EventLoop::<UserEvent>::with_user_event().build()?)
 }
 
 /// Register a global hotkey for Quake-mode toggle. Returns the owning
@@ -1217,6 +1356,11 @@ struct TerminaleApp {
     /// `config.keybinds.quake` every tick so a Settings change or config-file
     /// reload re-registers the hotkey live instead of needing a restart.
     quake_binding_registered: String,
+    /// Whether the desktop's XDG global-shortcuts portal has taken ownership of
+    /// the Quake shortcut (Wayland). While `true` the OS key grab is
+    /// deliberately not held: the desktop delivers activations instead, and two
+    /// live registrations would toggle twice per press.
+    portal_shortcut_active: bool,
     /// Lua plugin host. `None` when disabled in config or when no Lua
     /// runtime could be initialised (rare).
     plugins: Option<terminale_plugin::PluginHost>,
@@ -2687,6 +2831,20 @@ impl TerminaleApp {
     /// restart — changing an already-active binding works live.)
     fn reregister_quake_hotkey(&mut self, binding: &str) {
         self.quake_binding_registered = binding.to_string();
+        // When the desktop's global-shortcuts portal holds the binding, the
+        // desktop — not terminale — decides which keys trigger it, and claiming
+        // an OS grab on top would double-fire. The config value is only the
+        // *preferred* trigger offered at first bind; changing it later is
+        // applied by re-binding in the desktop's own keyboard settings.
+        if self.portal_shortcut_active {
+            tracing::info!(
+                binding,
+                "the Quake shortcut is owned by the desktop's global-shortcuts portal; \
+                 change it in your desktop's keyboard settings (the config value is only \
+                 the preferred trigger offered when it was first registered)"
+            );
+            return;
+        }
         // Drop the old manager first so its hotkey is released before we try
         // to claim the (possibly identical) new one.
         self.hotkeys = None;
@@ -2700,6 +2858,49 @@ impl TerminaleApp {
             Err(e) => {
                 tracing::warn!(?e, binding, "live re-register of Quake hotkey failed");
             }
+        }
+    }
+
+    /// Toggle Quake visibility for **every** terminal window in sync — if any
+    /// window is currently visible, hide every visible one; if none are, show
+    /// every saved one. Each window still uses its OWN saved geometry, so a
+    /// multi-monitor layout snaps back exactly as the user left it.
+    ///
+    /// Shared by all three ways a toggle can arrive: the OS key grab
+    /// ([`UserEvent::GlobalHotkey`]), the control socket, and the XDG
+    /// global-shortcuts portal (both [`UserEvent::ToggleQuake`]).
+    fn toggle_quake_all(&mut self) {
+        let quake = self.config.quake.clone();
+        let any_visible = self.windows.iter().any(|w| w.quake_visible);
+        if any_visible {
+            for w in &mut self.windows {
+                if w.quake_visible {
+                    toggle_quake(w, &quake, true);
+                }
+            }
+            return;
+        }
+        // Reveal every saved window WITHOUT grabbing focus per window: focusing
+        // each in turn is a burst of foreground-steal requests, and the OS ends
+        // up focusing whichever window was shown LAST (e.g. the right-most on a
+        // multi-monitor / multi-desktop layout) instead of the one the user
+        // left off in. So show them all unfocused…
+        for w in &mut self.windows {
+            if !w.quake_visible {
+                toggle_quake(w, &quake, false);
+            }
+        }
+        // …then focus EXACTLY ONE: the most-recently-focused terminal window
+        // (falls back to the last window if that one is gone). A single focus
+        // request is one the OS reliably honours, so focus lands where the user
+        // left off instead of on the last-shown window.
+        if let Some(idx) = self
+            .active_window_id
+            .and_then(|id| self.window_index(id))
+            .or_else(|| self.windows.len().checked_sub(1))
+        {
+            self.windows[idx].window.focus_window();
+            crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
         }
     }
 
@@ -5372,6 +5573,19 @@ impl TerminaleApp {
     fn apply_config_reload(&mut self) {
         match Config::load_or_init_at(Some(self.config_path.clone())) {
             Ok((new_cfg, _)) => {
+                // Nothing actually changed — most often this is the app seeing
+                // its OWN write come back through the file watcher (a Settings
+                // save), or one of the several inotify events a single editor
+                // save produces. Re-applying an identical config is pure churn:
+                // it re-reads the OS keychain, rebuilds every window's live
+                // mirrors and re-uploads the theme. Bail before any of that.
+                if new_cfg == self.config {
+                    tracing::debug!(
+                        path = %self.config_path.display(),
+                        "config file changed but the parsed config is identical; skipping reload"
+                    );
+                    return;
+                }
                 tracing::info!(
                     path = %self.config_path.display(),
                     "config reloaded from disk"
@@ -5964,46 +6178,21 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             }
             UserEvent::GlobalHotkey(id) => {
                 if self.quake_hotkey_id == Some(id) {
-                    let quake = self.config.quake.clone();
-                    // Toggle ALL terminal windows in sync — if any window
-                    // is currently visible, hide every visible one; if none
-                    // are visible, restore every saved window. Each window
-                    // still uses its OWN saved geometry so a multi-monitor
-                    // layout snaps back exactly as the user left it.
-                    let any_visible = self.windows.iter().any(|w| w.quake_visible);
-                    if any_visible {
-                        for w in &mut self.windows {
-                            if w.quake_visible {
-                                toggle_quake(w, &quake, true);
-                            }
-                        }
-                    } else {
-                        // Reveal every saved window WITHOUT grabbing focus per
-                        // window: focusing each in turn is a burst of
-                        // foreground-steal requests, and the OS ends up focusing
-                        // whichever window was shown LAST (e.g. the right-most on
-                        // a multi-monitor / multi-desktop layout) instead of the
-                        // one the user left off in. So show them all unfocused…
-                        for w in &mut self.windows {
-                            if !w.quake_visible {
-                                toggle_quake(w, &quake, false);
-                            }
-                        }
-                        // …then focus EXACTLY ONE: the most-recently-focused
-                        // terminal window (falls back to the last window if that
-                        // one is gone). A single focus request is one the OS
-                        // reliably honours, so focus lands where the user left
-                        // off instead of on the last-shown window.
-                        if let Some(idx) = self
-                            .active_window_id
-                            .and_then(|id| self.window_index(id))
-                            .or_else(|| self.windows.len().checked_sub(1))
-                        {
-                            self.windows[idx].window.focus_window();
-                            crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
-                        }
-                    }
+                    self.toggle_quake_all();
                 }
+            }
+            // Control socket / global-shortcuts portal. Both are already
+            // authenticated by construction, so there is no id to check.
+            UserEvent::ToggleQuake => self.toggle_quake_all(),
+            UserEvent::PortalShortcutBound => {
+                self.portal_shortcut_active = true;
+                // Release the OS grab: the desktop delivers the toggle now, and
+                // two live registrations would fire twice per press.
+                self.hotkeys = None;
+                self.quake_hotkey_id = None;
+                tracing::info!(
+                    "the desktop now owns the Quake shortcut; released the X11 key grab"
+                );
             }
             UserEvent::Ai(e) => {
                 if let Some(ai) = self.ai_assistant.as_mut() {

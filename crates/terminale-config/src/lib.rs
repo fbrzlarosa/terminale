@@ -74,7 +74,7 @@ pub use cursor::{CursorConfig, CursorStyle};
 pub use directory_jump::DirectoryJumpConfig;
 pub use font::FontConfig;
 pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference};
-pub use integration::IntegrationConfig;
+pub use integration::{IntegrationConfig, LinuxBackend};
 pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
     MouseBinding, ShortcutsConfig,
@@ -422,6 +422,13 @@ fn ai_keys_synced() -> &'static std::sync::Mutex<Option<(String, String)>> {
     SYNCED.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// Whether a keychain read has already failed in this process. Returns the
+/// previous value and latches `true`, so exactly one caller sees `false`.
+fn keychain_read_failed_before() -> bool {
+    static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    FAILED.swap(true, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Fill `field` from the keychain when empty; migrate a legacy plaintext
 /// value into the keychain when present. Keychain failures degrade to the
 /// in-memory/env-var behaviour and are logged, never fatal.
@@ -430,7 +437,25 @@ fn hydrate_ai_key(field: &mut String, id: &str) {
         match secrets::get_secret(id) {
             Ok(Some(v)) => *field = v,
             Ok(None) => {}
-            Err(e) => tracing::warn!(?e, id, "could not read AI key from the OS keychain"),
+            // A machine with no usable secret store (a Linux box without
+            // gnome-keyring / kwallet unlocked is the common one) fails this
+            // read on EVERY config load — including every hot-reload. Warn the
+            // first time, then drop to debug: the condition is a property of
+            // the machine, not of this particular read, and repeating it once
+            // per reload buried the log in identical D-Bus errors.
+            Err(e) => {
+                if keychain_read_failed_before() {
+                    tracing::debug!(?e, id, "could not read AI key from the OS keychain");
+                } else {
+                    tracing::warn!(
+                        ?e,
+                        id,
+                        "could not read AI key from the OS keychain; AI keys will only come \
+                         from the environment or the settings window this session \
+                         (further keychain read failures are logged at debug level)"
+                    );
+                }
+            }
         }
     } else {
         // Legacy plaintext key found in config.toml — move it to the

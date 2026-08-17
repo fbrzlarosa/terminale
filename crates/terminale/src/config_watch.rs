@@ -17,11 +17,17 @@ use winit::event_loop::EventLoopProxy;
 
 use crate::UserEvent;
 
-/// Small debounce added inside the event callback: wait this many milliseconds
-/// after a filesystem event before forwarding the reload signal to the UI
-/// thread. Smooths out bursts (e.g. editors that truncate + rewrite a file in
-/// two rapid operations) without adding significant latency for normal saves.
-const CALLBACK_DEBOUNCE_MS: u64 = 150;
+/// Quiet period a burst of filesystem events must be followed by before one
+/// reload is forwarded to the UI thread.
+///
+/// A single save is never a single event: on Linux inotify reports the write,
+/// the metadata update and the close separately, and editors that truncate +
+/// rewrite (or write a temp file and rename it over the original) add more. The
+/// debounce thread waits for `DEBOUNCE` of silence and then sends exactly one
+/// signal, so one save is one reload — previously each event produced its own,
+/// and a Settings save reloaded (and re-read the OS keychain) three times in a
+/// row.
+const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// Start a filesystem watcher for `config_path`. Returns the live watcher
 /// handle — the caller must keep it alive for as long as watching is wanted.
@@ -39,12 +45,31 @@ pub(crate) fn start(
         return None;
     }
 
-    // notify v6 uses a channel-based API. We create a watcher that calls a
-    // closure on each event batch. The closure debounces by sleeping briefly
-    // then sending a single wake signal — a cheap but effective strategy for
-    // the typical "editor saves once" case.
-    let proxy_clone = proxy.clone();
+    // notify v6 calls our closure on every event. The closure does no work
+    // beyond filtering and a non-blocking hand-off: the debounce lives on its
+    // own thread, which collapses a burst of events into a single reload.
+    //
+    // Doing it the other way round (sleeping inside the callback) is what the
+    // watcher used to do, and it made things worse rather than better: notify
+    // dispatches events serially, so N events became N sleeps AND N reloads,
+    // spaced one debounce apart.
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
     let path_clone = config_path.clone();
+
+    std::thread::Builder::new()
+        .name("terminale-config-debounce".into())
+        .spawn(move || {
+            while rx.recv().is_ok() {
+                // Drain everything that arrives within a quiet period, so a
+                // multi-event save collapses into one signal.
+                while rx.recv_timeout(DEBOUNCE).is_ok() {}
+                if proxy.send_event(UserEvent::ConfigChanged).is_err() {
+                    // Event loop is gone — nothing left to notify.
+                    break;
+                }
+            }
+        })
+        .ok();
 
     let watcher_result = RecommendedWatcher::new(
         move |result: notify::Result<notify::Event>| {
@@ -68,14 +93,8 @@ pub(crate) fn start(
                     if !relevant {
                         return;
                     }
-                    // Brief debounce: wait a moment before signalling the UI
-                    // thread so bursts of rapid filesystem events (e.g. an
-                    // editor that truncates then rewrites) coalesce into one
-                    // reload.
-                    std::thread::sleep(Duration::from_millis(CALLBACK_DEBOUNCE_MS));
-                    if proxy_clone.send_event(UserEvent::ConfigChanged).is_err() {
-                        // Event loop is gone — nothing left to notify.
-                    }
+                    // Never blocks: the debounce thread owns the timing.
+                    let _ = tx.send(());
                 }
                 Err(e) => {
                     tracing::warn!(?e, "config watcher error");
