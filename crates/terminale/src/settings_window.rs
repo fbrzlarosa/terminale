@@ -429,6 +429,17 @@ impl SettingsWindow {
         &self.config
     }
 
+    /// Whether a hotkey recorder is currently waiting for a key press.
+    ///
+    /// The host uses this to release the OS-level Quake key grab for the
+    /// duration: a globally registered hotkey is consumed by the OS before it
+    /// ever reaches a window, so trying to re-record the *currently bound*
+    /// combination would sit on "Press a key…" forever while the press
+    /// toggled the drop-down instead.
+    pub fn is_recording_hotkey(&self) -> bool {
+        self.recording_hotkey.is_some()
+    }
+
     /// Consume the "config may have changed" flag — `true` when at least
     /// one egui frame (the only context that edits `config`) ran since the
     /// last call. The host gates its clone + 150-field live-apply diff on

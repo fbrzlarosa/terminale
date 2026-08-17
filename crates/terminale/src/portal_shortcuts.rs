@@ -93,28 +93,58 @@ async fn run(
     // that first press.
     let mut activations = portal.receive_activated().await?;
 
-    let mut shortcut = NewShortcut::new(SHORTCUT_ID, SHORTCUT_DESCRIPTION);
-    if let Some(trigger) = trigger.as_deref() {
-        shortcut = shortcut.preferred_trigger(trigger);
-    }
-    let bound = portal
-        .bind_shortcuts(&session, &[shortcut], None)
-        .await?
-        .response()?;
+    // Bindings persist per application id, and the desktop only accepts
+    // `BindShortcuts` while an app has none — a second call returns a plain
+    // "cancelled" response. So ask what this app already owns first, and only
+    // bind when the answer is "nothing". Getting this backwards makes the
+    // hotkey work on the very first launch and silently die on every one after.
+    let existing = match portal.list_shortcuts(&session).await {
+        Ok(request) => request.response().ok(),
+        Err(e) => {
+            tracing::debug!(?e, "could not list existing portal shortcuts");
+            None
+        }
+    };
+    let already_bound = existing
+        .as_ref()
+        .is_some_and(|l| l.shortcuts().iter().any(|s| s.id() == SHORTCUT_ID));
 
-    if !bound.shortcuts().iter().any(|s| s.id() == SHORTCUT_ID) {
-        tracing::info!(
-            "the desktop did not bind the Quake shortcut (declined, or already bound \
-             elsewhere); keeping the X11 key grab"
-        );
-        return Ok(());
-    }
-    for s in bound.shortcuts() {
-        tracing::info!(
-            id = s.id(),
-            trigger = s.trigger_description(),
-            "Quake hotkey registered with the desktop global-shortcuts portal"
-        );
+    if already_bound {
+        for s in existing
+            .iter()
+            .flat_map(ashpd::desktop::global_shortcuts::ListShortcuts::shortcuts)
+        {
+            if s.id() == SHORTCUT_ID {
+                tracing::info!(
+                    id = s.id(),
+                    trigger = s.trigger_description(),
+                    "Quake hotkey already registered with the desktop; reusing it"
+                );
+            }
+        }
+    } else {
+        let mut shortcut = NewShortcut::new(SHORTCUT_ID, SHORTCUT_DESCRIPTION);
+        if let Some(trigger) = trigger.as_deref() {
+            shortcut = shortcut.preferred_trigger(trigger);
+        }
+        let bound = portal
+            .bind_shortcuts(&session, &[shortcut], None)
+            .await?
+            .response()?;
+        if !bound.shortcuts().iter().any(|s| s.id() == SHORTCUT_ID) {
+            tracing::info!(
+                "the desktop did not bind the Quake shortcut (declined); keeping the \
+                 X11 key grab"
+            );
+            return Ok(());
+        }
+        for s in bound.shortcuts() {
+            tracing::info!(
+                id = s.id(),
+                trigger = s.trigger_description(),
+                "Quake hotkey registered with the desktop global-shortcuts portal"
+            );
+        }
     }
     // Tell the app to release the OS key grab: under Wayland it can still fire
     // while an XWayland window has focus, and two live registrations would

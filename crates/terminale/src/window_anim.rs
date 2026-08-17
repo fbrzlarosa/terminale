@@ -1540,8 +1540,14 @@ pub(crate) fn toggle_quake(
     // Swallow keypresses for a short window after the show: when shown via the
     // global hotkey, the still-held trigger key (e.g. the "1" in Ctrl+Shift+1)
     // would otherwise leak into the shell once the window gains focus.
-    state.quake_input_suppress_until =
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+    let now = std::time::Instant::now();
+    state.quake_input_suppress_until = Some(now + std::time::Duration::from_millis(200));
+    // Auto-repeat of that same still-held key outlives the window above: the OS
+    // repeat delay is ~500 ms, so a chord held a moment too long starts firing
+    // long after the reveal is done. Keep dropping repeats until the key is
+    // actually released (see `quake_repeat_suppress_until`), bounded so a lost
+    // release event can't wedge the keyboard.
+    state.quake_repeat_suppress_until = Some(now + std::time::Duration::from_secs(3));
     // Free-floating mode never docks, so any persisted dock geometry is
     // irrelevant — drop it so a later switch back to dock mode starts clean.
     if quake_cfg.edge == terminale_config::QuakeEdge::Off {

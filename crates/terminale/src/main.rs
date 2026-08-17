@@ -883,6 +883,11 @@ fn main() -> Result<()> {
         && linux_window::session_is_wayland()
         && !config.keybinds.quake.trim().is_empty()
     {
+        // The portal refuses callers it cannot identify, and an ordinary
+        // process only carries an application id when the desktop launched it
+        // from its `.desktop` entry. Claim one first, so the hotkey behaves the
+        // same however terminale was started.
+        linux_window::ensure_app_scope(&runtime);
         portal_shortcuts::spawn(&runtime, &config.keybinds.quake, event_loop.create_proxy());
     }
 
@@ -906,6 +911,7 @@ fn main() -> Result<()> {
         quake_hotkey_id,
         quake_binding_registered,
         portal_shortcut_active: false,
+        quake_hotkey_suspended: false,
         plugins,
         plugin_snap_key: None,
         config_save_due: None,
@@ -1361,6 +1367,10 @@ struct TerminaleApp {
     /// deliberately not held: the desktop delivers activations instead, and two
     /// live registrations would toggle twice per press.
     portal_shortcut_active: bool,
+    /// Whether the Quake key grab is temporarily released because a hotkey
+    /// recorder in the Settings window is waiting for a press. Without this the
+    /// OS eats the very combination the user is trying to re-record.
+    quake_hotkey_suspended: bool,
     /// Lua plugin host. `None` when disabled in config or when no Lua
     /// runtime could be initialised (rare).
     plugins: Option<terminale_plugin::PluginHost>,
@@ -2257,6 +2267,13 @@ struct TermWindow {
     /// freshly shown window gains focus (typing e.g. "1" into the shell). Set
     /// on every show; presses before the deadline are dropped. `None` = off.
     quake_input_suppress_until: Option<std::time::Instant>,
+    /// Deadline until which keyboard **auto-repeat** is swallowed after a Quake
+    /// show. The fixed window above only covers the first instant; a trigger
+    /// chord still held past the OS repeat delay (~500 ms, far longer than any
+    /// reveal animation) then sprays its key into the shell — a Ctrl+`\` toggle
+    /// filling the prompt with backslashes. Cleared by the first key release,
+    /// the first fresh (non-repeat) press, or the deadline. `None` = off.
+    quake_repeat_suppress_until: Option<std::time::Instant>,
     /// The exact geometry `(x, y, w, h)` captured on the last hide, restored
     /// verbatim on the next show. `None` until the window is first hidden.
     quake_saved_rect: Option<terminale_config::WindowRect>,
@@ -3188,6 +3205,7 @@ impl TerminaleApp {
             quake_visible: true,
             pending_quake_autohide: false,
             quake_input_suppress_until: None,
+            quake_repeat_suppress_until: None,
             quake_saved_rect: None,
             quake_last_dock_rect: None,
             quake_user_rect: None,
@@ -8469,6 +8487,23 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     }
                     state.quake_input_suppress_until = None;
                 }
+                // …and keep swallowing *auto-repeat* of that still-held trigger
+                // key for as long as it stays down. The fixed window above only
+                // covers the first instant: a chord held past the OS repeat
+                // delay (~500 ms by default, far longer than any reveal
+                // animation) starts firing repeats afterwards, which is how a
+                // Ctrl+\ toggle used to spray backslashes into the shell.
+                //
+                // Repeats can only come from a key pressed BEFORE the show, so
+                // dropping them here costs nothing real. The state clears on the
+                // first key release (the chord was let go), on the first fresh
+                // press (the user has moved on), or at the deadline.
+                if let Some(deadline) = state.quake_repeat_suppress_until {
+                    if std::time::Instant::now() < deadline && repeat {
+                        return;
+                    }
+                    state.quake_repeat_suppress_until = None;
+                }
                 // The command palette grabs every key while it's open.
                 if state.command_palette.is_some()
                     && handle_palette_input(state, &logical_key, text.clone())
@@ -8715,6 +8750,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     },
                 ..
             } => {
+                // A release means the Quake trigger chord has been let go, so
+                // any further auto-repeat is genuine user input again.
+                state.quake_repeat_suppress_until = None;
                 // Key *releases* are transmitted only under the kitty keyboard
                 // protocol, and only when the focused app turned on event
                 // reporting (`report_event_types`). Every other path ignores
@@ -10819,11 +10857,38 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 None => remaining,
             });
         }
+        // Release the OS key grab while a hotkey recorder in Settings is
+        // waiting for a press, and take it back when recording ends.
+        //
+        // A globally registered hotkey is swallowed by the OS before it ever
+        // reaches a window, so pressing the *currently bound* combination to
+        // re-record it did the one thing it must not: toggled the drop-down,
+        // while the recorder sat on "Press a key…" forever. Nothing else can
+        // fix this from inside the recorder — the key genuinely never arrives.
+        let recording = self
+            .settings
+            .as_ref()
+            .is_some_and(SettingsWindow::is_recording_hotkey);
+        if recording != self.quake_hotkey_suspended {
+            self.quake_hotkey_suspended = recording;
+            if recording {
+                // Drop the manager: that unregisters the binding OS-side.
+                self.hotkeys = None;
+                self.quake_hotkey_id = None;
+            } else {
+                // Recording finished — re-claim whatever binding is now set.
+                let binding = self.config.keybinds.quake.clone();
+                self.reregister_quake_hotkey(&binding);
+            }
+        }
         // Re-register the Quake global hotkey when its binding changed at
         // runtime (Settings save or config-file reload). It was hooked only at
         // startup, so a changed binding did nothing until restart — this makes
-        // it apply live.
-        if self.config.keybinds.quake != self.quake_binding_registered {
+        // it apply live. Skipped while suspended above, so a recorder that is
+        // still open doesn't have the grab yanked back from under it.
+        if !self.quake_hotkey_suspended
+            && self.config.keybinds.quake != self.quake_binding_registered
+        {
             let binding = self.config.keybinds.quake.clone();
             self.reregister_quake_hotkey(&binding);
         }

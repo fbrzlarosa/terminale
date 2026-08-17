@@ -98,6 +98,136 @@ pub(crate) fn warn_positioning_unsupported_once() {
     );
 }
 
+// ── Application identity (systemd app scope) ─────────────────────────────────
+
+/// The application id terminale claims. Matches the `terminale.desktop` entry
+/// it installs, and is the name the desktop keys a remembered global shortcut
+/// off — so it must stay stable across releases and across launches.
+const APP_ID: &str = "terminale";
+
+/// Give this process an *application id*, by placing it in a systemd user scope
+/// named `app-terminale-<pid>.scope`.
+///
+/// This exists for one reason: `org.freedesktop.portal.GlobalShortcuts` refuses
+/// callers it can't identify — `CreateSession` fails outright with
+/// "An app id is required" — and for an ordinary (non-Flatpak) process the
+/// desktop derives that id from the systemd unit the process lives in. A
+/// terminale started from the application menu already has one, because the
+/// desktop launched it into `app-gnome-terminale-*.scope`; one started from a
+/// shell inherits that shell's scope and has none. So the Quake hotkey worked
+/// or not depending on how the app happened to be started, which is not a
+/// distinction any user should have to know about.
+///
+/// Registering the shortcut in the *desktop's* settings would work too, but it
+/// is the wrong shape: setting a hotkey inside terminale should be all a user
+/// has to do. Claiming the id ourselves keeps it that way.
+///
+/// This is exactly what `systemd-run --user --scope` does, and moving one's own
+/// PID needs no privilege. Best-effort throughout: no systemd, no session bus,
+/// or a refused call all leave the process where it was and return `false`.
+///
+/// `runtime` is used to drive the D-Bus round-trip; the call is awaited before
+/// returning, because the caller goes straight on to talk to the portal and the
+/// cgroup move has to have landed by then.
+pub(crate) fn ensure_app_scope(runtime: &tokio::runtime::Runtime) -> bool {
+    if let Some(unit) = current_app_unit() {
+        tracing::debug!(unit, "already running under an application unit");
+        return true;
+    }
+    match runtime.block_on(start_transient_scope()) {
+        Ok(name) => {
+            // The unit is created by a systemd *job*, so the cgroup move can
+            // land a moment after the call returns. The portal reads our cgroup
+            // to resolve the app id, so wait for it to actually take effect
+            // rather than racing it.
+            for _ in 0..50 {
+                if current_app_unit().is_some() {
+                    tracing::info!(scope = %name, app_id = APP_ID, "claimed an application id");
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            tracing::debug!(scope = %name, "app scope created but the cgroup move did not land");
+            false
+        }
+        Err(e) => {
+            tracing::debug!(?e, "could not place this process in a systemd app scope");
+            false
+        }
+    }
+}
+
+/// The leaf systemd unit this process lives in, when it is an *application*
+/// unit (`app-….scope` / `app-….service`) — the form the desktop parses an
+/// application id out of.
+///
+/// Only the leaf counts. A shell inside GNOME Console, say, sits at
+/// `…/app-…-org.gnome.Console.slice/vte-spawn-….scope`: an `app-…` ancestor,
+/// but a leaf that names the terminal's spawn helper, not an application.
+fn current_app_unit() -> Option<String> {
+    let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    app_unit_in_cgroup(&cgroup)
+}
+
+/// Whether a cgroup leaf names an *application* unit. systemd unit suffixes are
+/// case-sensitive, so `strip_suffix` is used rather than `ends_with` — which
+/// clippy reads as a (case-insensitive) file-extension check.
+fn is_app_unit(leaf: &str) -> bool {
+    leaf.starts_with("app-")
+        && (leaf.strip_suffix(".scope").is_some() || leaf.strip_suffix(".service").is_some())
+}
+
+/// Pure half of [`current_app_unit`]: pick the application unit out of the
+/// contents of `/proc/self/cgroup`. Split out so the parsing is testable
+/// without a particular process placement.
+fn app_unit_in_cgroup(cgroup: &str) -> Option<String> {
+    // cgroup v2 has a single `0::<path>` line; v1 has several. Either way the
+    // unit is the last path segment.
+    cgroup
+        .lines()
+        .filter_map(|l| l.rsplit(':').next())
+        .filter_map(|path| path.rsplit('/').next())
+        .find(|leaf| is_app_unit(leaf))
+        .map(ToString::to_string)
+}
+
+/// Ask systemd's user manager to create a scope holding this process.
+async fn start_transient_scope() -> Result<String, zbus::Error> {
+    use zbus::zvariant::{OwnedObjectPath, Value};
+
+    let pid = std::process::id();
+    // `app-<app id>-<anything>.scope` is the layout the desktop parses; the pid
+    // keeps the unit name unique across concurrent launches while the app id in
+    // the middle stays constant.
+    let name = format!("app-{APP_ID}-{pid}.scope");
+
+    let conn = zbus::Connection::session().await?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "org.freedesktop.systemd1",
+        "/org/freedesktop/systemd1",
+        "org.freedesktop.systemd1.Manager",
+    )
+    .await?;
+
+    let properties: Vec<(&str, Value<'_>)> = vec![
+        ("PIDs", Value::from(vec![pid])),
+        ("Description", Value::from("terminale")),
+        // Don't leave a failed unit lying around if the process dies badly.
+        ("CollectMode", Value::from("inactive-or-failed")),
+    ];
+    // No auxiliary units.
+    let aux: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
+
+    let _job: OwnedObjectPath = proxy
+        .call(
+            "StartTransientUnit",
+            &(name.as_str(), "fail", properties, aux),
+        )
+        .await?;
+    Ok(name)
+}
+
 // ── X11 (EWMH) property writes ───────────────────────────────────────────────
 
 /// A cached X11 connection plus the atoms we write. Opened lazily on the first
@@ -361,6 +491,51 @@ mod tests {
     fn positioning_warning_is_idempotent() {
         warn_positioning_unsupported_once();
         warn_positioning_unsupported_once();
+    }
+
+    /// A shell started from a terminal emulator sits *under* an `app-…` slice
+    /// but its leaf is the emulator's spawn helper — not an application unit.
+    /// Reading that as an app id is what made the portal reject us, so this
+    /// case must not match.
+    #[test]
+    fn vte_spawn_scope_is_not_an_app_unit() {
+        let cgroup = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                      app-dbus\\x2d:1.2\\x2dorg.gnome.Console.slice/\
+                      vte-spawn-d19cc478-5399-4cbd-89ac-92468da00874.scope\n";
+        assert_eq!(app_unit_in_cgroup(cgroup), None);
+    }
+
+    /// The scope terminale creates for itself, and the one GNOME creates when
+    /// it launches the app from its desktop entry, must both be recognised —
+    /// otherwise we would keep re-scoping an already-identified process.
+    #[test]
+    fn app_scopes_are_recognised() {
+        let own = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                   app-terminale-201486.scope\n";
+        assert_eq!(
+            app_unit_in_cgroup(own).as_deref(),
+            Some("app-terminale-201486.scope")
+        );
+        let gnome_launched = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                              app-gnome-terminale-4242.scope\n";
+        assert_eq!(
+            app_unit_in_cgroup(gnome_launched).as_deref(),
+            Some("app-gnome-terminale-4242.scope")
+        );
+        // A transient .service counts too.
+        let service = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                       app-terminale-7.service\n";
+        assert!(app_unit_in_cgroup(service).is_some());
+    }
+
+    /// A process outside any application unit (a plain login shell, a system
+    /// service) must report none, so we go and claim a scope.
+    #[test]
+    fn non_app_cgroups_report_none() {
+        assert_eq!(app_unit_in_cgroup("0::/init.scope\n"), None);
+        assert_eq!(app_unit_in_cgroup(""), None);
+        // Suffixes are case-sensitive: `.Scope` is not a systemd unit.
+        assert!(!is_app_unit("app-terminale-1.Scope"));
     }
 
     /// The GNOME case this was written for: a 3-monitor layout whose union

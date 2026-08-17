@@ -162,6 +162,11 @@ x11rb = { version = "0.13", default-features = false }
 # of rfd's `xdg-portal` backend; `default-features = false` + `tokio` matches the
 # feature set rfd already selects, so no extra build cost and no async-std.
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+# Session-bus calls to systemd's user manager, so terminale can place itself in
+# an `app-terminale-<pid>.scope` and thereby own an application id — which is
+# what the GlobalShortcuts portal identifies callers by. Same zbus ashpd already
+# pulls, with the same feature selection, so nothing new is compiled.
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 arboard = "3"
 open = "5"
 # System resource sampling (CPU + memory) for the bottom resource-indicator strip.

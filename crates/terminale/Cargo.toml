@@ -124,6 +124,8 @@ x11rb.workspace = true
 # compiled as part of the tree (rfd's `xdg-portal` backend pulls it with the
 # `tokio` feature); listing it here just makes it callable directly.
 ashpd.workspace = true
+# systemd user-manager calls, to claim an application id (see linux_window).
+zbus.workspace = true
 # `StreamExt` for the portal's `Activated` signal stream. Already in the tree
 # (reqwest, ashpd, russh all pull it).
 futures-util.workspace = true

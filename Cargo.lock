@@ -6344,6 +6344,7 @@ dependencies = [
  "winresource",
  "winvd",
  "x11rb",
+ "zbus 5.15.0",
 ]
 
 [[package]]

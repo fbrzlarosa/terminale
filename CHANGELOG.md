@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Fixed
+- **terminale claims an application id, so the Quake hotkey registers itself.**
+  The global-shortcuts portal refuses callers it can't identify, and an
+  ordinary process only carries an application id when the desktop launched it
+  from its `.desktop` entry — so on Wayland the hotkey worked or not depending
+  on how the app happened to be started. terminale now places itself in an
+  `app-terminale-<pid>.scope` systemd user scope (exactly what
+  `systemd-run --user --scope` does, no privilege required) and the portal
+  accepts it either way. Setting the hotkey inside terminale is all that's
+  needed; nothing in the desktop's own settings has to be touched.
+- **The Quake shortcut survives a restart.** The portal only accepts
+  `BindShortcuts` while an app owns no shortcuts; a second call comes back
+  cancelled. Existing bindings are now looked up with `ListShortcuts` and
+  reused, instead of the hotkey working on the first launch and silently dying
+  on every one after.
+- **Releasing the Quake hotkey no longer sprays its key into the shell.** Key
+  auto-repeat outlives the reveal — the OS repeat delay is ~500 ms, far longer
+  than the animation — so holding `Ctrl+\` a moment too long filled the prompt
+  with backslashes. Repeats are now swallowed until the trigger key is actually
+  released.
+- **The hotkey recorder in Settings can capture the currently bound key.** A
+  registered global hotkey is consumed by the OS before it reaches any window,
+  so pressing it to re-record toggled the drop-down while the recorder sat on
+  "Press a key…" forever. The grab is released for as long as a recorder is
+  waiting.
 - **Window placement works on Linux again — Quake docking, snap positions and
   everything else built on geometry.** Wayland deliberately gives a client no
   control over its own window position: `set_outer_position` is a no-op there
