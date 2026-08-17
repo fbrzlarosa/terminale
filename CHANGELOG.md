@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.42]
+
 ### Fixed
 - **terminale claims an application id, so the Quake hotkey registers itself.**
   The global-shortcuts portal refuses callers it can't identify, and an
@@ -32,6 +34,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   so pressing it to re-record toggled the drop-down while the recorder sat on
   "Press a key…" forever. The grab is released for as long as a recorder is
   waiting.
+- **The held-trigger guard works on non-US keyboard layouts.** It compared the
+  *physical* key, which on an Italian layout can never match the binding: `\`
+  lives on `IntlBackslash`, beside the left shift, not on `Backslash`. A
+  binding names a character, so the character the key produced is now compared
+  as well as its physical name.
+- **Registering the portal shortcut is no longer a coin flip.** The desktop
+  refuses `BindShortcuts` while the app already owns shortcuts — including
+  transiently, when a previous session hasn't been torn down yet, which is what
+  a quick restart looks like. The identical call was seen accepted on one
+  launch and cancelled on the next, leaving the drop-down unreachable. The bind
+  is retried a few times with a short backoff, re-checking existing bindings
+  each round.
 - **Window placement works on Linux again — Quake docking, snap positions and
   everything else built on geometry.** Wayland deliberately gives a client no
   control over its own window position: `set_outer_position` is a no-op there
@@ -1090,7 +1104,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.41...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.42...HEAD
+[0.1.42]: https://github.com/fbrzlarosa/terminale/compare/v0.1.41...v0.1.42
 [0.1.41]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...v0.1.41
 [0.1.40]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...v0.1.40
 [0.1.39]: https://github.com/fbrzlarosa/terminale/compare/v0.1.38...v0.1.39
