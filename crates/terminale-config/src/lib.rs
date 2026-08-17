@@ -232,12 +232,14 @@ impl Config {
         self.window.validate()?;
         self.profiles.validate()?;
         self.cursor.validate()?;
+        self.keybinds.validate()?;
         self.appearance.validate()?;
         self.terminal.validate()?;
         self.background_fx.validate()?;
         self.quick_select.validate()?;
         self.status_bar.validate()?;
         self.ssh.validate()?;
+        self.quake.validate()?;
         for snippet in &self.snippets {
             snippet.validate()?;
         }

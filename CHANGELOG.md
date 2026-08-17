@@ -18,6 +18,30 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **Ten rebindable actions had no row in Settings.** `next_failed_command`,
+  `prev_failed_command`, `open_failed_command_picker`, `suggest_command`,
+  `open_snippets`, `save_workspace`, `open_workspace`, `open_command_history`,
+  `open_clipboard_history` and `open_directory_jump` existed in the config schema
+  — with doc comments telling you to set a binding "here", meaning Settings — but
+  had no control, so they were bindable only by hand-editing `config.toml`. They
+  now appear under Scrollback, Assistant, and a new "Pickers & workspaces" group.
+  A test parses every field of `ShortcutsConfig` out of the schema and fails if
+  any one of them has no Settings row, so this class of gap cannot come back
+  silently; it is identifier-boundary aware, so `rotate_panes` is not considered
+  satisfied by `rotate_panes_back`.
+- **Three config sections were never validated at all.** `[quake]` and
+  `[keybinds]` had no `validate()` and so were never reachable from
+  `Config::validate()`. The practical consequence was `quake.margin_px`: an
+  unbounded `u32` that is later cast with `as i32`, so a large value
+  reinterprets as *negative* and feeds window-geometry arithmetic (nonsense
+  placement, and an overflow panic in a debug build). `MouseBinding.count` and
+  `KeyTable.timeout_ms` documented bounds that nothing enforced — a `count` above
+  3 silently made a mouse binding unmatchable. `window.scroll_step_lines` and
+  `window.alt_screen_scroll_lines` likewise promised `1..=50` in their docs while
+  `validate()` checked neither, so a value of 200 would scroll 200 lines per notch
+  or fire 200 escape sequences per wheel click into an alt-screen app. All now
+  rejected with the field name, like every other section.
+
 - **Every translucent surface was rendered too dark — alpha was applied twice.**
   `Quad::new` premultiplies its colour by alpha and the fragment shader passes it
   straight through, but the pipeline asked for `ALPHA_BLENDING`, whose source

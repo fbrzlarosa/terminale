@@ -494,6 +494,61 @@ impl SettingsWindow {
                         |s| &mut s.fix_last_command,
                         "",
                     ),
+                    (
+                        "suggest_command",
+                        "Suggest command now (AI)",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.suggest_command,
+                        "",
+                    ),
+                ],
+            ),
+            (
+                "Pickers & workspaces",
+                &[
+                    (
+                        "open_snippets",
+                        "Open snippet picker",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.open_snippets,
+                        "",
+                    ),
+                    (
+                        "open_command_history",
+                        "Open command history",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.open_command_history,
+                        "",
+                    ),
+                    (
+                        "open_clipboard_history",
+                        "Open clipboard history",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.open_clipboard_history,
+                        "",
+                    ),
+                    (
+                        "open_directory_jump",
+                        "Open directory jump",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.open_directory_jump,
+                        "",
+                    ),
+                    (
+                        "open_failed_command_picker",
+                        "Open failed-commands picker",
+                        |s: &mut terminale_config::ShortcutsConfig| {
+                            &mut s.open_failed_command_picker
+                        },
+                        "",
+                    ),
+                    (
+                        "save_workspace",
+                        "Save workspace",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.save_workspace,
+                        "",
+                    ),
+                    (
+                        "open_workspace",
+                        "Open workspace",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.open_workspace,
+                        "",
+                    ),
                 ],
             ),
             (
@@ -545,6 +600,18 @@ impl SettingsWindow {
                         "next_prompt",
                         "Jump to next prompt",
                         |s: &mut terminale_config::ShortcutsConfig| &mut s.next_prompt,
+                        "",
+                    ),
+                    (
+                        "prev_failed_command",
+                        "Jump to previous failed command",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.prev_failed_command,
+                        "",
+                    ),
+                    (
+                        "next_failed_command",
+                        "Jump to next failed command",
+                        |s: &mut terminale_config::ShortcutsConfig| &mut s.next_failed_command,
                         "",
                     ),
                     (
@@ -1101,5 +1168,98 @@ impl SettingsWindow {
         if mouse_dirty {
             self.dirty = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Returns `true` when `source` contains `&mut s.<field>` at a proper
+    /// identifier boundary (not merely as a prefix of a longer field access,
+    /// e.g. `&mut s.rotate_panes` must NOT match inside
+    /// `&mut s.rotate_panes_back`).
+    fn field_has_row(source: &str, field: &str) -> bool {
+        let needle = format!("&mut s.{field}");
+        let bytes = source.as_bytes();
+        let mut start = 0;
+        while let Some(pos) = source[start..].find(&needle) {
+            let abs = start + pos;
+            let after = abs + needle.len();
+            let boundary_ok = bytes
+                .get(after)
+                .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
+            if boundary_ok {
+                return true;
+            }
+            // No match at this position (found a longer field name that
+            // merely starts with `field`) — keep scanning past it.
+            start = abs + 1;
+        }
+        false
+    }
+
+    /// Every `ShortcutsConfig` field is a rebindable action; each one MUST
+    /// have a row in the `groups` table above (`section_shortcuts`), or it
+    /// becomes bindable only by hand-editing `config.toml` — exactly the
+    /// "dead setting" this repo's mandatory config/Settings-UI rule forbids.
+    ///
+    /// This parses the field names straight out of `ShortcutsConfig` in the
+    /// config crate's source (rather than adding a reflection dependency)
+    /// and checks each one has a matching `&mut s.<field>` getter closure
+    /// somewhere in this file. Mirrors the source-level assertion pattern
+    /// used by `settings_window::tests::test_search_index_labels_present_in_source`.
+    #[test]
+    fn every_shortcuts_config_field_has_a_settings_row() {
+        let keybinds_src = include_str!("../../../terminale-config/src/keybinds.rs");
+        let struct_start = keybinds_src
+            .find("pub struct ShortcutsConfig {")
+            .expect("ShortcutsConfig struct must exist in keybinds.rs");
+        let body_start = struct_start + "pub struct ShortcutsConfig {".len();
+        let body_len = keybinds_src[body_start..]
+            .find("\n}\n")
+            .expect("ShortcutsConfig struct must have a closing brace");
+        let body = &keybinds_src[body_start..body_start + body_len];
+
+        let fields: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix("pub ")?;
+                let (name, _) = rest.split_once(':')?;
+                Some(name.trim())
+            })
+            .collect();
+        // Sanity check: if this drops to near-zero the parser above broke
+        // (e.g. the struct was renamed or reformatted), which would make
+        // the real assertion below vacuously pass.
+        assert!(
+            fields.len() > 100,
+            "sanity check failed: expected 100+ ShortcutsConfig fields, parsed {} — \
+             the source parser above may be out of sync with keybinds.rs",
+            fields.len()
+        );
+
+        let this_file = include_str!("shortcuts.rs");
+        let missing: Vec<&str> = fields
+            .into_iter()
+            .filter(|f| !field_has_row(this_file, f))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "ShortcutsConfig field(s) with no row in the Settings \u{2192} Shortcuts \
+             table — add a `groups` entry in shortcuts.rs for:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    /// `field_has_row` must not be fooled by one field name being a prefix
+    /// of another (the exact bug the boundary check guards against).
+    #[test]
+    fn field_has_row_respects_identifier_boundaries() {
+        let source = "|s| &mut s.rotate_panes_back,";
+        assert!(field_has_row(source, "rotate_panes_back"));
+        assert!(
+            !field_has_row(source, "rotate_panes"),
+            "must not match `rotate_panes` as a prefix of `rotate_panes_back`"
+        );
     }
 }

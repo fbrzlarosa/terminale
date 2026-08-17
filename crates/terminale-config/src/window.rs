@@ -414,6 +414,18 @@ impl WindowConfig {
                 message: "must be between 1.0 and 128.0",
             });
         }
+        if !(1..=50).contains(&self.scroll_step_lines) {
+            return Err(ConfigError::Invalid {
+                field: "window.scroll_step_lines",
+                message: "must be between 1 and 50",
+            });
+        }
+        if !(1..=50).contains(&self.alt_screen_scroll_lines) {
+            return Err(ConfigError::Invalid {
+                field: "window.alt_screen_scroll_lines",
+                message: "must be between 1 and 50",
+            });
+        }
         if self.padding > 64 {
             return Err(ConfigError::Invalid {
                 field: "window.padding",
@@ -599,6 +611,38 @@ mod tests {
     #[test]
     fn window_config_default_padding_is_8() {
         assert_eq!(WindowConfig::default().padding, 8);
+    }
+
+    // ── scroll_step_lines / alt_screen_scroll_lines validation ────────────────
+
+    #[test]
+    fn scroll_step_lines_range_validates() {
+        let mut cfg = WindowConfig {
+            scroll_step_lines: 0,
+            ..WindowConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "0 must be rejected");
+        cfg.scroll_step_lines = 51;
+        assert!(cfg.validate().is_err(), "51 must be rejected");
+        cfg.scroll_step_lines = 1;
+        assert!(cfg.validate().is_ok(), "1 (min) must be accepted");
+        cfg.scroll_step_lines = 50;
+        assert!(cfg.validate().is_ok(), "50 (max) must be accepted");
+    }
+
+    #[test]
+    fn alt_screen_scroll_lines_range_validates() {
+        let mut cfg = WindowConfig {
+            alt_screen_scroll_lines: 0,
+            ..WindowConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "0 must be rejected");
+        cfg.alt_screen_scroll_lines = 51;
+        assert!(cfg.validate().is_err(), "51 must be rejected");
+        cfg.alt_screen_scroll_lines = 1;
+        assert!(cfg.validate().is_ok(), "1 (min) must be accepted");
+        cfg.alt_screen_scroll_lines = 50;
+        assert!(cfg.validate().is_ok(), "50 (max) must be accepted");
     }
 
     #[test]
