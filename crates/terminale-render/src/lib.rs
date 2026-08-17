@@ -729,11 +729,20 @@ pub struct Renderer {
     /// colour painted as an opaque cell background (default); see
     /// [`Self::set_selection_opacity`].
     selection_opacity: f32,
-    /// Extra underlines (autodetected URLs, search highlights, …) drawn
-    /// on top of the normal SGR underline pass. Each entry is the
-    /// inclusive cell range `(col_start, col_end, row)` in viewport
-    /// coordinates.
+    /// Extra underlines for autodetected URLs, drawn on top of the normal SGR
+    /// underline pass. Each entry is the inclusive cell range
+    /// `(col_start, col_end, row)` in viewport coordinates.
     extra_underlines: Vec<(u16, u16, u16)>,
+    /// Search-match underlines, in the same coordinate form as
+    /// [`Self::extra_underlines`] — but a *separate* slot, deliberately.
+    ///
+    /// The two used to share one field, and the writers silently erased each
+    /// other: with the default `link_underline = "hover"`, every mouse move
+    /// re-runs the hover sync and overwrote the search highlights, and in
+    /// `"always"` mode any PTY output did the same. Search highlighting was
+    /// therefore usually invisible in practice, which is exactly how it came to
+    /// look like an unimplemented feature.
+    search_highlights: Vec<(u16, u16, u16)>,
     /// Prompt-status gutter dots set by [`Self::set_prompt_marks`].
     /// Each entry is `(viewport_row, exit_code_opt)` for one visible
     /// OSC 133 prompt-start line. Only drawn when non-empty.
@@ -2128,6 +2137,7 @@ impl Renderer {
             selection_rgb: [0x33, 0x46, 0x7c],
             selection_opacity: 1.0,
             extra_underlines: Vec::new(),
+            search_highlights: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
             search_overlay: None,
@@ -2341,6 +2351,7 @@ impl Renderer {
             selection_rgb: [0x33, 0x46, 0x7c],
             selection_opacity: 1.0,
             extra_underlines: Vec::new(),
+            search_highlights: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
             search_overlay: None,
@@ -2565,6 +2576,7 @@ impl Renderer {
             selection_rgb: [0x33, 0x46, 0x7c],
             selection_opacity: 1.0,
             extra_underlines: Vec::new(),
+            search_highlights: Vec::new(),
             prompt_marks: Vec::new(),
             bell_start: None,
             search_overlay: None,
@@ -4014,6 +4026,16 @@ impl Renderer {
     /// going through the per-cell `has_link` mechanism.
     pub fn set_extra_underlines(&mut self, ranges: Vec<(u16, u16, u16)>) {
         self.extra_underlines = ranges;
+    }
+
+    /// Replace the search-match underlines (viewport `(col_start, col_end, row)`).
+    ///
+    /// Separate from [`Self::set_extra_underlines`] so link underlines and search
+    /// highlights compose instead of overwriting one another; see the field docs.
+    /// The host recomputes these every frame from absolute line numbers, so they
+    /// follow the viewport however it was scrolled.
+    pub fn set_search_highlights(&mut self, ranges: Vec<(u16, u16, u16)>) {
+        self.search_highlights = ranges;
     }
 
     /// Replace the list of prompt-status gutter marks. Each entry is
@@ -6697,7 +6719,9 @@ impl Renderer {
                 }
             }
         }
-        for &(col_start, col_end, row) in &self.extra_underlines {
+        for &(col_start, col_end, row) in
+            self.extra_underlines.iter().chain(&self.search_highlights)
+        {
             let row_idx = row as usize;
             if row_idx >= grid_cells.len() {
                 continue;

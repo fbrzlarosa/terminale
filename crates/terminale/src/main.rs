@@ -11605,6 +11605,20 @@ fn render_main(state: &mut RunningState) {
             Vec::new()
         };
         state.renderer.set_prompt_marks(marks);
+
+        // Search-match highlights, on the same terms and for the same reason:
+        // they are stored as absolute lines, so the viewport mapping has to be
+        // redone whenever the view may have moved — which is every frame, not
+        // just when search was the thing that scrolled it.
+        let highlights = match state.search.as_ref() {
+            Some(s) if !s.matches.is_empty() => {
+                let scroll = specs.get(focused_idx).map_or(0, |spec| spec.scroll_lines);
+                let rows = state.tabs.get(state.active_tab).map_or(0, |t| t.rows);
+                search_highlight_ranges(&s.matches, scroll, rows)
+            }
+            _ => Vec::new(),
+        };
+        state.renderer.set_search_highlights(highlights);
     }
 
     // ── Quick-select / pane-select label badge overlay ───────────────────
@@ -11931,10 +11945,10 @@ fn handle_search_input(
 
 fn close_search(state: &mut RunningState) {
     state.search = None;
-    state.renderer.set_extra_underlines(Vec::new());
     state.renderer.set_search_overlay(None);
-    // Refresh autodetect underlines now that the search highlights are
-    // gone — they share the same extra-underlines slot.
+    // Link underlines are a separate slot, so closing search no longer has to
+    // put them back — but a scroll during search may have moved which links are
+    // visible, so recompute them for the row they are on now.
     refresh_autodetect_links(state);
 }
 
@@ -12526,8 +12540,6 @@ fn refresh_search_matches(state: &mut RunningState) {
     // Incremental find: jump to the first match as you type (browser-style).
     if total > 0 {
         search_jump_to(state, 0);
-    } else {
-        state.renderer.set_extra_underlines(Vec::new());
     }
     state
         .renderer
@@ -12538,23 +12550,30 @@ fn refresh_search_matches(state: &mut RunningState) {
         }));
 }
 
-/// Recompute which matches fall inside the current viewport and hand their
-/// viewport-row ranges to the renderer as highlight underlines.
-fn update_search_highlights(state: &mut RunningState) {
-    let Some(s) = state.search.as_ref() else {
-        return;
-    };
-    let rows = state.tabs.get(state.active_tab).map_or(0, |t| t.rows) as i32;
-    let off = state.renderer.scroll_lines() as i32;
-    let mut ranges: Vec<(u16, u16, u16)> = Vec::new();
-    for &(line_abs, c0, c1) in &s.matches {
-        // Absolute line `L` is shown at viewport row `L + off`.
-        let row = line_abs + off;
-        if row >= 0 && row < rows {
-            ranges.push((c0, c1, row as u16));
-        }
-    }
-    state.renderer.set_extra_underlines(ranges);
+/// Map absolute-line search matches to the viewport rows they occupy at
+/// `scroll_lines`, dropping the ones scrolled out of view.
+///
+/// Pure, and that is the point: the bug this replaces was not bad arithmetic but
+/// bad timing. The mapping used to be recomputed only when *search itself*
+/// scrolled the view, so any other scroll — wheel, keyboard, jump-to-prompt —
+/// left the highlights drawn on whatever rows the previous offset had put them
+/// under. It is now recomputed every frame from these absolute lines, next to the
+/// prompt-mark pass that already worked this way, so it cannot go stale again.
+fn search_highlight_ranges(
+    matches: &[(i32, u16, u16)],
+    scroll_lines: usize,
+    rows: u16,
+) -> Vec<(u16, u16, u16)> {
+    let off = i32::try_from(scroll_lines).unwrap_or(i32::MAX);
+    let rows = i32::from(rows);
+    matches
+        .iter()
+        .filter_map(|&(line_abs, c0, c1)| {
+            // Absolute line `L` is shown at viewport row `L + off`.
+            let row = line_abs.checked_add(off)?;
+            (row >= 0 && row < rows).then(|| (c0, c1, u16::try_from(row).unwrap_or(u16::MAX)))
+        })
+        .collect()
 }
 
 /// Scroll so match `idx` sits comfortably in view, then refresh highlights.
@@ -12580,7 +12599,6 @@ fn search_jump_to(state: &mut RunningState, idx: usize) {
         tab.scroll_lines = off_usize;
     }
     state.renderer.set_scroll_lines(off_usize);
-    update_search_highlights(state);
     state.window.request_redraw();
 }
 
@@ -15294,6 +15312,50 @@ mod tests {
         // Non-bracketed mode doesn't add markers.
         let s = String::from_utf8(build_paste_payload("x", false)).unwrap();
         assert!(!s.contains("\x1b[200~"));
+    }
+
+    // ── search-match highlights (absolute line → viewport row) ───────────────
+
+    /// The mapping itself: a match on absolute line `L` is drawn at viewport row
+    /// `L + scroll`, and matches outside the viewport are dropped rather than
+    /// clamped onto its first or last row.
+    #[test]
+    fn search_highlight_ranges_maps_visible_matches_only() {
+        // Two on-screen matches and one 30 lines up in the scrollback.
+        let matches = [(0_i32, 2_u16, 5_u16), (3, 0, 4), (-30, 1, 2)];
+        let out = search_highlight_ranges(&matches, 0, 24);
+        assert_eq!(out, vec![(2, 5, 0), (0, 4, 3)]);
+    }
+
+    /// The regression this function exists for: highlights must follow the
+    /// viewport when something *other than search* scrolls it. Scrolled up by 30,
+    /// the scrollback match comes into view and the live-screen ones leave.
+    #[test]
+    fn search_highlight_ranges_follow_an_unrelated_scroll() {
+        let matches = [(0_i32, 2_u16, 5_u16), (3, 0, 4), (-30, 1, 2)];
+        let out = search_highlight_ranges(&matches, 30, 24);
+        assert_eq!(
+            out,
+            vec![(1, 2, 0)],
+            "the scrollback match must appear at row 0 once scrolled to"
+        );
+        // Half-way there, the two live-screen matches are still visible — but
+        // pushed 10 rows down the viewport, which is precisely what the old
+        // jump-only refresh got wrong: it left them drawn at rows 0 and 3.
+        assert_eq!(
+            search_highlight_ranges(&matches, 10, 24),
+            vec![(2, 5, 10), (0, 4, 13)]
+        );
+    }
+
+    #[test]
+    fn search_highlight_ranges_handles_empty_and_extreme_inputs() {
+        assert!(search_highlight_ranges(&[], 0, 24).is_empty());
+        // A zero-row viewport can show nothing, and must not panic.
+        assert!(search_highlight_ranges(&[(0, 0, 1)], 0, 0).is_empty());
+        // A scroll offset large enough to overflow the addition is dropped, not
+        // wrapped into a bogus on-screen row.
+        assert!(search_highlight_ranges(&[(i32::MAX, 0, 1)], usize::MAX, 24).is_empty());
     }
 
     #[test]

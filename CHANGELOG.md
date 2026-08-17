@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **Search highlights and link underlines were overwriting each other.** Both
+  wrote to one shared slot in the renderer, so whichever ran last won. With the
+  default `link_underline = "hover"` that meant the *next mouse move* erased the
+  highlights for every match you had just searched for; in `"always"` mode any PTY
+  output did it. The feature looked unimplemented because in practice it usually
+  was not visible. Search now has its own layer and the two compose.
+- **Search highlights went stale on any scroll that search did not perform
+  itself.** They are stored as absolute line numbers and were mapped to viewport
+  rows only when search jumped the view — so scrolling with the wheel, the
+  keyboard, or jump-to-prompt left them drawn under whatever lines the old offset
+  had put them. The mapping now runs every frame, beside the prompt-mark pass that
+  already worked this way, and is a pure function with tests covering the exact
+  scrolled case that was broken.
+
 - **A shell that fails to launch no longer takes the whole app down.** The PTY
   spawn was `.expect()`-ed, so a profile or `--shell` pointing at a missing or
   non-executable binary panicked the process — killing every other tab and pane
