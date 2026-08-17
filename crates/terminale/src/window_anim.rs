@@ -1548,6 +1548,7 @@ pub(crate) fn toggle_quake(
     // actually released (see `quake_repeat_suppress_until`), bounded so a lost
     // release event can't wedge the keyboard.
     state.quake_repeat_suppress_until = Some(now + std::time::Duration::from_secs(3));
+    tracing::debug!(trigger = ?state.quake_trigger_key, "quake: armed trigger-key suppression");
     // Free-floating mode never docks, so any persisted dock geometry is
     // irrelevant — drop it so a later switch back to dock mode starts clean.
     if quake_cfg.edge == terminale_config::QuakeEdge::Off {

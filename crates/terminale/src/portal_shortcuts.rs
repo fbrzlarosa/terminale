@@ -35,6 +35,36 @@ const SHORTCUT_ID: &str = "toggle-quake";
 /// the system keyboard-settings list.
 const SHORTCUT_DESCRIPTION: &str = "Show or hide the terminale drop-down (Quake mode)";
 
+/// How many times to ask the desktop to bind the shortcut before giving up.
+const BIND_ATTEMPTS: u32 = 5;
+
+/// Pause between bind attempts. Long enough for a lingering session from a
+/// previous launch to be reaped, short enough that the hotkey is live before
+/// the user reaches for it.
+const BIND_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(700);
+
+/// Ask the desktop which shortcuts this application already owns. `None` when
+/// the call or its response failed — indistinguishable from "none" for our
+/// purposes, and the caller treats both the same way.
+async fn list_shortcuts(
+    portal: &GlobalShortcuts<'_>,
+    session: &ashpd::desktop::Session<'_, GlobalShortcuts<'_>>,
+) -> Option<ashpd::desktop::global_shortcuts::ListShortcuts> {
+    match portal.list_shortcuts(session).await {
+        Ok(request) => match request.response() {
+            Ok(list) => Some(list),
+            Err(e) => {
+                tracing::debug!(?e, "portal ListShortcuts response error");
+                None
+            }
+        },
+        Err(e) => {
+            tracing::debug!(?e, "could not list existing portal shortcuts");
+            None
+        }
+    }
+}
+
 /// Register the Quake toggle with the desktop's global-shortcuts portal.
 ///
 /// Spawns a task on `runtime` that owns the portal session for the process
@@ -93,59 +123,67 @@ async fn run(
     // that first press.
     let mut activations = portal.receive_activated().await?;
 
-    // Bindings persist per application id, and the desktop only accepts
-    // `BindShortcuts` while an app has none — a second call returns a plain
-    // "cancelled" response. So ask what this app already owns first, and only
-    // bind when the answer is "nothing". Getting this backwards makes the
-    // hotkey work on the very first launch and silently die on every one after.
-    let existing = match portal.list_shortcuts(&session).await {
-        Ok(request) => request.response().ok(),
-        Err(e) => {
-            tracing::debug!(?e, "could not list existing portal shortcuts");
-            None
-        }
-    };
-    let already_bound = existing
-        .as_ref()
-        .is_some_and(|l| l.shortcuts().iter().any(|s| s.id() == SHORTCUT_ID));
-
-    if already_bound {
-        for s in existing
-            .iter()
-            .flat_map(ashpd::desktop::global_shortcuts::ListShortcuts::shortcuts)
-        {
-            if s.id() == SHORTCUT_ID {
+    // Registering is not reliably a one-shot. Bindings persist per application
+    // id, and the desktop refuses `BindShortcuts` while the app already owns
+    // shortcuts — including, transiently, when a previous session of the same
+    // app has not been torn down yet, which is exactly what a quick restart
+    // looks like. Observed live: the identical call is accepted on one launch
+    // and answered with a bare cancelled response on the next, leaving the
+    // hotkey a coin flip.
+    //
+    // So: ask what we already own, bind only when the answer is nothing, and
+    // give a refusal a few chances to clear before concluding the desktop means
+    // it. The retries are cheap and happen on a background task, so a slow
+    // convergence costs the user nothing.
+    let mut bound_trigger: Option<String> = None;
+    for attempt in 1..=BIND_ATTEMPTS {
+        if let Some(existing) = list_shortcuts(&portal, &session).await {
+            if let Some(s) = existing.shortcuts().iter().find(|s| s.id() == SHORTCUT_ID) {
                 tracing::info!(
                     id = s.id(),
                     trigger = s.trigger_description(),
                     "Quake hotkey already registered with the desktop; reusing it"
                 );
+                bound_trigger = Some(s.trigger_description().to_string());
+                break;
             }
         }
-    } else {
+
         let mut shortcut = NewShortcut::new(SHORTCUT_ID, SHORTCUT_DESCRIPTION);
         if let Some(trigger) = trigger.as_deref() {
             shortcut = shortcut.preferred_trigger(trigger);
         }
-        let bound = portal
-            .bind_shortcuts(&session, &[shortcut], None)
-            .await?
-            .response()?;
-        if !bound.shortcuts().iter().any(|s| s.id() == SHORTCUT_ID) {
-            tracing::info!(
-                "the desktop did not bind the Quake shortcut (declined); keeping the \
-                 X11 key grab"
-            );
-            return Ok(());
+        match portal.bind_shortcuts(&session, &[shortcut], None).await {
+            Ok(request) => match request.response() {
+                Ok(bound) => {
+                    if let Some(s) = bound.shortcuts().iter().find(|s| s.id() == SHORTCUT_ID) {
+                        tracing::info!(
+                            id = s.id(),
+                            trigger = s.trigger_description(),
+                            "Quake hotkey registered with the desktop global-shortcuts portal"
+                        );
+                        bound_trigger = Some(s.trigger_description().to_string());
+                        break;
+                    }
+                    tracing::debug!(attempt, "portal accepted the bind but returned no shortcut");
+                }
+                Err(e) => tracing::debug!(?e, attempt, "portal refused the bind; retrying"),
+            },
+            Err(e) => tracing::debug!(?e, attempt, "bind request failed; retrying"),
         }
-        for s in bound.shortcuts() {
-            tracing::info!(
-                id = s.id(),
-                trigger = s.trigger_description(),
-                "Quake hotkey registered with the desktop global-shortcuts portal"
-            );
-        }
+        tokio::time::sleep(BIND_RETRY_DELAY).await;
     }
+
+    if bound_trigger.is_none() {
+        tracing::info!(
+            attempts = BIND_ATTEMPTS,
+            "the desktop would not bind the Quake shortcut; keeping the X11 key grab \
+             (under Wayland that only fires while an X11 window has focus — bind a key \
+             to `terminale --toggle-quake` for one that always works)"
+        );
+        return Ok(());
+    }
+
     // Tell the app to release the OS key grab: under Wayland it can still fire
     // while an XWayland window has focus, and two live registrations would
     // toggle twice per press.

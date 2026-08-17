@@ -1069,6 +1069,43 @@ fn install_plugins(config: &Config) -> Option<terminale_plugin::PluginHost> {
     Some(host)
 }
 
+/// Whether this key event is the non-modifier key of the configured Quake
+/// binding.
+///
+/// Two comparisons, because either one alone has a blind spot:
+///
+/// * the **physical** key's canonical name, which is layout-independent and
+///   handles the usual case (and reuses [`crate::shortcuts::keycode_name`]
+///   rather than keeping a reverse name→`KeyCode` table);
+/// * the **character** the key actually produced, because a binding names a
+///   character and layouts disagree about which physical key carries it. On an
+///   Italian layout `\` sits on `IntlBackslash` — the key beside the left
+///   shift — not on `Backslash`, so the physical comparison can never match and
+///   the held trigger would leak into the shell.
+fn is_quake_trigger_key(
+    state: &RunningState,
+    physical: PhysicalKey,
+    logical: &winit::keyboard::Key,
+) -> bool {
+    let Some(want) = state.quake_trigger_key.as_deref() else {
+        return false;
+    };
+    if let PhysicalKey::Code(code) = physical {
+        if crate::shortcuts::keycode_name(code).is_some_and(|n| n.eq_ignore_ascii_case(want)) {
+            return true;
+        }
+    }
+    logical
+        .to_text()
+        .is_some_and(|t| t.eq_ignore_ascii_case(want))
+}
+
+/// The key-name token of a Quake binding (`Ctrl+\` → `\`), or `None` when the
+/// binding is empty or names no key.
+fn quake_trigger_token(binding: &str) -> Option<String> {
+    crate::shortcuts::parse_binding(binding).map(|(_, key)| key)
+}
+
 /// Build the winit event loop, choosing the windowing backend on Linux/BSD.
 ///
 /// This choice decides whether half the app works. Wayland refuses to let a
@@ -2267,13 +2304,19 @@ struct TermWindow {
     /// freshly shown window gains focus (typing e.g. "1" into the shell). Set
     /// on every show; presses before the deadline are dropped. `None` = off.
     quake_input_suppress_until: Option<std::time::Instant>,
-    /// Deadline until which keyboard **auto-repeat** is swallowed after a Quake
-    /// show. The fixed window above only covers the first instant; a trigger
-    /// chord still held past the OS repeat delay (~500 ms, far longer than any
-    /// reveal animation) then sprays its key into the shell — a Ctrl+`\` toggle
-    /// filling the prompt with backslashes. Cleared by the first key release,
-    /// the first fresh (non-repeat) press, or the deadline. `None` = off.
+    /// Deadline until which presses of [`Self::quake_trigger_key`] are swallowed
+    /// after a Quake show. The fixed window above only covers the first instant;
+    /// a trigger chord still held past the OS repeat delay (~500 ms, far longer
+    /// than any reveal animation) then sprays its key into the shell — a
+    /// Ctrl+`\` toggle filling the prompt with backslashes. Cleared when that
+    /// key is released, or at the deadline. `None` = off.
     quake_repeat_suppress_until: Option<std::time::Instant>,
+    /// Key-name token of the configured Quake binding (`keybinds.quake`, e.g.
+    /// `"\\"` from `Ctrl+\`), used to recognise the still-held trigger above.
+    /// Compared against [`crate::shortcuts::keycode_name`], so no reverse
+    /// name→keycode table is needed. Mirrors the config so the window-level key
+    /// handler doesn't need the App's copy. `None` when Quake is unbound.
+    quake_trigger_key: Option<String>,
     /// The exact geometry `(x, y, w, h)` captured on the last hide, restored
     /// verbatim on the next show. `None` until the window is first hidden.
     quake_saved_rect: Option<terminale_config::WindowRect>,
@@ -3206,6 +3249,7 @@ impl TerminaleApp {
             pending_quake_autohide: false,
             quake_input_suppress_until: None,
             quake_repeat_suppress_until: None,
+            quake_trigger_key: quake_trigger_token(&self.config.keybinds.quake),
             quake_saved_rect: None,
             quake_last_dock_rect: None,
             quake_user_rect: None,
@@ -5729,6 +5773,7 @@ impl TerminaleApp {
                     // Config mirrors for tab-bar-enabled and show-pane-headers
                     // (used by apply_zen_chrome to restore on zen exit).
                     state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
+                    state.quake_trigger_key = quake_trigger_token(&cfg.keybinds.quake);
                     state.show_pane_headers_config = cfg.appearance.show_pane_headers;
                     if state.zen {
                         // Re-apply the chrome overrides immediately while zen
@@ -8487,22 +8532,26 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     }
                     state.quake_input_suppress_until = None;
                 }
-                // …and keep swallowing *auto-repeat* of that still-held trigger
-                // key for as long as it stays down. The fixed window above only
-                // covers the first instant: a chord held past the OS repeat
-                // delay (~500 ms by default, far longer than any reveal
-                // animation) starts firing repeats afterwards, which is how a
-                // Ctrl+\ toggle used to spray backslashes into the shell.
+                // …and keep swallowing the still-held trigger key itself for as
+                // long as it stays down. The fixed window above only covers the
+                // first instant: a chord held past the OS repeat delay (~500 ms
+                // by default, far longer than any reveal animation) starts
+                // firing afterwards, which is how a Ctrl+\ toggle sprays
+                // backslashes into the shell.
                 //
-                // Repeats can only come from a key pressed BEFORE the show, so
-                // dropping them here costs nothing real. The state clears on the
-                // first key release (the chord was let go), on the first fresh
-                // press (the user has moved on), or at the deadline.
+                // Matching on the key rather than on the `repeat` flag is
+                // deliberate: X11 delivers auto-repeat as plain press events, so
+                // winit reports `repeat: false` for them and a flag-based filter
+                // sees nothing to drop. The state clears on the first release of
+                // that key (the chord was let go), or at the deadline so a lost
+                // release event can't wedge the keyboard.
                 if let Some(deadline) = state.quake_repeat_suppress_until {
-                    if std::time::Instant::now() < deadline && repeat {
+                    if std::time::Instant::now() >= deadline {
+                        state.quake_repeat_suppress_until = None;
+                    } else if is_quake_trigger_key(state, physical_key, &logical_key) {
+                        tracing::debug!(?physical_key, "quake: swallowed held trigger key");
                         return;
                     }
-                    state.quake_repeat_suppress_until = None;
                 }
                 // The command palette grabs every key while it's open.
                 if state.command_palette.is_some()
@@ -8750,9 +8799,11 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     },
                 ..
             } => {
-                // A release means the Quake trigger chord has been let go, so
-                // any further auto-repeat is genuine user input again.
-                state.quake_repeat_suppress_until = None;
+                // Releasing the trigger key means the chord has been let go, so
+                // anything after it is genuine user input again.
+                if is_quake_trigger_key(state, physical_key, &logical_key) {
+                    state.quake_repeat_suppress_until = None;
+                }
                 // Key *releases* are transmitted only under the kitty keyboard
                 // protocol, and only when the focused app turned on event
                 // reporting (`report_event_types`). Every other path ignores
@@ -10181,6 +10232,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.zen_fullscreen = cfg.window.zen_fullscreen;
                         // Config mirrors for tab-bar-enabled and show-pane-headers.
                         state.tab_bar_enabled_config = cfg.appearance.tab_bar_enabled;
+                        state.quake_trigger_key = quake_trigger_token(&cfg.keybinds.quake);
                         state.show_pane_headers_config = cfg.appearance.show_pane_headers;
                         if state.zen {
                             // Re-apply the chrome overrides immediately while
