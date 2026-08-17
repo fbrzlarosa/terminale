@@ -31,6 +31,19 @@ pub fn data_dir() -> Option<PathBuf> {
     ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION).map(|d| d.data_dir().to_path_buf())
 }
 
+/// Directory holding the shell-integration scripts terminale materialises on
+/// disk and then asks a shell to load.
+///
+/// These are generated files, not user configuration — they live under the data
+/// directory (rather than the config directory) precisely so that a user who
+/// edits one gets it overwritten on the next launch instead of quietly diverging
+/// from what the running binary expects.
+#[must_use]
+pub fn shell_integration_dir() -> Option<PathBuf> {
+    ProjectDirs::from(QUALIFIER, ORGANIZATION, APPLICATION)
+        .map(|d| d.data_dir().join("shell-integration"))
+}
+
 /// Default directory for user-installed Lua plugins.
 #[must_use]
 pub fn plugin_dir() -> Option<PathBuf> {

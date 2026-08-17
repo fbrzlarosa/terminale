@@ -11354,13 +11354,7 @@ fn build_suggestion_context(
                 if let Some(code) = b.exit_code.filter(|&c| c != 0) {
                     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
                     let hist = emu.history_size() as i32;
-                    let out_end = b.end_line.unwrap_or(b.output_start_line);
-                    let output = crate::shortcuts::extract_block_output_lines(
-                        &all_lines,
-                        hist,
-                        b.output_start_line,
-                        out_end,
-                    );
+                    let output = crate::shortcuts::block_output_lines(b, &all_lines, hist);
                     sctx.last_error = Some(terminale_ai::LastError {
                         command: b.command_text.clone(),
                         exit: code,

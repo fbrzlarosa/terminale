@@ -685,13 +685,10 @@ fn last_command(
     };
     let all = em.buffer_lines_text();
     let hist = i32::try_from(em.history_size()).unwrap_or(i32::MAX);
-    // A still-running command has no D mark yet; read to the end of the buffer
-    // so a caller watching a long build sees its output so far.
-    let end = block
-        .end_line
-        .unwrap_or_else(|| all.len() as i32 - hist - 1);
-    let output =
-        crate::shortcuts::extract_block_output_text(&all, hist, block.output_start_line, end);
+    // Shared with copy-last-command-output and "fix this command", so all of
+    // them agree on where the output ends — notably that the line carrying the
+    // `D` mark is the *next prompt*, not output.
+    let output = crate::shortcuts::block_output_text(&block, &all, hist);
     let limit = max_lines.unwrap_or(DEFAULT_OUTPUT_LINES);
     let mut out_lines: Vec<&str> = output.lines().collect();
     let total = out_lines.len();

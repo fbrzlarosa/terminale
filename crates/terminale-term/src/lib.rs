@@ -1649,6 +1649,8 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
     // sequence seen in this chunk. Used to capture inline command text
     // between B and C.
     let mut last_b_end: Option<usize> = None;
+    // Command line reported by an `OSC 633;E`, waiting for the `C` it belongs to.
+    let mut announced_command: Option<String> = None;
 
     let mut i = 0;
     while i + 5 <= bytes.len() {
@@ -1657,9 +1659,14 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
             i += 1;
             continue;
         }
-        // Must be `1 3 3 ;` next.
+        // Must be `133;` or `633;` next. The second is VS Code's variant of the
+        // same protocol: identical A/B/C/D letters, plus an `E` that carries the
+        // command line explicitly. Accepting it means a shell already set up for
+        // VS Code's shell integration works here untouched — and it is how
+        // terminale's own bash integration reports the command line, which is
+        // otherwise only recoverable by scraping it off the prompt line.
         if i + 6 > bytes.len()
-            || bytes[i + 2] != b'1'
+            || !matches!(bytes[i + 2], b'1' | b'6')
             || bytes[i + 3] != b'3'
             || bytes[i + 4] != b'3'
             || bytes[i + 5] != b';'
@@ -1692,6 +1699,18 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
             let mut parts = payload.splitn(3, ';');
             let letter = parts.next().unwrap_or("").trim();
             let params: &str = parts.next().unwrap_or("");
+            // `E` (VS Code's extension) announces the command line about to run,
+            // ahead of the `C` that starts it. Remember it for that `C`: an
+            // explicitly reported command line beats reading the prompt line off
+            // the grid, which cannot tell the prompt from what the user typed.
+            if letter == "E" {
+                let cmd = unescape_osc_633(params);
+                if !cmd.is_empty() {
+                    announced_command = Some(cmd);
+                }
+                i = end;
+                continue;
+            }
             let kind = match letter {
                 "A" => Some(OscKind::PromptStart),
                 "B" => Some(OscKind::InputStart),
@@ -1712,7 +1731,12 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
                 // shell that places the command text between B and C in a
                 // single write rather than relying on it being echoed to the grid.
                 let inline_command_text = if k == OscKind::OutputStart {
-                    last_b_end.map(|b_end| extract_inline_command_text(&bytes[b_end..i]))
+                    // An explicitly announced command line wins: it is exactly
+                    // what the shell is about to run, whereas both other sources
+                    // are reconstructions.
+                    announced_command.take().or_else(|| {
+                        last_b_end.map(|b_end| extract_inline_command_text(&bytes[b_end..i]))
+                    })
                 } else {
                     None
                 };
@@ -1723,6 +1747,9 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
                 } else if k == OscKind::PromptStart || k == OscKind::CommandEnd {
                     // A fresh A or D resets the B anchor — no partial carry-over.
                     last_b_end = None;
+                    // …and any command line announced for a cycle that never
+                    // reached its C.
+                    announced_command = None;
                 }
 
                 events.push(Osc133Event {
@@ -1736,6 +1763,49 @@ fn scan_osc_133(bytes: &[u8], cursor_abs: i32) -> Vec<Osc133Event> {
         i = end;
     }
     events
+}
+
+/// Decode the escaping an `OSC 633;E` payload uses for its command line.
+///
+/// An OSC payload cannot carry a literal `;` (it delimits parameters) or control
+/// characters, so VS Code's convention escapes them: `\\` for a backslash and
+/// `\xNN` for any byte — in practice `\x3b` for `;` and `\x0a` for a newline in a
+/// multi-line command. Anything that is not a recognised escape is passed
+/// through unchanged, so a shell that escapes nothing still round-trips.
+fn unescape_osc_633(payload: &str) -> String {
+    let mut out = String::with_capacity(payload.len());
+    let mut chars = payload.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('\\') => out.push('\\'),
+            Some('x' | 'X') => {
+                // Exactly two hex digits, or it was not an escape after all.
+                let hi = chars.clone().next();
+                let lo = chars.clone().nth(1);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => match u8::from_str_radix(&format!("{h}{l}"), 16) {
+                        Ok(byte) => {
+                            chars.next();
+                            chars.next();
+                            out.push(char::from(byte));
+                        }
+                        Err(_) => out.push_str("\\x"),
+                    },
+                    _ => out.push_str("\\x"),
+                }
+            }
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out.trim().to_string()
 }
 
 /// Decode the raw bytes sitting between a B and C sequence as command text.
@@ -4831,6 +4901,80 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].command_text, "echo hello");
         assert_eq!(blocks[0].exit_code, Some(0));
+    }
+
+    // ── OSC 633 (VS Code's variant) ──────────────────────────────────────────
+
+    /// An `OSC 633;E` announcement is the command line, and it must beat reading
+    /// the prompt line off the grid. Without this the captured command comes out
+    /// as `[user@host ~]$ echo hi` — which then gets sent to an AI, put on the
+    /// clipboard, and re-run.
+    #[test]
+    fn osc633_e_reports_the_command_line_and_beats_the_grid() {
+        let mut emu = Emulator::new(80, 24);
+        emu.set_command_blocks(true, 100);
+
+        // A realistic shell: prompt drawn and echoed into the grid, then E, C, D.
+        emu.advance(b"\x1b]133;A\x07[rubber@host ~]$ \x1b]133;B\x07echo hi");
+        emu.advance(b"\x1b]633;E;echo hi\x07\x1b]133;C\x07");
+        emu.advance(b"hi\r\n\x1b]133;D;0\x07");
+
+        let blocks = emu.command_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(
+            blocks[0].command_text, "echo hi",
+            "the announced command line must win over the prompt line"
+        );
+        assert_eq!(blocks[0].exit_code, Some(0));
+    }
+
+    /// `;` and `\` cannot appear literally in an OSC payload, so they arrive
+    /// escaped and must survive the round trip — otherwise every `find … \;` or
+    /// `a; b` command is reported truncated.
+    #[test]
+    fn osc633_e_unescapes_semicolons_and_backslashes() {
+        assert_eq!(unescape_osc_633(r"cd /tmp\x3b ls"), "cd /tmp; ls");
+        assert_eq!(unescape_osc_633(r"grep '\\n' f"), r"grep '\n' f");
+        assert_eq!(unescape_osc_633(r"a\x0ab"), "a\nb");
+        // Not an escape: passed through rather than eaten.
+        assert_eq!(unescape_osc_633(r"echo \q"), r"echo \q");
+        assert_eq!(unescape_osc_633(r"echo \xZZ"), r"echo \xZZ");
+        assert_eq!(unescape_osc_633(""), "");
+    }
+
+    /// VS Code's shell integration emits `633;A/B/C/D` instead of `133;…`. A
+    /// shell already set up for it should work here untouched.
+    #[test]
+    fn osc633_prompt_marks_are_equivalent_to_133() {
+        let mut emu = Emulator::new(80, 24);
+        emu.set_command_blocks(true, 100);
+
+        emu.advance(b"\x1b]633;A\x07$ \x1b]633;B\x07\x1b]633;E;make\x07\x1b]633;C\x07");
+        emu.advance(b"built\r\n\x1b]633;D;2\x07");
+
+        let blocks = emu.command_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].command_text, "make");
+        assert_eq!(blocks[0].exit_code, Some(2));
+    }
+
+    /// An `E` for a cycle that never reaches its `C` must not leak into the next
+    /// command's text.
+    #[test]
+    fn osc633_e_is_discarded_when_the_cycle_restarts() {
+        let mut emu = Emulator::new(80, 24);
+        emu.set_command_blocks(true, 100);
+
+        // Announced, then the user pressed Ctrl+C and a fresh prompt started.
+        emu.advance(b"\x1b]633;E;rm -rf /\x07\x1b]133;A\x07$ \x1b]133;B\x07");
+        emu.advance(b"\x1b]133;C\x07\x1b]133;D;0\x07");
+
+        let blocks = emu.command_blocks();
+        assert_eq!(blocks.len(), 1);
+        assert_ne!(
+            blocks[0].command_text, "rm -rf /",
+            "a stale announcement must not be attributed to the next command"
+        );
     }
 
     /// When command blocks are disabled (max_blocks == 0), no blocks are stored

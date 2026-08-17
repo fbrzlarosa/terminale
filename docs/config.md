@@ -141,6 +141,45 @@ drop_path_quoting        = "auto" # auto = quote only when the path has spaces
 drop_path_trailing_space = true # append a space after each dropped path
 ```
 
+#### Shell integration (OSC 133)
+
+```toml
+[terminal]
+shell_integration  = true      # let terminale instrument the shell it launches
+command_blocks     = true      # assemble command blocks from the marks
+max_command_blocks = 200       # per pane; oldest are dropped
+```
+
+A terminal cannot tell a prompt from output, or know that a command failed,
+unless the shell tells it. `shell_integration` makes terminale inject a small
+startup hook into the shell it launches so that it does:
+
+* **`OSC 7`** — the working directory, which is what puts the folder in the tab
+  title and lets `window.restore_working_dirs` restore it;
+* **`OSC 133`** — prompt marks (`A`/`B`/`C`/`D;<exit>`), which is what powers
+  command blocks, jump-to-next/previous-prompt, jump-to-failed-command, *"fix
+  this command"*, copy-last-command-output, and
+  [`terminale ctl last-command`](control-api.md).
+
+Instrumented today: **bash** (via `--rcfile`, and the hook sources your own
+`~/.bashrc` first, so your configuration is untouched) and **PowerShell** (cwd
+only). zsh and fish are not instrumented yet — the features above work there only
+if your prompt already emits the marks (starship does, for instance).
+
+Injection is skipped whenever it would be wrong: a profile that passes its own
+`-c`, `--rcfile`, `--norc`, or runs a login shell is launched exactly as written.
+If the hook cannot be written to disk, the shell starts uninstrumented — you lose
+the marks, never the session.
+
+terminale also accepts the **`OSC 633`** spelling of the same protocol (VS Code's
+variant, including `633;E` which reports the command line explicitly), so a shell
+already set up for VS Code's shell integration works here as-is.
+
+The generated hook lives under the data directory
+(`~/.local/share/terminale/shell-integration/` on Linux) and is rewritten
+whenever the binary is updated. It is a generated file — edit your own rc
+instead.
+
 ### `[terminal.image_protocols]`
 
 Inline images render out of the box — these toggles exist to *disable* a

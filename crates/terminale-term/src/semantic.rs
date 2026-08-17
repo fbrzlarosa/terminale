@@ -82,6 +82,39 @@ pub struct CommandBlock {
     pub exit_code: Option<i32>,
 }
 
+impl CommandBlock {
+    /// The absolute line range holding this command's *output*, or `None` when
+    /// it produced none.
+    ///
+    /// This is not simply `output_start_line..=end_line`, and the difference is
+    /// visible to users. `D` is emitted from the shell's prompt hook, which runs
+    /// after the command finished but *before* the new prompt is drawn — so
+    /// `end_line` is normally the line the next prompt is about to occupy, not a
+    /// line of output. Including it appends a stray prompt to every captured
+    /// output: to the text an AI is asked to explain, to what
+    /// copy-last-command-output puts on the clipboard, and to
+    /// `terminale ctl last-command`.
+    ///
+    /// So the span ends one line earlier, and a `D` on the *same* line as
+    /// `output_start_line` means the command printed nothing (or at most a
+    /// partial line the prompt then shared) — reported as `None` rather than
+    /// handing back the prompt as if it were output.
+    ///
+    /// While the command is still running there is no `D` yet, so the span runs
+    /// to `buffer_last_line` — which is what lets a caller watch a long build's
+    /// output accumulate.
+    #[must_use]
+    pub fn output_span(&self, buffer_last_line: i32) -> Option<(i32, i32)> {
+        match self.end_line {
+            None => (buffer_last_line >= self.output_start_line)
+                .then_some((self.output_start_line, buffer_last_line)),
+            Some(end) => {
+                (end > self.output_start_line).then_some((self.output_start_line, end - 1))
+            }
+        }
+    }
+}
+
 /// In-flight builder while we've seen A but not yet D.
 #[derive(Debug, Clone)]
 struct Pending {
@@ -939,5 +972,48 @@ mod tests {
             .next();
         // No failed block below bottom_abs → None (clamp).
         assert!(found.is_none(), "must clamp at newest failed block");
+    }
+
+    // ── output_span ──────────────────────────────────────────────────────────
+
+    fn block(output_start: i32, end: Option<i32>) -> CommandBlock {
+        CommandBlock {
+            prompt_line: output_start - 2,
+            command_start_line: output_start - 1,
+            output_start_line: output_start,
+            end_line: end,
+            command_text: "cmd".into(),
+            cwd: None,
+            exit_code: Some(0),
+        }
+    }
+
+    /// The line `D` lands on belongs to the *next prompt*, not to the output, so
+    /// it must be excluded — otherwise every captured output ends with a stray
+    /// prompt line.
+    #[test]
+    fn output_span_excludes_the_next_prompt_line() {
+        // Output on lines 10..=13, D received on 14 (where the prompt goes).
+        assert_eq!(block(10, Some(14)).output_span(99), Some((10, 13)));
+        // A single output line, D on the following line.
+        assert_eq!(block(10, Some(11)).output_span(99), Some((10, 10)));
+    }
+
+    /// A command that printed nothing has `D` on the very line output would have
+    /// started at. Reporting that line would hand back the prompt as output.
+    #[test]
+    fn output_span_is_none_when_nothing_was_printed() {
+        assert_eq!(block(10, Some(10)).output_span(99), None);
+        // Defensive: a D that somehow precedes the output start is not a span.
+        assert_eq!(block(10, Some(9)).output_span(99), None);
+    }
+
+    /// While the command runs there is no `D`, so the span has to follow the
+    /// buffer — that is what makes watching a long build possible.
+    #[test]
+    fn output_span_of_a_running_command_follows_the_buffer() {
+        assert_eq!(block(10, None).output_span(42), Some((10, 42)));
+        // A running command that has not printed anything yet.
+        assert_eq!(block(10, None).output_span(9), None);
     }
 }

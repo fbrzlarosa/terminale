@@ -626,19 +626,58 @@ pub(crate) fn fix_last_command(state: &mut RunningState) {
     let exit_code = block.exit_code.unwrap_or(-1);
     let command_text = block.command_text.clone();
     let cwd = block.cwd.clone().unwrap_or_else(|| "unknown".to_string());
-    let output_start = block.output_start_line;
-    let output_end = block.end_line.unwrap_or(output_start);
+    let block = block.clone();
 
     // Extract output while we still hold the emulator lock.
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let output = extract_block_output_lines(&all_lines, hist, output_start, output_end);
+    let output = block_output_lines(&block, &all_lines, hist);
 
     let prompt = build_fix_prompt(&command_text, exit_code, &cwd, &output);
     state.pending_ai_prompt = Some(prompt);
     state.open_ai_requested = true;
+}
+
+/// Absolute index of the last line held by `all_lines` (as returned by
+/// `Emulator::buffer_lines_text`, where `abs_line = index - history_size`).
+///
+/// Needed to bound the output of a command that is *still running*: it has no
+/// `D` mark yet, so "everything printed so far" means "up to the end of the
+/// buffer".
+fn buffer_last_line(all_lines: &[String], history_size: i32) -> i32 {
+    i32::try_from(all_lines.len()).unwrap_or(i32::MAX) - 1 - history_size
+}
+
+/// A command block's output as text, or an empty string when it printed none.
+///
+/// Every caller wants exactly this, and every caller previously computed the
+/// span by hand as `output_start..=end_line` — which silently appended the next
+/// prompt line to the result (see [`CommandBlock::output_span`]). Funnelling
+/// them through one helper is what keeps that fixed in all of them at once.
+pub(crate) fn block_output_text(
+    block: &terminale_term::CommandBlock,
+    all_lines: &[String],
+    history_size: i32,
+) -> String {
+    match block.output_span(buffer_last_line(all_lines, history_size)) {
+        Some((start, end)) => extract_block_output_text(all_lines, history_size, start, end),
+        None => String::new(),
+    }
+}
+
+/// As [`block_output_text`], but truncated for a prompt that is about to be sent
+/// to an AI provider (see [`extract_block_output_lines`]).
+pub(crate) fn block_output_lines(
+    block: &terminale_term::CommandBlock,
+    all_lines: &[String],
+    history_size: i32,
+) -> String {
+    match block.output_span(buffer_last_line(all_lines, history_size)) {
+        Some((start, end)) => extract_block_output_lines(all_lines, history_size, start, end),
+        None => String::new(),
+    }
 }
 
 /// Pull the lines of the buffer that fall within `[output_start, output_end]`
@@ -731,18 +770,18 @@ pub(crate) fn copy_last_command_output(state: &mut RunningState) {
     };
     // Only copy finished blocks — an in-flight block (end_line == None) has
     // incomplete output.
-    let Some(end_line) = block.end_line else {
+    if block.end_line.is_none() {
         tracing::debug!("copy_last_command_output: last block is still running");
         drop(emu);
         return;
-    };
+    }
 
-    let output_start = block.output_start_line;
+    let block = block.clone();
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let text = extract_block_output_text(&all_lines, hist, output_start, end_line);
+    let text = block_output_text(&block, &all_lines, hist);
     crate::push_clipboard_history(state, text.clone());
     if let Some(cb) = state.clipboard.as_mut() {
         if let Err(e) = cb.set_text(text) {
@@ -781,18 +820,18 @@ pub(crate) fn copy_block_output(state: &mut RunningState) {
         drop(emu);
         return;
     };
-    let Some(end_line) = block.end_line else {
+    if block.end_line.is_none() {
         tracing::debug!("copy_block_output: block at cursor is still running");
         drop(emu);
         return;
-    };
+    }
 
-    let output_start = block.output_start_line;
+    let block = block.clone();
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let text = extract_block_output_text(&all_lines, hist, output_start, end_line);
+    let text = block_output_text(&block, &all_lines, hist);
     crate::push_clipboard_history(state, text.clone());
     if let Some(cb) = state.clipboard.as_mut() {
         if let Err(e) = cb.set_text(text) {

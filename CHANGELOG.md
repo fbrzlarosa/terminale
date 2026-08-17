@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Shell integration now actually reaches bash, so the OSC 133 half of the
+  feature set works on a stock install.** This module only ever instrumented
+  PowerShell (and only for cwd reporting), which meant command blocks, exit-code
+  badges, jump-to-failed-command, *"fix this command"*, copy-last-command-output
+  and `terminale ctl last-command` were all documented, all implemented, and all
+  inert on a default bash — they only came alive if the user had already built
+  `OSC 133` marks into their own prompt. terminale now materialises a bash hook
+  and launches the shell with `--rcfile`. The hook sources the user's own
+  `~/.bashrc` first, installs itself last, re-wraps `PS1` on every prompt (so
+  starship and friends do not clobber it), and steps aside entirely when the
+  prompt already emits marks, when the profile passes its own `-c`/`--rcfile`/
+  `--norc`, or when the shell is a login shell. zsh and fish are recognised but
+  not yet instrumented.
+- **Captured command output no longer ends with a stray prompt line.** The `D`
+  mark is emitted by the shell's *prompt* hook, so the line it lands on is where
+  the next prompt is about to be drawn — not output. Every consumer treated the
+  span as inclusive, so the following prompt was appended to what "fix this
+  command" sent to the AI, to what copy-last-command-output put on the clipboard,
+  and to the suggestion bar's error context. Now expressed once, in
+  `CommandBlock::output_span`, which also reports "printed nothing" instead of
+  handing back the prompt as though it were output.
+- **The captured command is the command, not the prompt plus the command.**
+  Command text was recovered by reading the prompt line off the grid, which
+  cannot tell `[user@host ~]$ ` apart from what was typed — so a captured command
+  came out as `[rubber@host ~]$ cargo test`, and that string is what got re-run by
+  rerun-last-command, sent to the AI, and copied. The bash hook now reports the
+  command line explicitly with `OSC 633;E` (read from history, so a pipeline is
+  reported whole), which takes priority over grid scraping.
+- **`OSC 633` is understood as an alias of `OSC 133`.** VS Code's shell
+  integration emits the `633` spelling; a shell already set up for it now gets
+  command blocks in terminale with no extra configuration.
+
 ### Added
 - **A control API: `terminale ctl` drives a running instance.** The per-user
   control socket has existed since Quake mode needed a way for a desktop
