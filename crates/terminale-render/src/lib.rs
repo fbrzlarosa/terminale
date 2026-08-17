@@ -29,6 +29,7 @@ use glyphon::{
     TextRenderer, Viewport as GlyphonViewport, Wrap,
 };
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use std::path::PathBuf;
 use std::sync::Arc;
 use terminale_term::{AppCursorShape, CellSnapshot, Emulator, UnderlineStyle};
 use thiserror::Error;
@@ -584,8 +585,21 @@ pub struct Renderer {
     queue: Arc<Queue>,
     surface: Surface<'static>,
     config: SurfaceConfiguration,
-    #[allow(dead_code)]
     surface_format: wgpu::TextureFormat,
+    /// Whether this surface's [`wgpu::SurfaceCapabilities`] advertised
+    /// `COPY_SRC`, i.e. whether [`Self::request_capture`] can ever actually
+    /// produce a PNG. Computed once at surface-configure time (see the
+    /// three `surface.configure` call sites) — some backends/adapters
+    /// (notably certain GL fallbacks) do not support reading back the
+    /// swapchain texture at all, and requesting a usage the caps don't
+    /// advertise is a validation error on native backends.
+    capture_supported: bool,
+    /// Destination path for the next presented frame, set by
+    /// [`Self::request_capture`] and consumed (cleared) by the render path
+    /// that actually performs the copy. `None` on every ordinary frame —
+    /// keep this cheap to check, it's read once per frame regardless of
+    /// whether a capture was ever requested.
+    pending_capture: Option<PathBuf>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -1983,9 +1997,21 @@ impl Renderer {
             .copied()
             .find(|m| *m == PresentMode::Mailbox)
             .unwrap_or(PresentMode::AutoVsync);
+        // `COPY_SRC` on the swapchain texture is what makes
+        // `Renderer::request_capture` possible at all. Some backends/
+        // adapters (GL fallbacks in particular) never advertise it, and
+        // configuring a usage the surface caps didn't advertise is a
+        // validation error (panic, on some backends) rather than a
+        // graceful failure — so only ask for it when the caps say we can.
+        let capture_supported = surface_caps.usages.contains(TextureUsages::COPY_SRC);
+        let usage = if capture_supported {
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC
+        } else {
+            TextureUsages::RENDER_ATTACHMENT
+        };
 
         let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width: physical_width.max(1),
             height: physical_height.max(1),
@@ -2034,6 +2060,8 @@ impl Renderer {
             surface,
             config,
             surface_format: format,
+            capture_supported,
+            pending_capture: None,
             font_system,
             swash_cache,
             viewport,
@@ -2184,9 +2212,21 @@ impl Renderer {
             .copied()
             .find(|m| *m == PresentMode::Mailbox)
             .unwrap_or(PresentMode::AutoVsync);
+        // `COPY_SRC` on the swapchain texture is what makes
+        // `Renderer::request_capture` possible at all. Some backends/
+        // adapters (GL fallbacks in particular) never advertise it, and
+        // configuring a usage the surface caps didn't advertise is a
+        // validation error (panic, on some backends) rather than a
+        // graceful failure — so only ask for it when the caps say we can.
+        let capture_supported = surface_caps.usages.contains(TextureUsages::COPY_SRC);
+        let usage = if capture_supported {
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC
+        } else {
+            TextureUsages::RENDER_ATTACHMENT
+        };
 
         let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width: physical_width.max(1),
             height: physical_height.max(1),
@@ -2233,6 +2273,8 @@ impl Renderer {
             surface,
             config,
             surface_format: format,
+            capture_supported,
+            pending_capture: None,
             font_system,
             swash_cache,
             viewport,
@@ -2394,9 +2436,21 @@ impl Renderer {
             .copied()
             .find(|m| *m == PresentMode::Mailbox)
             .unwrap_or(PresentMode::AutoVsync);
+        // `COPY_SRC` on the swapchain texture is what makes
+        // `Renderer::request_capture` possible at all. Some backends/
+        // adapters (GL fallbacks in particular) never advertise it, and
+        // configuring a usage the surface caps didn't advertise is a
+        // validation error (panic, on some backends) rather than a
+        // graceful failure — so only ask for it when the caps say we can.
+        let capture_supported = surface_caps.usages.contains(TextureUsages::COPY_SRC);
+        let usage = if capture_supported {
+            TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC
+        } else {
+            TextureUsages::RENDER_ATTACHMENT
+        };
 
         let config = SurfaceConfiguration {
-            usage: TextureUsages::RENDER_ATTACHMENT,
+            usage,
             format,
             width: physical_width.max(1),
             height: physical_height.max(1),
@@ -2441,6 +2495,8 @@ impl Renderer {
             surface,
             config,
             surface_format: format,
+            capture_supported,
+            pending_capture: None,
             font_system,
             swash_cache,
             viewport,
@@ -2689,8 +2745,15 @@ impl Renderer {
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         }
 
+        // See the identical capture hand-off in `render` below: the readback
+        // copy must be recorded on this same `encoder`, after the render
+        // pass has closed and before `finish()`/`submit()`.
+        let capture = self.begin_pending_capture(&mut encoder, &frame);
         self.queue.submit(Some(encoder.finish()));
         frame.present();
+        if let Some(capture) = capture {
+            self.finish_pending_capture(capture);
+        }
         self.atlas.trim();
         Ok(())
     }
@@ -8394,6 +8457,15 @@ impl Renderer {
                 .render(&self.atlas, &self.viewport, &mut pass)?;
         }
 
+        // Frame capture hand-off: the render pass above has just closed (its
+        // borrow of `encoder` ended with the block), and `encoder` hasn't
+        // been submitted yet — exactly the window where `copy_texture_to_buffer`
+        // is legal and where the copy rides the very same submission as the
+        // frame it captures. `begin_pending_capture` is an `Option::take` +
+        // early-return when nothing is queued, so this costs nothing on the
+        // (overwhelming) majority of frames where no capture was requested.
+        let capture = self.begin_pending_capture(&mut encoder, &frame);
+
         let submit_present_start = std::time::Instant::now();
         self.queue.submit(Some(encoder.finish()));
         frame.present();
@@ -8401,6 +8473,12 @@ impl Renderer {
             phase_ns(submit_present_start.elapsed()),
             std::sync::atomic::Ordering::Relaxed,
         );
+        // Finishing the readback (map + convert + PNG-encode) blocks this
+        // thread on the GPU, so it only ever runs on the one frame that
+        // requested it — never speculatively, never on the common path.
+        if let Some(capture) = capture {
+            self.finish_pending_capture(capture);
+        }
         self.atlas.trim();
         // Body-origin overrides are one-shot — clear them so the next
         // `render(emu)` call (without a wrapping `render_panes` setup)
@@ -8408,6 +8486,276 @@ impl Renderer {
         self.pending_body_x = None;
         self.pending_body_y = None;
         Ok(())
+    }
+
+    /// Ask for the next presented frame to be written to `path` as a PNG.
+    /// Replaces any previously queued request — only the most recent call
+    /// wins, matching "screenshot the *next* frame" semantics rather than
+    /// queuing a burst. Cheap: this just stores a path, the actual GPU
+    /// readback happens inside the next `render`/`render_ghost_only` call.
+    ///
+    /// A no-op (logged at `warn!`) when [`Self::capture_supported`] is
+    /// `false` — the caller is expected to poll for the file and simply
+    /// never see it appear in that case, rather than getting an `Err` here
+    /// for a condition that was already knowable before calling.
+    pub fn request_capture(&mut self, path: PathBuf) {
+        if !self.capture_supported {
+            tracing::warn!(
+                path = %path.display(),
+                "frame capture requested but this surface does not support \
+                 COPY_SRC; dropping request"
+            );
+            return;
+        }
+        self.pending_capture = Some(path);
+    }
+
+    /// Whether this adapter/surface combination can service
+    /// [`Self::request_capture`] at all. `false` means the surface's
+    /// [`wgpu::SurfaceCapabilities`] didn't advertise `COPY_SRC` on the
+    /// swapchain texture (seen on some GL fallback paths) — there is no
+    /// workaround short of rendering to an offscreen texture instead of the
+    /// swapchain, which this renderer does not do.
+    #[must_use]
+    pub fn capture_supported(&self) -> bool {
+        self.capture_supported
+    }
+
+    /// If [`Self::request_capture`] left a request pending, records the
+    /// `copy_texture_to_buffer` that reads `frame`'s texture into a fresh
+    /// CPU-visible staging buffer, using the caller's `encoder` so the copy
+    /// rides the very same command submission as the frame it captures
+    /// (no extra `queue.submit`, no extra frame in flight, no risk of
+    /// capturing the *next* frame instead of this one).
+    ///
+    /// Must be called after the render pass on `encoder` has closed and
+    /// before `encoder.finish()` — `wgpu` forbids buffer/texture copies
+    /// while a render pass on the same encoder is still open.
+    ///
+    /// Returns `None` (and does nothing) when no capture is pending, when
+    /// support was already ruled out, or when the surface format isn't one
+    /// this readback path understands. `Some(pending)` must be handed to
+    /// [`Self::finish_pending_capture`] after `frame.present()`.
+    fn begin_pending_capture(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &wgpu::SurfaceTexture,
+    ) -> Option<PendingCapture> {
+        let path = self.pending_capture.take()?;
+        // `request_capture` already checked this, but a capture can sit
+        // queued across a surface-lost reconfigure (rare, but `acquire_frame`
+        // handles that transparently), so re-check against the current
+        // surface rather than trusting a stale answer.
+        if !self.capture_supported {
+            tracing::warn!(
+                path = %path.display(),
+                "frame capture: surface no longer supports COPY_SRC, dropping request"
+            );
+            return None;
+        }
+        // `Bgra8*` vs `Rgba8*` decides whether the readback bytes need a
+        // channel swap before they're valid RGBA for the `image` crate.
+        // Every other format wgpu could plausibly hand us as a swapchain
+        // texture (Rgb10a2Unorm, Bgra8Unorm on a HDR path, etc.) is not
+        // handled — bailing out is preferable to writing a colour-wrong PNG.
+        let swap_channels = match self.surface_format {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => true,
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => false,
+            other => {
+                tracing::warn!(
+                    path = %path.display(),
+                    format = ?other,
+                    "frame capture: unsupported surface format, dropping request"
+                );
+                return None;
+            }
+        };
+        let width = frame.texture.width();
+        let height = frame.texture.height();
+        let bytes_per_row = padded_bytes_per_row(width);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("terminale frame capture readback"),
+            size: u64::from(bytes_per_row) * u64::from(height),
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            wgpu::ImageCopyTexture {
+                texture: &frame.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyBuffer {
+                buffer: &buffer,
+                layout: wgpu::ImageDataLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        Some(PendingCapture {
+            path,
+            buffer,
+            width,
+            height,
+            bytes_per_row,
+            swap_channels,
+        })
+    }
+
+    /// Consumes a [`PendingCapture`] after `frame.present()`: blocks until
+    /// the GPU has finished writing into its staging buffer, converts the
+    /// raw texture bytes into tightly-packed RGBA8, and writes them out as a
+    /// PNG via the `image` crate.
+    ///
+    /// A capture failing must never take down the frame that triggered it —
+    /// every error path here logs at `warn!` and returns, leaving the
+    /// surface it just presented completely untouched.
+    fn finish_pending_capture(&self, capture: PendingCapture) {
+        let PendingCapture {
+            path,
+            buffer,
+            width,
+            height,
+            bytes_per_row,
+            swap_channels,
+        } = capture;
+
+        let slice = buffer.slice(..);
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            // The receiver is never dropped before this fires — we block on
+            // `device.poll(Maintain::Wait)` right below — but `send` can
+            // still fail if that assumption is ever violated, so don't
+            // panic over a screenshot.
+            let _ = result_tx.send(result);
+        });
+        // On native backends `Maintain::Wait` blocks until the submission
+        // that wrote `buffer` has completed AND every callback scheduled by
+        // it (the `map_async` above) has run — so the channel is guaranteed
+        // to have a message by the time this returns.
+        self.device.poll(wgpu::Maintain::Wait);
+        match result_rx.try_recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "frame capture: buffer map failed"
+                );
+                return;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "frame capture: buffer map callback never fired"
+                );
+                return;
+            }
+        }
+
+        let mut rgba = strip_row_padding(&slice.get_mapped_range(), width, height, bytes_per_row);
+        // Drop the mapped view (implicitly, it was a temporary above) before
+        // unmapping — wgpu panics if a `BufferView` is still alive.
+        buffer.unmap();
+
+        if swap_channels {
+            swap_bgra_channels_in_place(&mut rgba);
+        }
+        // A transparent-background window (the ghost overlay, or a user
+        // `background.alpha < 1` theme) would otherwise produce a PNG that
+        // most viewers render as blank — bake in full opacity so the
+        // screenshot always looks like what the user saw on screen.
+        force_opaque_alpha_in_place(&mut rgba);
+
+        if let Err(e) = image::save_buffer(&path, &rgba, width, height, image::ColorType::Rgba8) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "frame capture: failed to write PNG"
+            );
+        }
+    }
+}
+
+/// A frame-capture readback in flight: the `copy_texture_to_buffer` has been
+/// recorded (see [`Renderer::begin_pending_capture`]) but the buffer isn't
+/// mapped/read yet — that happens in [`Renderer::finish_pending_capture`]
+/// after `frame.present()`, once the GPU is known to have finished writing
+/// into `buffer`.
+struct PendingCapture {
+    /// Destination PNG path, as given to [`Renderer::request_capture`].
+    path: PathBuf,
+    /// `MAP_READ | COPY_DST` staging buffer the frame was copied into.
+    buffer: wgpu::Buffer,
+    /// Physical frame width in pixels — the PNG's final width.
+    width: u32,
+    /// Physical frame height in pixels — the PNG's final height.
+    height: u32,
+    /// Row pitch wgpu required inside `buffer` (`width * 4` rounded up to
+    /// [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`]); may exceed `width * 4`, in
+    /// which case each row has trailing padding that must be stripped.
+    bytes_per_row: u32,
+    /// Whether the source texture was `Bgra8*` and its readback bytes need
+    /// a B/R channel swap to become valid RGBA for the `image` crate.
+    swap_channels: bool,
+}
+
+/// Rounds one RGBA/BGRA row (`width * 4` bytes) up to wgpu's mandatory
+/// [`wgpu::COPY_BYTES_PER_ROW_ALIGNMENT`] (256 bytes) — `copy_texture_to_buffer`
+/// requires the *destination buffer's* row pitch to be a multiple of this,
+/// even when the source texture's rows are not.
+fn padded_bytes_per_row(width: u32) -> u32 {
+    let unpadded = width * 4;
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    unpadded.div_ceil(align) * align
+}
+
+/// Strips wgpu's mandatory row padding from a `copy_texture_to_buffer`
+/// readback, returning tightly packed rows of `width * 4` bytes each (no
+/// GPU involved — pure function, unit-testable without a device).
+///
+/// `padded` must contain at least `padded_bytes_per_row * height` bytes (the
+/// full buffer wgpu wrote into); `padded_bytes_per_row` must be
+/// `>= width * 4`. When they're equal (no padding needed) this still just
+/// copies through row by row rather than special-casing it — one `width *
+/// 4`-byte `extend_from_slice` per row either way.
+fn strip_row_padding(padded: &[u8], width: u32, height: u32, padded_bytes_per_row: u32) -> Vec<u8> {
+    let tight_bytes_per_row = width as usize * 4;
+    let padded_bytes_per_row = padded_bytes_per_row as usize;
+    let mut out = Vec::with_capacity(tight_bytes_per_row * height as usize);
+    for row in 0..height as usize {
+        let start = row * padded_bytes_per_row;
+        out.extend_from_slice(&padded[start..start + tight_bytes_per_row]);
+    }
+    out
+}
+
+/// Swaps the B and R bytes of every pixel in a tightly packed 8-bit-per-
+/// channel buffer in place, turning `Bgra8*` readback order into `Rgba8`
+/// order. `pixels.len()` is expected to be a multiple of 4 (whole pixels);
+/// any trailing partial pixel is left untouched, which never happens in
+/// practice since callers always size the buffer to `width * height * 4`.
+fn swap_bgra_channels_in_place(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+}
+
+/// Forces the alpha byte of every pixel in a tightly packed RGBA8 buffer to
+/// fully opaque (`0xff`). See the call site in
+/// [`Renderer::finish_pending_capture`] for why a screenshot always bakes
+/// in full opacity rather than preserving the surface's real alpha.
+fn force_opaque_alpha_in_place(pixels: &mut [u8]) {
+    for px in pixels.chunks_exact_mut(4) {
+        px[3] = 0xff;
     }
 }
 
@@ -10849,5 +11197,63 @@ mod tests {
         assert_eq!(slot0, 0);
         let dest0 = if slot0 > from { slot0 - 1 } else { slot0 };
         assert_eq!(dest0, 0, "tab from[2] dragged to slot 0 lands at index 0");
+    }
+
+    // ── frame capture (padding strip / channel swap / alpha force) ────────
+
+    #[test]
+    fn padded_bytes_per_row_rounds_up_to_alignment() {
+        // 1 px row = 4 bytes, far below the 256-byte alignment.
+        assert_eq!(padded_bytes_per_row(1), 256);
+        // 63 px = 252 bytes, still rounds up to 256.
+        assert_eq!(padded_bytes_per_row(63), 256);
+        // 64 px = 256 bytes exactly — already aligned, no padding added.
+        assert_eq!(padded_bytes_per_row(64), 256);
+        // 65 px = 260 bytes, rounds up to the next multiple of 256.
+        assert_eq!(padded_bytes_per_row(65), 512);
+    }
+
+    #[test]
+    fn strip_row_padding_removes_trailing_bytes_per_row() {
+        // 2x2 image, 4 bytes/px = 8 tight bytes/row, padded to 12.
+        let width = 2;
+        let height = 2;
+        let padded_bytes_per_row = 12;
+        #[rustfmt::skip]
+        let padded: Vec<u8> = vec![
+            1, 2, 3, 4, 5, 6, 7, 8, 0xAA, 0xAA, 0xAA, 0xAA, // row 0 + padding
+            9, 10, 11, 12, 13, 14, 15, 16, 0xAA, 0xAA, 0xAA, 0xAA, // row 1 + padding
+        ];
+        let tight = strip_row_padding(&padded, width, height, padded_bytes_per_row);
+        assert_eq!(
+            tight,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        );
+    }
+
+    #[test]
+    fn strip_row_padding_is_a_no_op_when_already_tight() {
+        let width = 1;
+        let height = 3;
+        let padded_bytes_per_row = 4; // == width * 4, no padding at all.
+        let padded: Vec<u8> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let tight = strip_row_padding(&padded, width, height, padded_bytes_per_row);
+        assert_eq!(tight, padded);
+    }
+
+    #[test]
+    fn swap_bgra_channels_in_place_swaps_r_and_b_only() {
+        // Two pixels: (B=10, G=20, R=30, A=40) and (B=50, G=60, R=70, A=80).
+        let mut pixels = vec![10, 20, 30, 40, 50, 60, 70, 80];
+        swap_bgra_channels_in_place(&mut pixels);
+        // R and B swap, G and A stay put on both pixels.
+        assert_eq!(pixels, vec![30, 20, 10, 40, 70, 60, 50, 80]);
+    }
+
+    #[test]
+    fn force_opaque_alpha_in_place_overwrites_every_fourth_byte() {
+        let mut pixels = vec![10, 20, 30, 0, 40, 50, 60, 128];
+        force_opaque_alpha_in_place(&mut pixels);
+        assert_eq!(pixels, vec![10, 20, 30, 0xff, 40, 50, 60, 0xff]);
     }
 }

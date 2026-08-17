@@ -182,6 +182,11 @@ impl SettingsWindow {
 
             ui.add_space(6.0);
 
+            // ── Control API scopes ───────────────────────────────────────────
+            self.section_control_api(ui, &mut dirty);
+
+            ui.add_space(6.0);
+
             // ── One-click GNOME keybinding ───────────────────────────────────
             self.section_gnome_quake_shortcut(ui);
 
@@ -201,6 +206,111 @@ impl SettingsWindow {
                 );
             });
         }
+    }
+
+    /// What `terminale ctl` (and anything else on the control socket) may do.
+    ///
+    /// Four switches rather than one, because the interesting question is not
+    /// "is automation on" but "may it read my scrollback" and "may it press
+    /// Enter". Submitting is off by default and stays visibly off here, since
+    /// that is the difference between a tool that drafts a command for you and
+    /// one that runs it.
+    #[cfg(target_os = "linux")]
+    pub(super) fn section_control_api(&mut self, ui: &mut egui::Ui, dirty: &mut bool) {
+        // Nothing here can do anything without the socket, so mirror that.
+        let socket_on = self.config.integration.control_socket;
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Automation & AI control");
+                let on = self.config.integration.control_api.enabled;
+                ui.add_enabled_ui(socket_on, |ui| {
+                    if toggle_switch(ui, on).clicked() {
+                        self.config.integration.control_api.enabled = !on;
+                        *dirty = true;
+                    }
+                });
+                ui.add_space(8.0);
+                let on = self.config.integration.control_api.enabled && socket_on;
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Integration,
+                "Automation & AI control",
+            );
+            sublabel(
+                ui,
+                "Serve the `terminale ctl` commands on the control socket: list tabs and \
+                 panes, read a pane, fetch the last command with its exit code, run any \
+                 command-palette action, type at a prompt, take a screenshot. This is what \
+                 makes terminale scriptable — and what lets an AI coding agent see what \
+                 your last command printed instead of guessing. Applies immediately. \
+                 With this off, only the Quake toggle is served.",
+            );
+
+            if !socket_on {
+                sublabel(
+                    ui,
+                    "Turn on the control socket above first — it is the channel these \
+                     commands arrive on.",
+                );
+                return;
+            }
+
+            let api_on = self.config.integration.control_api.enabled;
+            ui.add_space(4.0);
+            ui.add_enabled_ui(api_on, |ui| {
+                let mut scope = |label: &str, value: &mut bool, help: &str| {
+                    let hr = ui.horizontal(|ui| {
+                        ui.add_space(14.0);
+                        field_label(ui, label);
+                        if toggle_switch(ui, *value).clicked() {
+                            *value = !*value;
+                            *dirty = true;
+                        }
+                    });
+                    let _ = hr;
+                    sublabel(ui, help);
+                };
+
+                scope(
+                    "May read terminal content",
+                    &mut self.config.integration.control_api.allow_read,
+                    "Allows get-text, last-command, and the titles and working directories \
+                     in list-tabs. Scrollback holds whatever your commands printed, tokens \
+                     included — turn this off if you would rather nothing could read it.",
+                );
+                scope(
+                    "May type into a shell",
+                    &mut self.config.integration.control_api.allow_input,
+                    "Allows send-text, send-keys and running palette actions. Text lands at \
+                     the prompt for you to read; it is not run.",
+                );
+                scope(
+                    "May press Enter (run commands)",
+                    &mut self.config.integration.control_api.allow_submit,
+                    "Off by default, and the one switch worth thinking about: with it on, \
+                     anything that can reach the socket can execute commands as you. Leave \
+                     it off and an automation tool can only compose a command for you to \
+                     confirm. Turn it on for scripted or CI use.",
+                );
+                scope(
+                    "May take screenshots",
+                    &mut self.config.integration.control_api.allow_screenshot,
+                    "Allows the screenshot command to render the window to a PNG at a path \
+                     the caller chooses. Separate from reading text because an image leaks \
+                     the same content in a form you cannot grep.",
+                );
+            });
+        });
     }
 
     /// One-click registration of a GNOME custom keybinding that runs

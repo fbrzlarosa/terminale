@@ -54,6 +54,72 @@ impl LinuxBackend {
     }
 }
 
+/// Which classes of control-socket command the running instance will serve.
+///
+/// The socket itself is per-user and mode 0600 under `$XDG_RUNTIME_DIR`, so only
+/// processes already running as you can reach it. That is a meaningful bar — a
+/// process running as you can read `~/.ssh` anyway — but it is *not* the same as
+/// "nothing can look at my terminal": every editor plugin, shell hook, and AI
+/// agent you install runs as you too. These switches therefore scope what the
+/// channel is allowed to do, so `terminale ctl` can be handed to an automation
+/// tool without also handing it the ability to run commands in your shell.
+///
+/// The split that matters is [`Self::allow_input`] versus [`Self::allow_submit`]:
+/// input may *type* into the shell, submit may *press Enter*. Keeping submit off
+/// is the same trust model the AI features already use — a suggestion is
+/// injected for you to read and confirm, never executed behind your back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct ControlApiConfig {
+    /// Serve the query/automation commands (`list-*`, `get-text`, `send-text`,
+    /// `send-keys`, `action`, `screenshot`) in addition to the two commands the
+    /// socket has always answered (`ping`, `toggle-quake`).
+    ///
+    /// Turning this off leaves Quake toggling from a window-manager keybinding
+    /// working while refusing everything else. Default: `true`.
+    pub enabled: bool,
+    /// Allow commands that read terminal *content* — `get-text`, `last-command`,
+    /// and the titles/working directories in `list-tabs` / `list-panes`.
+    ///
+    /// This is the privacy-relevant one: scrollback holds whatever your commands
+    /// printed, which can include tokens and keys. Default: `true`.
+    pub allow_read: bool,
+    /// Allow commands that drive the app — `action` (any command-palette
+    /// action), `send-text`, and `send-keys`.
+    ///
+    /// Text is typed into the focused pane exactly as if you had typed it, but
+    /// a trailing newline is stripped unless [`Self::allow_submit`] is also on,
+    /// so an injected command lands at the prompt for review. Default: `true`.
+    pub allow_input: bool,
+    /// Allow injected input to *submit* — i.e. to carry a newline / `Enter` and
+    /// therefore actually run a command in your shell.
+    ///
+    /// Off by default, deliberately. With it off, an automation tool (or an AI
+    /// agent) can compose a command at your prompt but you press Enter; with it
+    /// on, anything that can reach the socket can run arbitrary commands as
+    /// you. Turn it on only for scripted/CI use. Default: `false`.
+    pub allow_submit: bool,
+    /// Allow `screenshot`, which renders the current frame to a PNG file path
+    /// of the caller's choosing.
+    ///
+    /// Separate from [`Self::allow_read`] because a picture of the window leaks
+    /// the same content in a form you cannot grep, and because it writes a file.
+    /// Default: `true`.
+    pub allow_screenshot: bool,
+}
+
+impl Default for ControlApiConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_read: true,
+            allow_input: true,
+            allow_submit: false,
+            allow_screenshot: true,
+        }
+    }
+}
+
 /// Controls how `terminale` integrates with the host desktop environment.
 ///
 /// On Windows the MSI installer registers Start-Menu / Desktop shortcuts and on
@@ -99,6 +165,11 @@ pub struct IntegrationConfig {
     /// logs why. Ignored outside Linux/Wayland. Default: `true`.
     #[serde(default = "default_true")]
     pub global_shortcuts_portal: bool,
+    /// What the control socket is allowed to do beyond toggling Quake — see
+    /// [`ControlApiConfig`]. Ignored entirely when [`Self::control_socket`] is
+    /// `false`, since then there is no socket to serve.
+    #[serde(default)]
+    pub control_api: ControlApiConfig,
 }
 
 /// Serde default for the boolean fields that default to `true`.
@@ -113,6 +184,7 @@ impl Default for IntegrationConfig {
             linux_backend: LinuxBackend::default(),
             control_socket: true,
             global_shortcuts_portal: true,
+            control_api: ControlApiConfig::default(),
         }
     }
 }
@@ -190,6 +262,45 @@ mod tests {
         assert_eq!(legacy.linux_backend, LinuxBackend::Auto);
         assert!(legacy.control_socket);
         assert!(legacy.global_shortcuts_portal);
+    }
+
+    /// Submitting must stay opt-in: a default install lets an automation tool
+    /// compose a command at the prompt, never run it.
+    #[test]
+    fn control_api_defaults_deny_submit_only() {
+        let api = IntegrationConfig::default().control_api;
+        assert!(api.enabled);
+        assert!(api.allow_read);
+        assert!(api.allow_input);
+        assert!(api.allow_screenshot);
+        assert!(!api.allow_submit, "submit must be opt-in");
+    }
+
+    /// A config written before `[integration.control_api]` existed must inherit
+    /// the defaults rather than deserialize to an all-`false` struct, which
+    /// would silently disable the whole command surface.
+    #[test]
+    fn legacy_config_keeps_control_api_defaults() {
+        let legacy: IntegrationConfig =
+            toml::from_str("desktop_entry = true").expect("deserialize legacy");
+        assert_eq!(legacy.control_api, ControlApiConfig::default());
+    }
+
+    #[test]
+    fn control_api_roundtrips() {
+        let cfg = IntegrationConfig {
+            control_api: ControlApiConfig {
+                enabled: true,
+                allow_read: false,
+                allow_input: true,
+                allow_submit: true,
+                allow_screenshot: false,
+            },
+            ..IntegrationConfig::default()
+        };
+        let s = toml::to_string(&cfg).expect("serialize");
+        let back: IntegrationConfig = toml::from_str(&s).expect("deserialize");
+        assert_eq!(back.control_api, cfg.control_api);
     }
 
     #[test]

@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **A control API: `terminale ctl` drives a running instance.** The per-user
+  control socket has existed since Quake mode needed a way for a desktop
+  keybinding to reach the app; it answered exactly two commands. It now speaks a
+  small JSON protocol: `list-tabs`, `list-panes`, `get-text` (viewport or full
+  scrollback), `last-command` (the command, its output, its **exit code**, and
+  whether it is still running), `list-actions` / `action <name>` for anything the
+  command palette can do, `send-text`, `send-keys`, `screenshot`, and `version`.
+  The two original bare words (`ping`, `toggle-quake`) still parse and still
+  answer `ok`, so no existing keybinding or `socat` one-liner breaks.
+
+  The point is not scripting for its own sake — it is that a terminal sitting
+  next to an AI coding agent should not make the agent guess. The exit code and
+  the exact output of the last command are already known to the emulator through
+  OSC 133 marks; `last-command` just hands them over. Reference:
+  [`docs/control-api.md`](docs/control-api.md).
+- **`send-keys` encodes for the pane's current modes, not a guess.** Specs like
+  `ctrl+c`, `shift+tab` or `"down down enter"` are parsed into the same shapes a
+  real key event carries and run through the *existing* encoders, so application
+  cursor-key mode is honoured and — when the program in that pane has engaged the
+  kitty keyboard protocol — `shift+enter` arrives as `CSI 13;2u`, distinguishable
+  from a plain `Enter`. Nothing re-implements an encoding, so `send-keys` cannot
+  drift from what typing does.
+- **Screenshots the app takes of itself.** `terminale ctl screenshot <path>`
+  reads back the frame the GPU is about to present and writes a PNG. No
+  compositor screenshot permission is involved, so it behaves identically on X11
+  and Wayland (where GNOME refuses the D-Bus screenshot API outright), and it can
+  run headless in CI.
+- **`[integration.control_api]` — four scopes for the above**, with controls in
+  **Settings → Desktop integration → Automation & AI control**: `allow_read`
+  (terminal content), `allow_input` (typing and actions), `allow_submit`, and
+  `allow_screenshot`. `allow_submit` is **off by default**, and that is the whole
+  trust model: something on the socket may compose a command at your prompt, but
+  pressing Enter stays yours. A newline smuggled into a `send-text` payload, or a
+  `send-keys enter`, is gated the same way — the check is on the effect, not the
+  spelling. Every refusal names the setting to flip.
+
 ## [0.1.42]
 
 ### Fixed

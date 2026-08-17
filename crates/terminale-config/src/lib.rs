@@ -74,7 +74,7 @@ pub use cursor::{CursorConfig, CursorStyle};
 pub use directory_jump::DirectoryJumpConfig;
 pub use font::FontConfig;
 pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference};
-pub use integration::{IntegrationConfig, LinuxBackend};
+pub use integration::{ControlApiConfig, IntegrationConfig, LinuxBackend};
 pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
     MouseBinding, ShortcutsConfig,

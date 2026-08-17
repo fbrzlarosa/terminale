@@ -92,6 +92,11 @@ A lot already works and is covered by tests. Here's the honest state.
   [x] Quake drop-down mode + window snapping
   [x] shell profiles + native settings window
   [x] Lua plugin host (sandboxed)
+  [x] shell integration (OSC 133) + command blocks with exit codes
+  [x] inline images (Sixel / APC / OSC 1337)
+  [x] built-in SSH (hosts in config, secrets in the OS keychain)
+  [x] drag a tab out into its own window (and back)
+  [x] control API — scriptable from the shell, readable by AI agents
 ```
 
 - **Cross-platform PTY shell** — ConPTY on Windows, `openpty` on Unix. One
@@ -139,10 +144,17 @@ A lot already works and is covered by tests. Here's the honest state.
 - **Crash-resistant** — a panicking tab is isolated and restartable; malformed
   config falls back to defaults instead of taking down your session.
 
-**On the roadmap:** drag-out tab → new window, SSH wired into the UI,
-multiplexer + `tmux -CC`, inline images (OSC 1337 / APC / Sixel), shell
-integration (OSC 133), richer plugin API, settings sync, auto-update.
-Full plan in [`docs/roadmap.md`](docs/roadmap.md).
+- **Control API** — `terminale ctl` drives a running instance from any shell:
+  list tabs and panes, read a pane, fetch the last command *with its exit code*,
+  run any palette action, type at the prompt, grab a PNG of the window. Which is
+  what makes it genuinely useful next to an AI coding agent — an agent can see
+  what your last command printed instead of guessing, and can draft the next one
+  at your prompt **without being able to press Enter** (that permission is off by
+  default). [Reference](docs/control-api.md).
+
+**On the roadmap:** persistent sessions that survive a crash/close
+(`terminale-ipc`), tmux Control Mode (`tmux -CC`), cloud settings sync, and a
+richer Lua plugin API. Full plan in [`docs/roadmap.md`](docs/roadmap.md).
 
 ---
 
@@ -235,7 +247,14 @@ terminale                          # open with your default shell
 terminale --shell /usr/bin/zsh     # pick a shell explicitly
 terminale --config ~/custom.toml   # use a custom config file
 terminale --quake                  # launch straight into Quake mode (v0.5+)
+
+terminale ctl last-command         # what the last command printed + exit code
+terminale ctl send-text "cargo t"  # type it at the prompt (does not run it)
+terminale ctl screenshot shot.png  # PNG of the window
 ```
+
+`terminale ctl --help` lists the whole control API — see
+[`docs/control-api.md`](docs/control-api.md).
 
 **Default keys**
 

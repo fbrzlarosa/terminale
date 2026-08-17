@@ -13,8 +13,13 @@ mod app_icon;
 mod config_watch;
 mod confirm_close;
 mod context_menu_window;
-mod copy_mode;
 #[cfg(target_os = "linux")]
+// The control API's vocabulary and handler. Unix-only for as long as its only
+// transport is the Unix socket in `ipc`; a Windows named-pipe transport is what
+// would flip this on there, without changing anything in the module itself.
+#[cfg(unix)]
+mod control;
+mod copy_mode;
 mod desktop_entry;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod desktop_shortcut;
@@ -24,6 +29,10 @@ pub mod icons;
 #[cfg(unix)]
 mod ipc;
 mod keymap;
+/// Text key specs (`"ctrl+c"`) → PTY bytes, for the control API's `send-keys`.
+/// Unix-only alongside [`control`], which is its only caller.
+#[cfg(unix)]
+mod keyspec;
 mod kitty_keyboard;
 mod links;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -280,6 +289,11 @@ enum UserEvent {
     /// dead-code lint rightly points out, and CI turns into an error.
     #[cfg_attr(not(unix), allow(dead_code))]
     ToggleQuake,
+    /// A control-socket client asked for something that has to be done on the
+    /// UI thread — read a pane, dispatch an action, type into a shell. Carries
+    /// the channel the reply goes back on; see [`control::handle`].
+    #[cfg(unix)]
+    Control(Box<ipc::ControlCall>),
     /// The XDG global-shortcuts portal accepted our Quake binding, so the
     /// desktop now owns it. The OS key grab is released on receipt: under a
     /// Wayland session it can still fire while an XWayland window has focus,
@@ -428,6 +442,34 @@ struct Cli {
     #[cfg(target_os = "linux")]
     #[arg(long)]
     uninstall_desktop_entry: bool,
+
+    /// Subcommand, when one is given. Without it `terminale` opens a window,
+    /// which is the overwhelmingly common case — hence `Option`.
+    #[cfg(unix)]
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Subcommands that act on an *already-running* terminale instead of starting
+/// one.
+///
+/// Kept to a single variant on purpose: `ctl` is the whole automation surface,
+/// and nesting it means `terminale ctl --help` lists the commands rather than
+/// polluting the top-level help of a GUI application.
+#[cfg(unix)]
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Drive a running terminale over its control socket — list tabs, read a
+    /// pane, run an action, type at a prompt, grab a screenshot.
+    ///
+    /// What each command is allowed to do is governed by
+    /// `[integration.control_api]`; `terminale ctl version` prints the
+    /// permissions currently in effect.
+    Ctl {
+        /// The control command to send.
+        #[command(subcommand)]
+        cmd: ipc::CtlCommand,
+    },
 }
 
 /// When launched from a shell (so a parent console exists), re-attach to
@@ -585,13 +627,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `terminale ctl …` — talk to the running instance and exit. First, like
+    // `--toggle-quake` below and for the same reason: it must not pay for a
+    // config load or a GPU probe it will never use.
+    #[cfg(unix)]
+    if let Some(Command::Ctl { cmd }) = &cli.command {
+        ipc::run_ctl(cmd);
+    }
+
     // Drive the running instance, then exit. Handled before anything else that
     // costs time (config load, tracing setup, GPU) because this path is on the
     // critical path of a keypress: a desktop keybinding spawns this process
     // every time the user hits the Quake key.
     #[cfg(unix)]
     if cli.toggle_quake {
-        match ipc::send_command(ipc::CMD_TOGGLE_QUAKE) {
+        match ipc::send_command(control::CMD_TOGGLE_QUAKE) {
             Ok(reply) if reply == "ok" => return Ok(()),
             Ok(reply) => {
                 eprintln!("terminale refused the request: {reply}");
@@ -6256,6 +6306,17 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // Control socket / global-shortcuts portal. Both are already
             // authenticated by construction, so there is no id to check.
             UserEvent::ToggleQuake => self.toggle_quake_all(),
+            // The socket thread is blocked on the other end of `call.reply`
+            // until we answer, so this arm must never itself block. A send
+            // error means the client gave up (timeout) — the work is already
+            // done either way, so there is nothing to undo.
+            #[cfg(unix)]
+            UserEvent::Control(call) => {
+                let reply = control::handle(self, &call.request);
+                if call.reply.send(reply).is_err() {
+                    tracing::debug!("control client went away before its reply");
+                }
+            }
             UserEvent::PortalShortcutBound => {
                 self.portal_shortcut_active = true;
                 // Release the OS grab: the desktop delivers the toggle now, and

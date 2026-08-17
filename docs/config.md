@@ -176,9 +176,28 @@ explain_selection = "Ctrl+Shift+E"
 [integration]
 desktop_entry           = true   # register a .desktop entry + icon on launch
 linux_backend           = "auto" # auto | x11 | wayland — see below
-control_socket          = true   # serve `terminale --toggle-quake`
+control_socket          = true   # serve `terminale --toggle-quake` + `terminale ctl`
 global_shortcuts_portal = true   # register the Quake hotkey with the desktop
+
+[integration.control_api]        # what `terminale ctl` may do — see control-api.md
+enabled          = true          # serve the automation commands at all
+allow_read       = true          # get-text, last-command, tab titles + cwds
+allow_input      = true          # send-text, send-keys, palette actions
+allow_submit     = false         # may press Enter, i.e. actually run commands
+allow_screenshot = true          # render the window to a PNG file
 ```
+
+`[integration.control_api]` scopes the **control API** — the `terminale ctl`
+commands that let a script (or an AI coding agent) read a pane, fetch the last
+command with its exit code, run any palette action, or type at your prompt. Full
+reference: [`control-api.md`](control-api.md).
+
+The split worth understanding is `allow_input` versus `allow_submit`: input may
+*type*, submit may *press Enter*. `allow_submit` is **off by default**, so out of
+the box an automation tool can compose a command at your prompt and you decide
+whether to run it — the same contract as the AI assistant's *Inject* button.
+Every refusal names the setting to flip. All five apply immediately; the socket
+itself still needs a relaunch when you toggle `control_socket`.
 
 **`linux_backend` is the setting that makes window placement work.** Wayland
 deliberately gives clients no control over their own window position, so on a
