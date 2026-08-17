@@ -339,6 +339,21 @@ pub struct ScrollbarGeom {
     pub rows: usize,
 }
 
+/// True shaped width, in logical pixels, of an already-laid-out single-line
+/// buffer.
+///
+/// Right-aligning text against a measured width is the only way to keep it
+/// inside its panel: estimating it as `glyph count × cell width × <fudge>` looks
+/// fine for one font size and silently overflows at another, which is exactly how
+/// long command-palette bindings ended up drawn past the panel edge. The buffer
+/// must have been created with no width cap, or the wrap would split the line and
+/// this would measure only the widest fragment.
+fn measured_text_width(buf: &Buffer) -> f32 {
+    buf.layout_runs()
+        .map(|run| run.line_w)
+        .fold(0.0_f32, f32::max)
+}
+
 /// Scroll offset (lines into history; `0` = live bottom) for a thumb dragged
 /// so its TOP sits at `thumb_top`. Inverse of the draw-pass mapping, linear
 /// over the thumb's travel range so the full history is always reachable —
@@ -3417,6 +3432,31 @@ impl Renderer {
             1.0,
         ));
 
+        // Result count, right-aligned in the input row. Built *before* the query
+        // so its measured width can reserve space — otherwise a long placeholder
+        // runs straight through it and the two strings render on top of each
+        // other.
+        let count = format!("{} result{}", total, if total == 1 { "" } else { "s" });
+        let mut cbuf = Buffer::new(
+            &mut self.font_system,
+            Metrics::new(
+                self.font_size * 0.8,
+                self.font_size * 0.8 * self.line_height,
+            ),
+        );
+        // No width cap: a `Some(width)` would word-wrap and corrupt the
+        // measurement (same reason as the status bar).
+        cbuf.set_size(&mut self.font_system, None, Some(input_h));
+        cbuf.set_text(
+            &mut self.font_system,
+            &count,
+            Attrs::new()
+                .family(Family::Monospace)
+                .color(GlyphonColor::rgb(0x5a, 0x61, 0x78)),
+            Shaping::Advanced,
+        );
+        let count_w = measured_text_width(&cbuf);
+
         // Input row: prompt + query (or placeholder).
         let prompt = if p.query.is_empty() {
             format!("›  {}", p.placeholder)
@@ -3435,7 +3475,12 @@ impl Renderer {
                 self.font_size * 1.1 * self.line_height,
             ),
         );
-        qbuf.set_size(&mut self.font_system, Some(box_w - 28.0), Some(input_h));
+        // Stop short of the counter, and clip rather than wrap: the input row is
+        // one line tall, so a wrapped second line would be drawn over the first
+        // result instead of being hidden.
+        let query_w = (box_w - 28.0 - count_w - 12.0).max(box_w * 0.35);
+        qbuf.set_wrap(&mut self.font_system, Wrap::None);
+        qbuf.set_size(&mut self.font_system, Some(query_w), Some(input_h));
         qbuf.set_text(
             &mut self.font_system,
             &prompt,
@@ -3446,30 +3491,10 @@ impl Renderer {
             qbuf,
             [box_x + 16.0, box_y + (input_h - self.font_size * 1.3) * 0.5],
         ));
-
-        // Result count, right-aligned in the input row.
-        let count = format!("{} result{}", total, if total == 1 { "" } else { "s" });
-        let mut cbuf = Buffer::new(
-            &mut self.font_system,
-            Metrics::new(
-                self.font_size * 0.8,
-                self.font_size * 0.8 * self.line_height,
-            ),
-        );
-        cbuf.set_size(&mut self.font_system, Some(180.0), Some(input_h));
-        cbuf.set_text(
-            &mut self.font_system,
-            &count,
-            Attrs::new()
-                .family(Family::Monospace)
-                .color(GlyphonColor::rgb(0x5a, 0x61, 0x78)),
-            Shaping::Advanced,
-        );
-        let count_est = count.chars().count() as f32 * self.cell_width * 0.6;
         text_areas.push((
             cbuf,
             [
-                box_x + box_w - count_est - 16.0,
+                box_x + box_w - count_w - 16.0,
                 box_y + (input_h - self.font_size) * 0.5,
             ],
         ));
@@ -3520,7 +3545,12 @@ impl Renderer {
                         self.font_size * 0.82 * self.line_height,
                     ),
                 );
-                bbuf.set_size(&mut self.font_system, Some(box_w - 24.0), Some(row_h));
+                // Uncapped so the measurement below is the true single-line
+                // width. Estimating it instead (glyph count × cell width × a
+                // fudge factor) is what pushed long bindings such as
+                // `Ctrl+Shift+ArrowRight` past the panel's right edge: the fudge
+                // factor did not match the 0.82 size this text is rendered at.
+                bbuf.set_size(&mut self.font_system, None, Some(row_h));
                 bbuf.set_text(
                     &mut self.font_system,
                     &entry.binding,
@@ -3529,8 +3559,10 @@ impl Renderer {
                         .color(GlyphonColor::rgb(0x80, 0x88, 0x9e)),
                     Shaping::Advanced,
                 );
-                let est = entry.binding.chars().count() as f32 * self.cell_width * 0.62;
-                let hot_x = box_x + box_w - est - 16.0;
+                let bind_w = measured_text_width(&bbuf);
+                // Right-aligned inside the panel, but never so far left that it
+                // sits on top of the label.
+                let hot_x = (box_x + box_w - bind_w - 16.0).max(box_x + box_w * 0.45);
                 text_areas.push((bbuf, [hot_x, text_y + 1.0]));
             }
         }

@@ -948,6 +948,58 @@ pub(crate) fn extract_block_output_text(
 
 // ── binding_for ───────────────────────────────────────────────────────────────
 
+/// Render a binding string for *display* — `ctrl+shift+ArrowLeft` → `Ctrl+Shift+←`.
+///
+/// Bindings are stored as the user typed them in the TOML, which means the
+/// command palette was showing raw winit key names: `Ctrl+Shift+ArrowRight` is
+/// both wider than the panel and not how anyone writes a shortcut. Only tokens
+/// that are recognised are rewritten; anything unfamiliar is passed through
+/// untouched, so a binding this function has never heard of still displays as
+/// the user wrote it rather than being mangled.
+pub(crate) fn pretty_binding(binding: &str) -> String {
+    if binding.is_empty() {
+        return String::new();
+    }
+    binding
+        .split('+')
+        .map(|token| {
+            let t = token.trim();
+            match t.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => "Ctrl".to_string(),
+                "shift" => "Shift".to_string(),
+                "alt" | "option" | "opt" => "Alt".to_string(),
+                "super" | "cmd" | "command" | "win" | "meta" => "Super".to_string(),
+                "arrowleft" | "left" => "\u{2190}".to_string(),
+                "arrowup" | "up" => "\u{2191}".to_string(),
+                "arrowright" | "right" => "\u{2192}".to_string(),
+                "arrowdown" | "down" => "\u{2193}".to_string(),
+                "pageup" | "prior" => "PgUp".to_string(),
+                "pagedown" | "next" => "PgDn".to_string(),
+                "escape" | "esc" => "Esc".to_string(),
+                "enter" | "return" => "Enter".to_string(),
+                "backspace" => "Backspace".to_string(),
+                "delete" | "del" => "Del".to_string(),
+                "insert" | "ins" => "Ins".to_string(),
+                "space" => "Space".to_string(),
+                "tab" => "Tab".to_string(),
+                "home" => "Home".to_string(),
+                "end" => "End".to_string(),
+                "backquote" | "grave" => "`".to_string(),
+                // A single character reads best upper-cased (`ctrl+t` → `Ctrl+T`);
+                // function keys and anything longer keep the user's spelling.
+                _ => {
+                    let mut chars = t.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(c), None) => c.to_ascii_uppercase().to_string(),
+                        _ => t.to_string(),
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
+
 /// The configured key binding for an action (the same string shown in
 /// the settings panel). Empty string = unbound.
 pub(crate) fn binding_for(
@@ -2169,10 +2221,43 @@ pub(crate) fn scroll_to_bytes(
 mod tests {
     use super::{
         binding_for, build_fix_prompt, build_scrollback_export_content, combo_shadows_user_binding,
-        extract_block_output_lines, extract_block_output_text, is_bare_ctrl_c,
+        extract_block_output_lines, extract_block_output_text, is_bare_ctrl_c, pretty_binding,
         scrollback_export_filename, translate_key,
     };
     use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};
+
+    // ── pretty_binding ────────────────────────────────────────────────────────
+
+    /// The palette showed raw winit key names, which are both unidiomatic and
+    /// wide enough to overflow the panel.
+    #[test]
+    fn pretty_binding_rewrites_modifiers_and_arrows() {
+        assert_eq!(pretty_binding("ctrl+t"), "Ctrl+T");
+        assert_eq!(
+            pretty_binding("Ctrl+Shift+ArrowLeft"),
+            "Ctrl+Shift+\u{2190}"
+        );
+        assert_eq!(
+            pretty_binding("ctrl+shift+ArrowRight"),
+            "Ctrl+Shift+\u{2192}"
+        );
+        assert_eq!(pretty_binding("alt+ArrowUp"), "Alt+\u{2191}");
+        assert_eq!(pretty_binding("super+PageDown"), "Super+PgDn");
+        assert_eq!(pretty_binding("ctrl+shift+p"), "Ctrl+Shift+P");
+        assert_eq!(pretty_binding("Escape"), "Esc");
+        assert_eq!(pretty_binding("ctrl+Backquote"), "Ctrl+`");
+    }
+
+    /// Unbound stays empty, and anything unfamiliar keeps the user's spelling —
+    /// mangling a key name would leave the palette naming a key that does not
+    /// exist.
+    #[test]
+    fn pretty_binding_leaves_the_unfamiliar_alone() {
+        assert_eq!(pretty_binding(""), "");
+        assert_eq!(pretty_binding("F11"), "F11");
+        assert_eq!(pretty_binding("ctrl+F5"), "Ctrl+F5");
+        assert_eq!(pretty_binding("ctrl+IntlBackslash"), "Ctrl+IntlBackslash");
+    }
 
     // ── translate_key: Ctrl must never echo a literal character ───────────────
 

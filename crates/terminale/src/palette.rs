@@ -426,7 +426,7 @@ pub(crate) fn palette_ranked(
                     (
                         PaletteItem::Action(*a),
                         (*label).to_string(),
-                        crate::binding_for(*a, sc),
+                        crate::pretty_binding(&crate::binding_for(*a, sc)),
                     )
                 })
                 .collect();
@@ -670,9 +670,9 @@ pub(crate) fn refresh_palette(state: &mut RunningState) {
         p.selected = selected;
     }
     let placeholder = match mode {
-        PaletteMode::Actions => {
-            "Search commands \u{2014} type to filter, \u{2191}\u{2193} to move, Enter to run"
-        }
+        // Kept short on purpose: the input row is one line and shares it with
+        // the right-aligned result count, so a longer hint is clipped mid-word.
+        PaletteMode::Actions => "Search commands \u{2014} \u{2191}\u{2193} move, Enter run",
         PaletteMode::SshQuickConnect => "Search SSH hosts \u{2014} Enter or click to connect",
         PaletteMode::Themes => "Search themes \u{2014} Enter or click to apply",
         PaletteMode::Snippets => "Search snippets \u{2014} Enter or click to insert",

@@ -18,6 +18,21 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **The command palette no longer draws outside itself.** Key bindings were
+  right-aligned against an *estimated* text width (glyph count × cell width × a
+  fudge factor) that did not match the smaller size the bindings are rendered at,
+  so long ones — `Ctrl+Shift+ArrowRight` — started too far right and ran past the
+  panel edge. And the placeholder was given the full panel width, so it rendered
+  straight through the right-aligned result count, the two strings overlapping.
+  Both are now laid out against the *measured* shaped width, the same way the
+  status bar already did it, and the input row clips instead of wrapping onto the
+  first result.
+- **Shortcuts are shown the way people write them.** Bindings are stored as typed
+  in the TOML, so the palette displayed raw winit key names: `Ctrl+Shift+ArrowLeft`
+  is now `Ctrl+Shift+←`, `PageDown` is `PgDn`, `ctrl+t` is `Ctrl+T`. Tokens that
+  are not recognised are passed through untouched rather than mangled into a key
+  name that does not exist.
+
 - **A hidden window no longer renders once a second, forever.** `SurfaceError::
   Timeout` — the compositor declining to hand over a swapchain image, which is
   what it does to a window nobody can see — was treated like a lost surface and
