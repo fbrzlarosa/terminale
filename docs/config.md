@@ -170,6 +170,55 @@ explain_selection = "Ctrl+Shift+E"
 # … every action is rebindable; see Settings → Keybinds for the full list.
 ```
 
+### `[integration]` (Linux / BSD)
+
+```toml
+[integration]
+desktop_entry           = true   # register a .desktop entry + icon on launch
+linux_backend           = "auto" # auto | x11 | wayland — see below
+control_socket          = true   # serve `terminale --toggle-quake`
+global_shortcuts_portal = true   # register the Quake hotkey with the desktop
+```
+
+**`linux_backend` is the setting that makes window placement work.** Wayland
+deliberately gives clients no control over their own window position, so on a
+native Wayland surface every feature built on explicit geometry silently does
+nothing: Quake edge docking, the Snap Top/Bottom/Left/Right actions,
+`window.startup_position`, cursor-anchored menus and dialogs, and tab tear-out.
+X11 supports all of them, and every mainstream Wayland session ships XWayland —
+so `auto` (the default) asks for X11 whenever `$DISPLAY` names a reachable
+server and falls back to Wayland otherwise. Choose `wayland` explicitly if you
+would rather have a native surface and can live without window positioning.
+The backend is chosen once, when the event loop is built, so changing it needs
+a restart.
+
+Docked and snapped windows respect the desktop's **work area** (`_NET_WORKAREA`)
+on X11, so a `top`-docked Quake window sits under the GNOME/KDE panel instead of
+behind it. On Linux/X11 `quake.show_on_all_desktops` and the `fade` Quake
+animation are implemented through EWMH (`_NET_WM_DESKTOP` and
+`_NET_WM_WINDOW_OPACITY`); both are no-ops on a native Wayland surface.
+
+#### The Quake hotkey under Wayland
+
+No Wayland compositor lets an application grab keys globally, so terminale's own
+hotkey never fires there — the X11 grab it uses everywhere else only reaches it
+while an X11 window happens to have focus. There are two supported replacements,
+both on by default:
+
+* **The desktop's global-shortcuts portal**
+  (`org.freedesktop.portal.GlobalShortcuts`, GNOME 48+ / KDE Plasma 6+). The
+  desktop confirms the binding with you once, then delivers it whatever has
+  focus. It identifies callers by *application id*, which a process only carries
+  when the desktop launched it from its `.desktop` entry — so this path works
+  when you start terminale from the application menu, not from a shell.
+* **A desktop keybinding that runs `terminale --toggle-quake`**, served by the
+  control socket (a per-user socket under `$XDG_RUNTIME_DIR`). This has no
+  application-id requirement and works on every desktop and window manager
+  (GNOME, KDE, sway, i3, Hyprland). On GNOME,
+  **Settings → Desktop integration → "Register in GNOME"** sets it up in one
+  click, using the key from Shortcuts → Quake toggle; elsewhere, bind the
+  command by hand.
+
 ## Settings window
 
 Every option above has a control in the settings window, grouped by section

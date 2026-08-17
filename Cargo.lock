@@ -6294,6 +6294,7 @@ version = "0.1.41"
 dependencies = [
  "anyhow",
  "arboard",
+ "ashpd",
  "bytes",
  "chrono",
  "clap",
@@ -6301,6 +6302,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "futures-util",
  "global-hotkey",
  "notify",
  "notify-rust",
@@ -6341,6 +6343,8 @@ dependencies = [
  "winit",
  "winresource",
  "winvd",
+ "x11rb",
+ "zbus 5.15.0",
 ]
 
 [[package]]

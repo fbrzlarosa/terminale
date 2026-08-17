@@ -37,8 +37,10 @@ pub enum QuakeAnimation {
     /// interpolating both axes each frame.
     Scale,
     /// Fade — the window stays at its resting geometry and the whole-window
-    /// opacity animates (Windows layered-window alpha). On macOS/Linux this
-    /// currently degrades to an instant show/hide.
+    /// opacity animates: Windows layered-window alpha, `NSWindow.alphaValue`
+    /// on macOS, `_NET_WM_WINDOW_OPACITY` on Linux/X11 (which needs a
+    /// compositing window manager — i.e. any modern desktop). A native Wayland
+    /// surface has no equivalent, so it degrades to an instant show/hide there.
     Fade,
 }
 
@@ -180,7 +182,9 @@ pub struct QuakeConfig {
     /// macOS uses `NSWindowCollectionBehaviorCanJoinAllSpaces`; Windows pins the
     /// window through the virtual-desktop COM API. On some Windows builds the
     /// COM IIDs differ and pinning silently degrades to the active desktop only.
-    /// Linux/Wayland is not yet implemented (no-op). Default: `false`.
+    /// Linux/X11 uses the EWMH `_NET_WM_DESKTOP` property; a native Wayland
+    /// surface has no equivalent protocol and degrades to a no-op.
+    /// Default: `false`.
     pub show_on_all_desktops: bool,
 }
 

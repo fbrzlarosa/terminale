@@ -256,9 +256,10 @@ pub(crate) fn set_click_through_windows(window: &Window) {
 ///
 /// Used for the Quake drop-down so it stays on screen across a desktop switch —
 /// no hide/show round-trip. macOS uses `NSWindow` collection behaviour; Windows
-/// pins the window through the virtual-desktop COM API (via `winvd`). Linux /
-/// Wayland is still a best-effort no-op (logged once), where the drop-down
-/// appears on whichever desktop the hotkey is pressed.
+/// pins the window through the virtual-desktop COM API (via `winvd`); Linux/X11
+/// writes the EWMH `_NET_WM_DESKTOP` property. A native Wayland surface has no
+/// such protocol and stays a best-effort no-op (logged once), where the
+/// drop-down appears on whichever workspace the hotkey is pressed.
 #[cfg(target_os = "macos")]
 pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
     use objc2::msg_send;
@@ -328,7 +329,32 @@ pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// Linux / BSD: pin the window to every workspace with the EWMH
+/// `_NET_WM_DESKTOP` property (value `0xFFFF_FFFF` = "all desktops"), the
+/// standard mechanism GNOME, KDE and the tiling WMs all implement. Previously a
+/// documented no-op here.
+///
+/// Only reachable on an X11 surface: Wayland has no protocol for a client to
+/// place itself on another workspace, so under a native Wayland surface the
+/// drop-down still appears on whichever desktop the hotkey was pressed.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn set_window_on_all_desktops(window: &Window, enable: bool) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    if !crate::linux_window::supports_positioning(window) {
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        if enable && !WARNED.swap(true, Ordering::Relaxed) {
+            tracing::info!(
+                "quake.show_on_all_desktops needs X11 (Wayland has no client-side workspace \
+                 protocol); the drop-down will appear on whichever workspace the hotkey is \
+                 pressed. Set `integration.linux_backend = \"x11\"` to enable it."
+            );
+        }
+        return;
+    }
+    crate::linux_window::set_on_all_desktops(window, enable);
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", unix)))]
 pub(crate) fn set_window_on_all_desktops(_window: &Window, enable: bool) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
@@ -376,6 +402,15 @@ pub(crate) fn apply_window_rect(window: &Window, rect: terminale_config::WindowR
     let (x, y, w, h) = rect;
     if resize {
         let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(w, h));
+    }
+    // Wayland gives clients no say over their own position, so the call below
+    // is silently dropped there. Resizing above still works, so the window ends
+    // up the right SIZE in the wrong PLACE — explain that once rather than
+    // leaving the user to guess why docking half-works.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if !crate::linux_window::supports_positioning(window) {
+        crate::linux_window::warn_positioning_unsupported_once();
+        return;
     }
     window.set_outer_position(winit::dpi::PhysicalPosition::new(x, y));
 }
@@ -845,11 +880,32 @@ pub(crate) fn snap_window(state: &mut RunningState, edge: terminale_config::Snap
     };
     let size = state.window.inner_size();
     let pos = state.window.outer_position().unwrap_or_default();
-    let rect = terminale_config::snap_window_rect(
-        (mpos.x, mpos.y, msize.width, msize.height),
-        edge,
-        (pos.x, pos.y, size.width, size.height),
-    );
+    // Snap against the monitor's usable area so a half/quarter tile doesn't
+    // slide under the desktop's panels (the macOS menu bar / Dock, a GNOME or
+    // KDE bar). Identical to the full monitor rect where nothing is reserved.
+    let area = dock_work_area(&state.window, (mpos.x, mpos.y, msize.width, msize.height));
+    // Wayland refuses every geometry request, so a geometric "fill the monitor"
+    // maximize is a no-op there — but the compositor-side maximize state is
+    // available and does exactly the right thing. Use it as the fallback so at
+    // least this one snap works on a native Wayland surface.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if edge == terminale_config::SnapEdge::Maximize
+        && !crate::linux_window::supports_positioning(&state.window)
+    {
+        state.window.set_maximized(true);
+        state.quake_anim = None;
+        state.quake_user_rect = None;
+        state.quake_last_dock_rect = Some(area);
+        state.window.request_redraw();
+        return;
+    }
+    // A maximized window ignores geometry requests on most window managers, so
+    // drop the state before repositioning or the snap silently does nothing.
+    if state.window.is_maximized() {
+        state.window.set_maximized(false);
+    }
+    let rect =
+        terminale_config::snap_window_rect(area, edge, (pos.x, pos.y, size.width, size.height));
     // A snap supersedes any in-flight Quake slide. If a Fade was mid-flight,
     // restore full opacity — the cancelled animation would otherwise leave
     // the window semi-transparent.
@@ -1160,7 +1216,17 @@ pub(crate) fn set_window_alpha(window: &Window, alpha: u8) {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+/// Linux / BSD: set the whole-window opacity via the EWMH
+/// `_NET_WM_WINDOW_OPACITY` property, which every compositing window manager
+/// (mutter, kwin, picom, …) honours. This is what makes the Quake `Fade`
+/// animation work here; it used to be an unconditional no-op. Silently does
+/// nothing on a native Wayland surface, which has no equivalent protocol.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub(crate) fn set_window_alpha(window: &Window, alpha: u8) {
+    crate::linux_window::set_window_opacity(window, alpha);
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", unix)))]
 pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 
 // ── refresh_quake_last_monitor ────────────────────────────────────────────────
@@ -1347,11 +1413,16 @@ pub(crate) fn toggle_quake(
 
     if state.quake_visible {
         // Hiding — snapshot the exact geometry so the next show is a 1:1
-        // restore. `outer_position` may fail on some platforms; fall back to
-        // any saved rect, else origin.
+        // restore. `outer_position` fails on Wayland (and can fail transiently
+        // elsewhere); falling back to the origin there would silently rewrite
+        // the remembered position to (0, 0), so keep the previous snapshot's
+        // coordinates instead and only refresh the size.
         let size = state.window.inner_size();
-        let pos = state.window.outer_position().unwrap_or_default();
-        let mut rect = (pos.x, pos.y, size.width, size.height);
+        let (px, py) = match state.window.outer_position() {
+            Ok(p) => (p.x, p.y),
+            Err(_) => state.quake_saved_rect.map_or((0, 0), |r| (r.0, r.1)),
+        };
+        let mut rect = (px, py, size.width, size.height);
         // A toggle can land while the SHOW animation is still in flight; the
         // live window geometry is then an interpolated mid-slide frame, not
         // where the window rests. Saving it would corrupt the position
@@ -1469,8 +1540,15 @@ pub(crate) fn toggle_quake(
     // Swallow keypresses for a short window after the show: when shown via the
     // global hotkey, the still-held trigger key (e.g. the "1" in Ctrl+Shift+1)
     // would otherwise leak into the shell once the window gains focus.
-    state.quake_input_suppress_until =
-        Some(std::time::Instant::now() + std::time::Duration::from_millis(200));
+    let now = std::time::Instant::now();
+    state.quake_input_suppress_until = Some(now + std::time::Duration::from_millis(200));
+    // Auto-repeat of that same still-held key outlives the window above: the OS
+    // repeat delay is ~500 ms, so a chord held a moment too long starts firing
+    // long after the reveal is done. Keep dropping repeats until the key is
+    // actually released (see `quake_repeat_suppress_until`), bounded so a lost
+    // release event can't wedge the keyboard.
+    state.quake_repeat_suppress_until = Some(now + std::time::Duration::from_secs(3));
+    tracing::debug!(trigger = ?state.quake_trigger_key, "quake: armed trigger-key suppression");
     // Free-floating mode never docks, so any persisted dock geometry is
     // irrelevant — drop it so a later switch back to dock mode starts clean.
     if quake_cfg.edge == terminale_config::QuakeEdge::Off {
@@ -1479,6 +1557,12 @@ pub(crate) fn toggle_quake(
         state.quake_pre_dock_rect = None;
     }
     let target_and_mon = compute_quake_target(state, quake_cfg);
+    tracing::debug!(
+        edge = ?quake_cfg.edge,
+        target = ?target_and_mon.map(|(r, _)| r),
+        dock_area = ?target_and_mon.and_then(|(_, m)| m),
+        "quake: showing"
+    );
     // Record the dock rect we're about to apply as the baseline for
     // detecting later user adjustments — but only when we actually docked
     // (no user-adjusted geometry is overriding it).
@@ -1776,7 +1860,34 @@ fn dock_work_area(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux / BSD: dock against the monitor's usable area, i.e. the monitor rect
+/// minus whatever the desktop's panels have reserved (`_NET_WORKAREA`).
+///
+/// Without this a `top`-docked Quake window on GNOME lands at y = 0 and its
+/// first ~29 px disappear behind the always-on-top shell bar — the docked
+/// window looks clipped for no visible reason. EWMH only publishes one work
+/// area for the whole virtual screen, so we intersect it with the target
+/// monitor; on a multi-monitor layout that can cost a panel-height strip on a
+/// monitor that has no panel of its own, which is the closest EWMH lets us get
+/// and still far better than docking underneath the bar.
+///
+/// Falls back to the untrimmed monitor rect whenever the work area is
+/// unavailable (Wayland surface, no X connection, WM that doesn't publish it)
+/// or doesn't overlap the monitor (stale after a hot-plug).
+#[cfg(all(unix, not(target_os = "macos")))]
+fn dock_work_area(
+    window: &Window,
+    full: terminale_config::MonitorRect,
+) -> terminale_config::MonitorRect {
+    if !crate::linux_window::supports_positioning(window) {
+        return full;
+    }
+    crate::linux_window::work_area()
+        .and_then(|wa| crate::linux_window::intersect_rect(full, wa))
+        .unwrap_or(full)
+}
+
+#[cfg(not(any(target_os = "macos", unix)))]
 fn dock_work_area(
     _window: &Window,
     full: terminale_config::MonitorRect,

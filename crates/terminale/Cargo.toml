@@ -111,6 +111,28 @@ winvd = { version = "0.0.49", default-features = false }
 # Must match winvd's `windows` major (0.58) so the HWND type is identical.
 windows = { version = "0.58", features = ["Win32_Foundation"] }
 
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+# EWMH property writes on the X11 toplevel for the two window behaviours winit
+# does not expose: `_NET_WM_WINDOW_OPACITY` (whole-window alpha, which the Quake
+# `Fade` animation needs) and `_NET_WM_DESKTOP` (quake.show_on_all_desktops).
+# Already in the tree via winit / arboard / global-hotkey, so this is a direct
+# dependency on a crate we compile anyway — no new transitive cost. The pure-Rust
+# `RustConnection` is used, so no libxcb link is added either.
+x11rb.workspace = true
+# `org.freedesktop.portal.GlobalShortcuts` — the only way to get a working
+# global hotkey under a Wayland session, where X11 key grabs never fire. Already
+# compiled as part of the tree (rfd's `xdg-portal` backend pulls it with the
+# `tokio` feature); listing it here just makes it callable directly.
+ashpd.workspace = true
+# systemd user-manager calls, to claim an application id (see linux_window).
+zbus.workspace = true
+# `StreamExt` for the portal's `Activated` signal stream. Already in the tree
+# (reqwest, ashpd, russh all pull it).
+futures-util.workspace = true
+# Raw window handle → X11 window id for the EWMH writes above (and to tell an
+# X11 surface apart from a Wayland one at runtime). Same rwh major as winit.
+raw-window-handle.workspace = true
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Read the OS's real mouse-button state (NSEvent +pressedMouseButtons) so a
 # dropped trackpad button-release can't leave a stale "left held" flag that

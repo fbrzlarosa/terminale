@@ -271,8 +271,9 @@ impl SettingsWindow {
                 ui,
                 "Keep the Quake window on every virtual desktop / workspace, so it stays \
                  on screen when you switch desktop — no need to hide and re-show it. \
-                 Works on macOS and Windows; Linux/Wayland is not yet supported (the \
-                 window then appears on whichever desktop the hotkey is pressed).",
+                 Works on Windows, macOS and Linux/X11. A native Wayland surface has no \
+                 protocol for it, so there the window appears on whichever workspace the \
+                 hotkey is pressed (see Desktop integration › Windowing backend).",
             );
         });
 

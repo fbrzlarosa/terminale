@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **terminale claims an application id, so the Quake hotkey registers itself.**
+  The global-shortcuts portal refuses callers it can't identify, and an
+  ordinary process only carries an application id when the desktop launched it
+  from its `.desktop` entry — so on Wayland the hotkey worked or not depending
+  on how the app happened to be started. terminale now places itself in an
+  `app-terminale-<pid>.scope` systemd user scope (exactly what
+  `systemd-run --user --scope` does, no privilege required) and the portal
+  accepts it either way. Setting the hotkey inside terminale is all that's
+  needed; nothing in the desktop's own settings has to be touched.
+- **The Quake shortcut survives a restart.** The portal only accepts
+  `BindShortcuts` while an app owns no shortcuts; a second call comes back
+  cancelled. Existing bindings are now looked up with `ListShortcuts` and
+  reused, instead of the hotkey working on the first launch and silently dying
+  on every one after.
+- **Releasing the Quake hotkey no longer sprays its key into the shell.** Key
+  auto-repeat outlives the reveal — the OS repeat delay is ~500 ms, far longer
+  than the animation — so holding `Ctrl+\` a moment too long filled the prompt
+  with backslashes. Repeats are now swallowed until the trigger key is actually
+  released.
+- **The hotkey recorder in Settings can capture the currently bound key.** A
+  registered global hotkey is consumed by the OS before it reaches any window,
+  so pressing it to re-record toggled the drop-down while the recorder sat on
+  "Press a key…" forever. The grab is released for as long as a recorder is
+  waiting.
+- **Window placement works on Linux again — Quake docking, snap positions and
+  everything else built on geometry.** Wayland deliberately gives a client no
+  control over its own window position: `set_outer_position` is a no-op there
+  and `outer_position()` fails. Every feature built on explicit geometry was
+  therefore silently doing nothing on a Wayland session — Quake edge docking,
+  the Snap Top/Bottom/Left/Right actions, `window.startup_position`,
+  cursor-anchored menus and dialogs, and tab tear-out. terminale now selects
+  its windowing backend explicitly and defaults to X11/XWayland, where all of
+  it works; `integration.linux_backend` (`auto` | `x11` | `wayland`) overrides
+  the choice.
+- **Docked and snapped windows respect the desktop's work area on Linux/X11.**
+  A `top`-docked Quake window used to land at y = 0 and lose its first band of
+  pixels behind the always-on-top GNOME/KDE panel. Placement is now computed
+  against `_NET_WORKAREA`, matching the behaviour macOS already had for the
+  menu bar and Dock.
+- **The Quake hotkey works under Wayland.** No Wayland compositor grants an
+  application a global key grab, so the hotkey never fired. Two supported
+  replacements now ship, both on by default: the desktop's global-shortcuts
+  portal (`org.freedesktop.portal.GlobalShortcuts`, GNOME 48+ / KDE Plasma 6+),
+  and a per-user control socket behind the new `terminale --toggle-quake`
+  command, which any desktop or window-manager keybinding can run. Settings →
+  Desktop integration registers the latter on GNOME in one click. When the
+  portal takes ownership of the shortcut the OS key grab is released, so a
+  press can never toggle twice.
+- **Saving settings no longer reloads the config three times.** One file save
+  produces several filesystem events, and the watcher forwarded a reload for
+  each one; a burst is now coalesced into a single signal, and a reload whose
+  parsed config is identical to the running one is skipped outright.
+- **A machine with no usable OS keychain no longer floods the log.** The AI-key
+  read failed on every config load — including every hot-reload — and warned
+  each time; it now warns once and drops to debug afterwards.
+
+### Added
+- **`quake.show_on_all_desktops` and the `fade` Quake animation now work on
+  Linux/X11.** Both were documented no-ops outside Windows and macOS; they are
+  implemented with the EWMH `_NET_WM_DESKTOP` and `_NET_WM_WINDOW_OPACITY`
+  properties (the latter needs a compositing window manager, i.e. any modern
+  desktop).
+- **`terminale --toggle-quake`** — shows or hides the drop-down of the running
+  instance and exits, so any desktop or window-manager keybinding can drive
+  Quake mode. Served by the new per-user control socket under
+  `$XDG_RUNTIME_DIR` (`integration.control_socket`, on by default).
+
 ## [0.1.41]
 
 ### Fixed

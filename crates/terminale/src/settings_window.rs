@@ -128,6 +128,11 @@ pub struct SettingsWindow {
     /// Backup section in-memory state: passphrases (held only here, never
     /// persisted), the "include credentials" opt-in, and the last status line.
     backup: BackupUiState,
+    /// Desktop-integration section: last result of registering / removing the
+    /// GNOME custom keybinding for the Quake toggle, shown under the buttons.
+    /// Transient — never persisted.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    quake_shortcut_status: Option<String>,
 
     egui_ctx: egui::Context,
     egui_state: EguiState,
@@ -382,6 +387,8 @@ impl SettingsWindow {
             ssh_secret_edit: None,
             ssh_secret_status: None,
             backup: BackupUiState::default(),
+            #[cfg(all(unix, not(target_os = "macos")))]
+            quake_shortcut_status: None,
             pending_import_ssh_hosts: false,
             pending_import_theme: false,
             loaded_plugin_names: Vec::new(),
@@ -420,6 +427,17 @@ impl SettingsWindow {
 
     pub fn current_config(&self) -> &Config {
         &self.config
+    }
+
+    /// Whether a hotkey recorder is currently waiting for a key press.
+    ///
+    /// The host uses this to release the OS-level Quake key grab for the
+    /// duration: a globally registered hotkey is consumed by the OS before it
+    /// ever reaches a window, so trying to re-record the *currently bound*
+    /// combination would sit on "Press a key…" forever while the press
+    /// toggled the drop-down instead.
+    pub fn is_recording_hotkey(&self) -> bool {
+        self.recording_hotkey.is_some()
     }
 
     /// Consume the "config may have changed" flag — `true` when at least
@@ -2689,6 +2707,22 @@ fn search_index() -> &'static [SearchEntry] {
         SearchEntry {
             section: Section::Integration,
             label: "Register application-menu entry",
+        },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Windowing backend",
+        },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Global shortcut via desktop portal",
+        },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Control socket",
+        },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Quake shortcut in GNOME",
         },
     ]
 }
