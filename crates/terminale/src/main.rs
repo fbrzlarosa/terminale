@@ -2563,6 +2563,21 @@ struct TermWindow {
     /// so a hidden window costs no GPU/CPU. PTY output still drains and wakes
     /// the loop, and we repaint once when the window becomes visible again.
     occluded: bool,
+    /// `true` when the compositor is refusing to hand us a swapchain image in
+    /// time — i.e. it does not currently want frames from this window.
+    ///
+    /// This is [`Self::occluded`] arrived at empirically, and it exists because
+    /// `WindowEvent::Occluded` is not delivered on X11 (and terminale defaults to
+    /// X11/XWayland on Linux, because Wayland forbids the window positioning that
+    /// Quake mode and the snap actions need). Without it, a minimized or fully
+    /// covered window on X11 keeps waking at the cursor-blink rate, each frame
+    /// blocking a full second inside `get_current_texture` before being thrown
+    /// away — invisible, but not free.
+    ///
+    /// Set when a frame ends in `SurfaceError::Timeout`, cleared by the next
+    /// successful frame. Gates only *animation* redraws: PTY output still drains
+    /// and still repaints, so nothing goes stale.
+    presentation_throttled: bool,
     /// Mirror of `config.terminal.os_notifications`. When `true`, OSC 9 /
     /// OSC 777 notifications are forwarded to the OS notification centre
     /// (but only while the window is not focused).
@@ -3361,6 +3376,7 @@ impl TerminaleApp {
             show_prompt_marks: self.config.terminal.show_prompt_marks,
             window_focused: true,
             occluded: false,
+            presentation_throttled: false,
             os_notifications: self.config.terminal.os_notifications,
             os_notification_rate_limit: self.config.terminal.os_notification_rate_limit,
             tab_bar_fingerprint: 0,
@@ -10640,7 +10656,11 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // a hidden window must cost no GPU/CPU. The PTY drain above still
             // runs (and requests a redraw on new output), so content is never
             // starved; we just don't animate what nobody can see.
-            let visible = !state.occluded;
+            //
+            // `occluded` is the event-driven signal and `presentation_throttled`
+            // the empirical one, needed because X11 never delivers
+            // `WindowEvent::Occluded` — see its field docs.
+            let visible = !state.occluded && !state.presentation_throttled;
             // Drive any in-flight Quake open/close slide.
             if let Some(d) = pump_quake_anim(state) {
                 next_wake = Some(match next_wake {
@@ -11591,31 +11611,70 @@ fn render_main(state: &mut RunningState) {
             // (surface acquire / compositor, glyph prepare = atlas growth +
             // shaping, or GPU submit+present) instead of just "slow frame".
             let phases = state.renderer.last_frame_phases();
-            tracing::warn!(
-                frame_ms = frame_ms as u64,
-                acquire_ms = phases.acquire.as_millis() as u64,
-                prepare_ms = phases.prepare.as_millis() as u64,
-                submit_present_ms = phases.submit_present.as_millis() as u64,
-                threshold_ms = state.slow_frame_warn_ms,
-                "slow render frame (possible freeze) — main window stalled"
-            );
+            let acquire_ms = phases.acquire.as_millis();
+            // A frame that is *almost entirely* surface acquire is not a freeze:
+            // it is the compositor declining to hand us an image, which is what
+            // it does to a window nobody can see. Reporting that at WARN once a
+            // second — forever, for a minimized window — buries the real stalls
+            // it was added to catch, and reads as "terminale is hanging" when
+            // nothing is wrong. Real stalls (glyph prepare, submit/present) keep
+            // their warning.
+            let compositor_paced = acquire_ms * 10 >= frame_ms * 9;
+            if compositor_paced {
+                tracing::debug!(
+                    frame_ms = frame_ms as u64,
+                    acquire_ms = acquire_ms as u64,
+                    "frame paced by the compositor (window not accepting frames)"
+                );
+            } else {
+                tracing::warn!(
+                    frame_ms = frame_ms as u64,
+                    acquire_ms = acquire_ms as u64,
+                    prepare_ms = phases.prepare.as_millis() as u64,
+                    submit_present_ms = phases.submit_present.as_millis() as u64,
+                    threshold_ms = state.slow_frame_warn_ms,
+                    "slow render frame (possible freeze) — main window stalled"
+                );
+            }
         }
     }
-    if let Err(e) = render_result {
-        tracing::warn!(?e, "render frame failed");
-        // The renderer already reconfigures + retries on a lost/outdated
-        // surface; if even that failed (driver mid-reset), ask for another
-        // frame instead of leaving the window frozen until the next input.
-        // Only for *transient* surface errors — an OutOfMemory must not spin.
-        if matches!(
-            e,
-            terminale_render::RenderError::Surface(
-                wgpu::SurfaceError::Lost
-                    | wgpu::SurfaceError::Outdated
-                    | wgpu::SurfaceError::Timeout
-            )
-        ) {
-            state.window.request_redraw();
+    match render_result {
+        Ok(()) => {
+            // The compositor took a frame, so it wants frames again.
+            state.presentation_throttled = false;
+        }
+        Err(e) => {
+            // `Timeout` is the compositor declining to give us an image, not a
+            // failure: retrying immediately would spin at one blocked second per
+            // iteration for as long as the window stays hidden. Back off instead
+            // and let the next real event (or the compositor's own redraw
+            // request, when the window is shown again) restart us.
+            if matches!(
+                e,
+                terminale_render::RenderError::Surface(wgpu::SurfaceError::Timeout)
+            ) {
+                if !state.presentation_throttled {
+                    tracing::debug!(
+                        "surface acquire timed out; pausing animation frames \
+                         until this window is presentable again"
+                    );
+                }
+                state.presentation_throttled = true;
+                return;
+            }
+            tracing::warn!(?e, "render frame failed");
+            // The renderer already reconfigures + retries on a lost/outdated
+            // surface; if even that failed (driver mid-reset), ask for another
+            // frame instead of leaving the window frozen until the next input.
+            // Only for *transient* surface errors — an OutOfMemory must not spin.
+            if matches!(
+                e,
+                terminale_render::RenderError::Surface(
+                    wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated
+                )
+            ) {
+                state.window.request_redraw();
+            }
         }
     }
 }

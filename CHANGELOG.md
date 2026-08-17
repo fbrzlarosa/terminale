@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Fixed
+- **A hidden window no longer renders once a second, forever.** `SurfaceError::
+  Timeout` — the compositor declining to hand over a swapchain image, which is
+  what it does to a window nobody can see — was treated like a lost surface and
+  answered with an immediate redraw request. Each retry then blocked a full
+  second inside `get_current_texture` before the frame was thrown away, so a
+  minimized terminale sat in a permanent one-frame-per-second loop, doing a
+  complete glyph prepare and submit every time. Timeouts now back off and wait
+  for the next real event instead.
+- **Animation frames are suppressed for windows the compositor is not accepting,
+  on X11 too.** The existing `occluded` gate is driven by
+  `WindowEvent::Occluded`, which winit never delivers on X11 — and terminale
+  defaults to X11/XWayland on Linux, because Wayland forbids the window
+  positioning Quake mode and the snap actions need. So the optimisation had no
+  effect on the platform that needed it most. Repeated acquire timeouts are now
+  taken as the same signal, cleared by the first frame the compositor accepts.
+- **"Slow render frame (possible freeze)" no longer fires for frames the
+  compositor is simply pacing.** A frame that is almost entirely surface acquire
+  is not a stall; warning about it once a second for every hidden window buried
+  the real stalls the watchdog exists to catch, and read as a hang when nothing
+  was wrong. Those are logged at debug now; slow glyph preparation and slow
+  submit/present still warn.
+
+### Fixed
 - **Shell integration now actually reaches bash, so the OSC 133 half of the
   feature set works on a stock install.** This module only ever instrumented
   PowerShell (and only for cwd reporting), which meant command blocks, exit-code
