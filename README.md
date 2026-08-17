@@ -290,6 +290,13 @@ Full reference: [`docs/config.md`](docs/config.md). Theme authoring:
 [`docs/theming.md`](docs/theming.md). Plugin authoring:
 [`docs/plugins.md`](docs/plugins.md).
 
+> **On Wayland:** a Wayland compositor lets no application place its own windows
+> or grab keys globally, so Quake docking, the snap positions and the Quake
+> hotkey cannot work on a native Wayland surface. `terminale` therefore runs
+> through X11/XWayland by default (`integration.linux_backend`), and offers both
+> the desktop global-shortcuts portal and `terminale --toggle-quake` for the
+> hotkey. See [`docs/config.md`](docs/config.md#integration-linux--bsd).
+
 > **Design rule:** every feature with tunable behaviour has a control in the
 > settings window. No dead settings, no behaviour you can only change by editing
 > source. That's what makes `terminale` aim to be *more* configurable — never
