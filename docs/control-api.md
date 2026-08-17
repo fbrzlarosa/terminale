@@ -103,6 +103,11 @@ the live keyboard uses: application cursor-key mode (DECCKM) changes what
 protocol, `shift+enter` arrives as `CSI 13;2u` — distinguishable from a plain
 `Enter`, which is the whole point.
 
+`send-keys` writes to the **shell**, not to terminale's own UI. So it cannot
+dismiss an overlay: with the command palette or the find bar open, `send-keys
+escape` goes to the program in the pane, which is not what closes the palette.
+Drive the UI with `action` instead (`action CommandPalette`, `action Find`, …).
+
 ### Typing vs running
 
 `send-text` strips a trailing newline unless you pass `--submit`, and `--submit`

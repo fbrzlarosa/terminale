@@ -2889,6 +2889,26 @@ impl Renderer {
         sb + res
     }
 
+    /// Bottom inset (logical px) the *search* bar has to clear.
+    ///
+    /// Everything [`Self::suggestion_bottom_inset`] covers, plus a
+    /// bottom-anchored tab bar. The search bar used to pin itself to the
+    /// absolute bottom edge, which drew it straight on top of the
+    /// resource-indicator strip — two rows of text in the same 26 logical pixels,
+    /// both unreadable. Unlike the grid, it deliberately still floats *over* the
+    /// last terminal row: it is transient, and reflowing the PTY to open a find
+    /// bar would be worse than covering one line.
+    fn search_bottom_inset(&self) -> f32 {
+        let tab_h = if self.tab_bar_visible_logical() > 0.0
+            && self.tab_bar_placement == TabBarPlacement::Bottom
+        {
+            TAB_BAR_HEIGHT
+        } else {
+            0.0
+        };
+        self.suggestion_bottom_inset() + tab_h
+    }
+
     /// Hit-test a physical-pixel click against the suggestion bar's buttons.
     /// `None` when the bar is hidden, the search bar is up (it owns the
     /// bottom), or the click missed every target.
@@ -6725,7 +6745,10 @@ impl Renderer {
         if let Some(overlay) = &self.search_overlay {
             let bar_h_log = 30.0;
             let bar_h_px = bar_h_log * scale;
-            let bar_y_px = self.config.height as f32 - bar_h_px;
+            // Sit above whatever chrome owns the bottom edge (resource strip,
+            // bottom status bar, bottom tab bar) rather than on top of it.
+            let bar_y_px =
+                self.config.height as f32 - bar_h_px - self.search_bottom_inset() * scale;
             // Background rectangle.
             quads.push(Quad::new(
                 [0.0, bar_y_px],

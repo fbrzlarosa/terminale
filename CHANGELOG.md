@@ -18,6 +18,12 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **The find bar no longer renders on top of the resource strip.** It pinned
+  itself to the absolute bottom edge of the window, which is where the
+  CPU/RAM/GPU indicators live — two rows of text in the same 26 logical pixels,
+  both illegible. It now clears whatever chrome owns the bottom (resource strip,
+  bottom status bar, bottom tab bar), the way the AI suggestion bar already did.
+
 - **The command palette no longer draws outside itself.** Key bindings were
   right-aligned against an *estimated* text width (glyph count × cell width × a
   fudge factor) that did not match the smaller size the bindings are rendered at,
