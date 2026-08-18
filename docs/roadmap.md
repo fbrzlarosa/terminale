@@ -31,6 +31,10 @@ tested.
   selection/scrollback reads behind a permission model
 - Opt-in self-update from GitHub releases (SHA-256-verified, applies on next
   launch — never a forced restart)
+- Control API (`terminale ctl`, Unix): list tabs/panes, read a pane, last
+  command + exit code, run any action, type at the prompt, screenshot. Scoped
+  permissions, with "may press Enter" off by default —
+  see [`control-api.md`](control-api.md)
 
 ## Planned
 
@@ -47,7 +51,9 @@ include breaking changes.
 
 ### v2.0 — sync & automation
 - Cloud settings sync (`terminale-sync`)
-- RPC API for external automation
+- Control API: a Windows named-pipe transport (the command vocabulary is already
+  platform-independent), an event subscription so a client can watch instead of
+  poll, and an MCP server front-end so an AI agent can use it as a tool
 - Richer Lua plugin API: pane/tab queries, per-plugin permission scoping
 
 ## Releases

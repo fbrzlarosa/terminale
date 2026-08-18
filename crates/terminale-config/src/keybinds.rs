@@ -1,5 +1,6 @@
 //! Keyboard shortcuts and keybind configuration.
 
+use crate::ConfigError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -796,9 +797,139 @@ impl Default for KeybindsConfig {
     }
 }
 
+impl KeyTable {
+    /// Validate this key-table's fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] when `timeout_ms` is outside
+    /// `[100, 30_000]` (the range already enforced at the point of use —
+    /// see `key_table_timed_out` in the app crate — surfaced here too so a
+    /// bad value is rejected at config-load time instead of only being
+    /// silently clamped later).
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(100..=30_000).contains(&self.timeout_ms) {
+            return Err(ConfigError::Invalid {
+                field: "keybinds.key_tables[].timeout_ms",
+                message: "must be between 100 and 30000",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl MouseBinding {
+    /// Validate this mouse binding's fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] when `count` is outside `[1, 3]` —
+    /// the mouse dispatcher only ever reports a click streak of 1
+    /// (single), 2 (double), or 3 (triple), so any other value makes the
+    /// binding permanently unreachable.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if !(1..=3).contains(&self.count) {
+            return Err(ConfigError::Invalid {
+                field: "keybinds.mouse[].count",
+                message: "must be between 1 and 3",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl KeybindsConfig {
+    /// Validate every custom mouse binding and key-table.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`ConfigError::Invalid`] encountered.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        for binding in &self.mouse {
+            binding.validate()?;
+        }
+        for table in &self.key_tables {
+            table.validate()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── validate() ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn default_keybinds_config_validates() {
+        KeybindsConfig::default()
+            .validate()
+            .expect("default KeybindsConfig must validate");
+    }
+
+    #[test]
+    fn mouse_binding_count_range_validates() {
+        let mut b = MouseBinding {
+            button: "Left".into(),
+            mods: String::new(),
+            count: 0,
+            actions: vec![KeyActionSpec::Action("Copy".into())],
+        };
+        assert!(b.validate().is_err(), "count=0 must be rejected");
+        b.count = 4;
+        assert!(b.validate().is_err(), "count=4 must be rejected");
+        b.count = 1;
+        assert!(b.validate().is_ok(), "count=1 (min) must be accepted");
+        b.count = 3;
+        assert!(b.validate().is_ok(), "count=3 (max) must be accepted");
+    }
+
+    #[test]
+    fn keybinds_config_rejects_out_of_range_mouse_count() {
+        let mut cfg = KeybindsConfig::default();
+        cfg.mouse.push(MouseBinding {
+            button: "Right".into(),
+            mods: String::new(),
+            count: 200,
+            actions: vec![KeyActionSpec::Action("Paste".into())],
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn key_table_timeout_ms_range_validates() {
+        let mut t = KeyTable {
+            name: "pane".into(),
+            leader: "Ctrl+A".into(),
+            timeout_ms: 99,
+            bindings: Vec::new(),
+        };
+        assert!(t.validate().is_err(), "99 (below 100) must be rejected");
+        t.timeout_ms = 30_001;
+        assert!(
+            t.validate().is_err(),
+            "30001 (above 30000) must be rejected"
+        );
+        t.timeout_ms = 100;
+        assert!(t.validate().is_ok(), "100 (min) must be accepted");
+        t.timeout_ms = 30_000;
+        assert!(t.validate().is_ok(), "30000 (max) must be accepted");
+        t.timeout_ms = default_key_table_timeout();
+        assert!(t.validate().is_ok(), "default (1500) must be accepted");
+    }
+
+    #[test]
+    fn keybinds_config_rejects_out_of_range_key_table_timeout() {
+        let mut cfg = KeybindsConfig::default();
+        cfg.key_tables.push(KeyTable {
+            name: "nav".into(),
+            leader: "Ctrl+B".into(),
+            timeout_ms: 50,
+            bindings: Vec::new(),
+        });
+        assert!(cfg.validate().is_err());
+    }
 
     // ── MouseBinding TOML roundtrip ──────────────────────────────────────────
 

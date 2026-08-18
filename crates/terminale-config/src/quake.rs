@@ -1,6 +1,7 @@
 //! Quake drop-down terminal mode — docking edge, animation, and display.
 
 use crate::window::{MonitorRect, WindowRect};
+use crate::ConfigError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -204,6 +205,28 @@ impl Default for QuakeConfig {
     }
 }
 
+impl QuakeConfig {
+    /// Validate field ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Invalid`] when `margin_px` is unreasonably
+    /// large. `margin_px` is cast to `i32` in [`quake_dock_rect`] (physical
+    /// pixel arithmetic against the monitor rect); a value above `i32::MAX`
+    /// would silently bit-reinterpret to negative there, and even a merely
+    /// huge-but-in-range value produces a nonsensical docked window. `2000`
+    /// logical pixels is already far beyond any real edge gap.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.margin_px > 2000 {
+            return Err(ConfigError::Invalid {
+                field: "quake.margin_px",
+                message: "must be at most 2000",
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Compute the docked window rect from settings + the target monitor.
 /// `mon` is the monitor's physical pixel rect; `edge` decides the
 /// orientation; `size_percent` (clamped 0.1..=1.0) is the fraction of
@@ -258,6 +281,26 @@ mod tests {
     #[test]
     fn restore_visible_defaults_on() {
         assert!(QuakeConfig::default().restore_visible);
+    }
+
+    #[test]
+    fn default_validates() {
+        QuakeConfig::default()
+            .validate()
+            .expect("default QuakeConfig must validate");
+    }
+
+    #[test]
+    fn margin_px_range_validates() {
+        let mut cfg = QuakeConfig {
+            margin_px: 2001,
+            ..QuakeConfig::default()
+        };
+        assert!(cfg.validate().is_err(), "2001 must be rejected");
+        cfg.margin_px = 2000;
+        assert!(cfg.validate().is_ok(), "2000 (the max) must be accepted");
+        cfg.margin_px = 0;
+        assert!(cfg.validate().is_ok(), "0 (the default) must be accepted");
     }
 
     #[test]

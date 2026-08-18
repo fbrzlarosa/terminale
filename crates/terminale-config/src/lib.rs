@@ -74,7 +74,7 @@ pub use cursor::{CursorConfig, CursorStyle};
 pub use directory_jump::DirectoryJumpConfig;
 pub use font::FontConfig;
 pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference};
-pub use integration::{IntegrationConfig, LinuxBackend};
+pub use integration::{ControlApiConfig, IntegrationConfig, LinuxBackend};
 pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
     MouseBinding, ShortcutsConfig,
@@ -232,12 +232,14 @@ impl Config {
         self.window.validate()?;
         self.profiles.validate()?;
         self.cursor.validate()?;
+        self.keybinds.validate()?;
         self.appearance.validate()?;
         self.terminal.validate()?;
         self.background_fx.validate()?;
         self.quick_select.validate()?;
         self.status_bar.validate()?;
         self.ssh.validate()?;
+        self.quake.validate()?;
         for snippet in &self.snippets {
             snippet.validate()?;
         }

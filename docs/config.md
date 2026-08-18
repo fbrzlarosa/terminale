@@ -44,6 +44,28 @@ tab_attention_on_bell = true   # light an amber dot on a background tab when
 
 See [`theming.md`](theming.md) to add your own themes.
 
+### `[background_fx]`
+
+```toml
+[background_fx]
+enabled              = false   # off by default — a continuous full-screen
+                               # shader rendered behind the grid, distinct
+                               # from any per-keystroke particle effect
+style                = "aurora_plasma" # aurora_plasma | starfield | matrix |
+                               # pixel_crt | none
+intensity            = 0.35    # 0.0–1.0, kept modest so text stays readable
+speed                = 1.0     # 0.1–5.0 animation speed multiplier
+react_to_keystrokes  = true    # each keypress spawns its own animated band
+pause_when_unfocused = true    # stop repainting the effect while the window
+                               # doesn't have focus, so an idle background
+                               # terminal costs no GPU
+```
+
+Purely cosmetic "wow" layer, off by default. `matrix_band_width`,
+`matrix_fall_speed`, `max_emitters`, `band_lifetime_secs`, and `color1`/`color2`
+tune the per-style look further — see **Settings → Appearance → Background
+effect**.
+
 ### `[window]`
 
 ```toml
@@ -76,6 +98,54 @@ blink_rate_ms = 530
 [bell]
 mode = "visual"                # visual | audio | both | none
 ```
+
+### `[quake]`
+
+```toml
+[quake]
+animation    = "slide"   # none | slide | bounce | scale | fade
+animation_ms = 120       # show/hide animation duration, ms
+edge         = "off"     # off | top | bottom | left | right
+size_percent = 0.5       # fraction of the monitor's perpendicular extent
+                          # occupied when docked (edge != "off")
+```
+
+The global toggle hotkey lives in `[keybinds] quake = "Ctrl+\`"`, not here.
+`edge = "off"` (the default) is a free-floating window that restores its exact
+last geometry on show/hide; picking an edge instead docks it there, sized by
+`size_percent` and inset by `margin_px`. See **Settings → Quake** for
+`display` (which monitor), `hide_on_focus_loss`, and `show_on_all_desktops`.
+
+### `[gpu]`
+
+```toml
+[gpu]
+backend          = "auto" # auto | vulkan | dx12 | metal | gl | software
+power_preference = "auto" # auto | low | high
+```
+
+`software` requests a CPU fallback adapter, effectively disabling hardware GPU
+acceleration — useful when a driver misbehaves or a remote/VM display only
+exposes a software adapter. The explicit API variants force one backend
+(e.g. `vulkan` on a Linux box that otherwise picks Wayland's default).
+
+### `[profiles]`
+
+```toml
+[profiles]
+default = "Zsh"           # launched when no --profile flag is passed
+
+[[profiles.profiles]]
+name    = "Zsh"
+command = "/bin/zsh"
+args    = []
+icon    = "🐚"             # optional, shown in pickers and tabs
+```
+
+Profiles are auto-detected on first launch (every shell found on `$PATH`, plus
+`$SHELL` first on Unix, PowerShell/cmd/Git Bash/WSL on Windows). Add, edit, or
+reorder them here or from **Settings → Profiles**; each can also set `env` and
+`cwd`.
 
 ### `[ai]`
 
@@ -141,6 +211,47 @@ drop_path_quoting        = "auto" # auto = quote only when the path has spaces
 drop_path_trailing_space = true # append a space after each dropped path
 ```
 
+#### Shell integration (OSC 133)
+
+```toml
+[terminal]
+shell_integration  = true      # let terminale instrument the shell it launches
+command_blocks     = true      # assemble command blocks from the marks
+max_command_blocks = 200       # per pane; oldest are dropped
+show_prompt_marks  = true      # status dot in the left margin at each prompt:
+                               # green = exit 0, red = non-zero, neutral = unknown
+```
+
+A terminal cannot tell a prompt from output, or know that a command failed,
+unless the shell tells it. `shell_integration` makes terminale inject a small
+startup hook into the shell it launches so that it does:
+
+* **`OSC 7`** — the working directory, which is what puts the folder in the tab
+  title and lets `window.restore_working_dirs` restore it;
+* **`OSC 133`** — prompt marks (`A`/`B`/`C`/`D;<exit>`), which is what powers
+  command blocks, jump-to-next/previous-prompt, jump-to-failed-command, *"fix
+  this command"*, copy-last-command-output, and
+  [`terminale ctl last-command`](control-api.md).
+
+Instrumented today: **bash** (via `--rcfile`, and the hook sources your own
+`~/.bashrc` first, so your configuration is untouched) and **PowerShell** (cwd
+only). zsh and fish are not instrumented yet — the features above work there only
+if your prompt already emits the marks (starship does, for instance).
+
+Injection is skipped whenever it would be wrong: a profile that passes its own
+`-c`, `--rcfile`, `--norc`, or runs a login shell is launched exactly as written.
+If the hook cannot be written to disk, the shell starts uninstrumented — you lose
+the marks, never the session.
+
+terminale also accepts the **`OSC 633`** spelling of the same protocol (VS Code's
+variant, including `633;E` which reports the command line explicitly), so a shell
+already set up for VS Code's shell integration works here as-is.
+
+The generated hook lives under the data directory
+(`~/.local/share/terminale/shell-integration/` on Linux) and is rewritten
+whenever the binary is updated. It is a generated file — edit your own rc
+instead.
+
 ### `[terminal.image_protocols]`
 
 Inline images render out of the box — these toggles exist to *disable* a
@@ -156,6 +267,105 @@ apc     = true                 # APC (ESC _G) graphics
 Quick test: any Sixel-producing tool works (e.g. `img2sixel photo.jpg` from
 libsixel), as do `imgcat`-style scripts that emit `OSC 1337 File=` payloads.
 
+### `[quick_select]`
+
+```toml
+[quick_select]
+alphabet    = "asdfjklqwerzxcvghtybnuiopm" # label characters, shortest-used first
+overlay_dim = 0.45     # 0.0–1.0 dimming behind the label badges
+# patterns  = [...]    # regexes scanned for matches (URLs, paths, git SHAs,
+                        # IPv4s, hex colours, UUIDs by default) — edit the
+                        # full list from Settings → Quick Select
+```
+
+Label-hint mode: overlays short keyboard labels on every regex match in the
+visible screen + scrollback so you can copy one without touching the mouse.
+The same label renderer powers pane-select mode.
+
+### `[status_bar]`
+
+```toml
+[status_bar]
+enabled            = false    # off by default
+position           = "bottom" # top | bottom
+update_interval_ms = 1000     # 200–60000
+
+[[status_bar.left_segments]]
+type = "cwd"
+
+[[status_bar.right_segments]]
+type = "profile"
+
+[[status_bar.right_segments]]
+type   = "clock"
+format = "%H:%M"
+```
+
+A thin strip at the top or bottom of the terminal. Segment kinds: `cwd`,
+`clock` (`strftime` format), `profile`, `tab_index`, `user_var` (an OSC 1337
+`SetUserVar`), `literal` text, and `spacer`.
+
+### `[clipboard_history]`
+
+```toml
+[clipboard_history]
+enabled       = true  # in-memory ring buffer only — nothing touches disk
+size          = 20    # 1–500 entries retained
+capture_osc52 = false # off by default: OSC 52 (programmatic clipboard set)
+                       # payloads often carry tokens or passwords
+```
+
+### `[directory_jump]`
+
+```toml
+[directory_jump]
+enabled     = true
+max_tracked = 200   # 1–2000 directories, ranked by frecency
+persist     = true  # survive restarts (<data dir>/dir_history.toml)
+```
+
+Tracks every directory visited via OSC 7 cwd reports and ranks them by a
+frequency + recency score; the picker jumps the active shell there with
+`cd <path>`. Works with any OSC-7-capable shell, no third-party tool required.
+
+### `[[snippets]]`
+
+```toml
+[[snippets]]
+name        = "Git status"
+body        = "git status\n"          # \n \r \t \e \\ \xNN are decoded
+description = "Show the working-tree status" # optional
+```
+
+Named text bodies inserted into the focused pane via the snippet picker.
+Default: empty (add your own here or from **Settings → Snippets**).
+
+### `[[context_rules]]`
+
+```toml
+[[context_rules]]
+name      = "Production"
+host_glob = "*prod*"      # matched against the tab's SSH host name
+# cwd_glob = "/srv/production/*" # or matched against the working directory
+tab_color = [200, 50, 50]
+badge     = "PROD"
+```
+
+Auto-tints a tab chip and/or overlays a badge when its SSH host or working
+directory matches a glob — the primary use case is a safety cue for
+production hosts. Rules are evaluated in order; the first match wins.
+
+### `[editor]`
+
+```toml
+[editor]
+command = "code -g {file}:{line}:{column}" # empty = OS default file handler
+```
+
+External editor launched on Ctrl+click of a `file:line:col` reference.
+Supports `{file}`, `{line}`, `{column}` tokens — e.g. `"vim +{line} {file}"`
+or `"subl {file}:{line}:{column}"`.
+
 ### `[keybinds]`
 
 ```toml
@@ -170,15 +380,91 @@ explain_selection = "Ctrl+Shift+E"
 # … every action is rebindable; see Settings → Keybinds for the full list.
 ```
 
+#### `[[keybinds.custom]]`, `[[keybinds.key_tables]]`, `[[keybinds.mouse]]`
+
+```toml
+# A combo bound to an ordered list of actions — named built-ins and/or a
+# literal "send:" byte payload, run in sequence. Takes priority over
+# [keybinds.shortcuts].
+[[keybinds.custom]]
+keys    = "Ctrl+Alt+G"
+actions = ["NewTab", "send:git status\n"]
+
+# A named modal key-table (tmux-style prefix key): the leader combo enters
+# the mode, the next key dispatches its own action list, and the mode exits
+# after `timeout_ms` or Esc.
+[[keybinds.key_tables]]
+name       = "pane"
+leader     = "Ctrl+A"
+timeout_ms = 1500   # 100–30000
+
+[[keybinds.key_tables.bindings]]
+key     = "V"
+actions = ["SplitRight"]
+
+# A (button + modifiers + click-count) combination bound to an action list.
+[[keybinds.mouse]]
+button  = "Middle"     # Left | Right | Middle | Back | Forward
+mods    = "Alt"        # "+"-separated Ctrl/Shift/Alt/Meta, or "" for none
+count   = 1            # 1–3: single/double/triple click
+actions = ["Paste"]
+```
+
+All three default to empty and only add behaviour — nothing here can shadow
+`[keybinds.shortcuts]` or take away built-in mouse behaviour unless a rule
+actually matches.
+
+### `[ssh]` and `[[ssh_hosts]]`
+
+```toml
+[ssh]
+host_key_policy = "accept_new" # accept_new (TOFU, default) | strict | off
+# known_hosts = "~/.ssh/known_hosts"
+
+[[ssh_hosts]]
+name = "prod"
+host = "10.0.0.5"
+user = "deploy"
+auth = "agent"                  # agent (default) | key | password
+# key_path = "/home/me/.ssh/id_ed25519" # only used when auth = "key"
+```
+
+Each `[[ssh_hosts]]` entry surfaces as `SSH: <name>` in the command palette
+and in the "New SSH tab" picker; selecting one opens an interactive remote
+shell tab. Passwords and key passphrases are **never** written here — they
+live in the OS keychain, looked up by the host's stable id. `host_key_policy`
+defaults to trust-on-first-use (pin on first connect, refuse a later change);
+`import_openssh_config` can pull hosts from `~/.ssh/config` once or on every
+reload — see **Settings → SSH**.
+
 ### `[integration]` (Linux / BSD)
 
 ```toml
 [integration]
 desktop_entry           = true   # register a .desktop entry + icon on launch
 linux_backend           = "auto" # auto | x11 | wayland — see below
-control_socket          = true   # serve `terminale --toggle-quake`
+control_socket          = true   # serve `terminale --toggle-quake` + `terminale ctl`
 global_shortcuts_portal = true   # register the Quake hotkey with the desktop
+
+[integration.control_api]        # what `terminale ctl` may do — see control-api.md
+enabled          = true          # serve the automation commands at all
+allow_read       = true          # get-text, last-command, tab titles + cwds
+allow_input      = true          # send-text, send-keys, palette actions
+allow_submit     = false         # may press Enter, i.e. actually run commands
+allow_screenshot = true          # render the window to a PNG file
 ```
+
+`[integration.control_api]` scopes the **control API** — the `terminale ctl`
+commands that let a script (or an AI coding agent) read a pane, fetch the last
+command with its exit code, run any palette action, or type at your prompt. Full
+reference: [`control-api.md`](control-api.md).
+
+The split worth understanding is `allow_input` versus `allow_submit`: input may
+*type*, submit may *press Enter*. `allow_submit` is **off by default**, so out of
+the box an automation tool can compose a command at your prompt and you decide
+whether to run it — the same contract as the AI assistant's *Inject* button.
+Every refusal names the setting to flip. All five apply immediately; the socket
+itself still needs a relaunch when you toggle `control_socket`.
 
 **`linux_backend` is the setting that makes window placement work.** Wayland
 deliberately gives clients no control over their own window position, so on a
@@ -218,6 +504,28 @@ both on by default:
   **Settings → Desktop integration → "Register in GNOME"** sets it up in one
   click, using the key from Shortcuts → Quake toggle; elsewhere, bind the
   command by hand.
+
+### `[resource_indicators]`
+
+```toml
+[resource_indicators]
+enabled = true # pixel-art CPU/RAM/GPU strip in a reserved band at the very
+                # bottom of the window (below the terminal grid, so it never
+                # overlaps content)
+```
+
+### `[updates]`
+
+```toml
+[updates]
+check_on_startup = true  # check GitHub releases in the background on launch
+auto_install     = false # notify-only by default; true downloads, verifies
+                          # (SHA-256), and stages the new binary automatically
+```
+
+The built-in self-updater never interrupts the running session — even with
+`auto_install = true` the new version only takes effect on the next launch,
+and the download is checksum-verified before anything on disk is replaced.
 
 ## Settings window
 

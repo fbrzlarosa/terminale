@@ -7,6 +7,212 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Changed
+- **Prompt status dots are on by default.** `terminal.show_prompt_marks` draws a
+  small dot in the left margin at each prompt — green for exit 0, red for a
+  failure — and it defaulted to off for a reason that no longer holds: nothing
+  installed the `OSC 133` marks it reads, so on a stock install it could only ever
+  do nothing. Shell integration, command blocks and the dots are one feature, and
+  the dots are the part you can actually see: a red one is how a failed command
+  stays findable in a long scrollback. Where a shell still emits no marks, no dots
+  appear and the setting costs nothing.
+
+### Fixed
+- **The Quake hotkey silently died when terminale was launched from another
+  terminal.** 0.1.42 taught terminale to claim its own systemd app scope so the
+  global-shortcuts portal would accept the binding however the app was started —
+  but the "do I already have an application id?" check only asked whether the
+  cgroup leaf *looked* like an application unit, not whether it was **ours**.
+  Launch terminale from a terminal emulator that scopes each of its windows —
+  ghostty names them `app-ghostty-surface-transient-<n>.scope` — and that check
+  passed, so terminale never claimed a scope, wore the host terminal's identity,
+  and the portal answered `NotAllowed("An app id is required")`. The symptom is
+  the drop-down hiding once and never coming back, for the whole session. The
+  check now matches on the app id as a whole dash-delimited segment, which still
+  accepts both spellings a real launch produces (`app-terminale-<pid>.scope` and
+  GNOME's `app-gnome-terminale-<pid>.scope`) while rejecting other applications'.
+
+- **Search highlights and link underlines were overwriting each other.** Both
+  wrote to one shared slot in the renderer, so whichever ran last won. With the
+  default `link_underline = "hover"` that meant the *next mouse move* erased the
+  highlights for every match you had just searched for; in `"always"` mode any PTY
+  output did it. The feature looked unimplemented because in practice it usually
+  was not visible. Search now has its own layer and the two compose.
+- **Search highlights went stale on any scroll that search did not perform
+  itself.** They are stored as absolute line numbers and were mapped to viewport
+  rows only when search jumped the view — so scrolling with the wheel, the
+  keyboard, or jump-to-prompt left them drawn under whatever lines the old offset
+  had put them. The mapping now runs every frame, beside the prompt-mark pass that
+  already worked this way, and is a pure function with tests covering the exact
+  scrolled case that was broken.
+
+- **A shell that fails to launch no longer takes the whole app down.** The PTY
+  spawn was `.expect()`-ed, so a profile or `--shell` pointing at a missing or
+  non-executable binary panicked the process — killing every other tab and pane
+  with it. Worse, a *saved session* referencing a since-removed shell hit the same
+  path on restore, which meant a crash on every launch, forever, with no way in.
+  A failed spawn now degrades to a single crashed pane: the tab reads
+  `⚠ <name> (crashed)`, the pane itself shows the real error in red
+  (`… (ENOENT: No such file or directory)`) and what to do about it, and the
+  existing restart-pane action brings it back once the profile is fixed. Verified
+  end to end against a live instance launched with a nonexistent shell.
+- **The AI suggestion bar no longer fires over a full-screen program.** Auto-fire
+  checked the idle timer but not the alternate screen, so once a TUI — Claude
+  Code, vim, less, btop — went quiet waiting for input, terminale drew its own
+  suggestion overlay on top of it. Only the automatic trigger is suppressed; asking
+  for a suggestion explicitly still works anywhere.
+
+- **Ten rebindable actions had no row in Settings.** `next_failed_command`,
+  `prev_failed_command`, `open_failed_command_picker`, `suggest_command`,
+  `open_snippets`, `save_workspace`, `open_workspace`, `open_command_history`,
+  `open_clipboard_history` and `open_directory_jump` existed in the config schema
+  — with doc comments telling you to set a binding "here", meaning Settings — but
+  had no control, so they were bindable only by hand-editing `config.toml`. They
+  now appear under Scrollback, Assistant, and a new "Pickers & workspaces" group.
+  A test parses every field of `ShortcutsConfig` out of the schema and fails if
+  any one of them has no Settings row, so this class of gap cannot come back
+  silently; it is identifier-boundary aware, so `rotate_panes` is not considered
+  satisfied by `rotate_panes_back`.
+- **Three config sections were never validated at all.** `[quake]` and
+  `[keybinds]` had no `validate()` and so were never reachable from
+  `Config::validate()`. The practical consequence was `quake.margin_px`: an
+  unbounded `u32` that is later cast with `as i32`, so a large value
+  reinterprets as *negative* and feeds window-geometry arithmetic (nonsense
+  placement, and an overflow panic in a debug build). `MouseBinding.count` and
+  `KeyTable.timeout_ms` documented bounds that nothing enforced — a `count` above
+  3 silently made a mouse binding unmatchable. `window.scroll_step_lines` and
+  `window.alt_screen_scroll_lines` likewise promised `1..=50` in their docs while
+  `validate()` checked neither, so a value of 200 would scroll 200 lines per notch
+  or fire 200 escape sequences per wheel click into an alt-screen app. All now
+  rejected with the field name, like every other section.
+
+- **Every translucent surface was rendered too dark — alpha was applied twice.**
+  `Quad::new` premultiplies its colour by alpha and the fragment shader passes it
+  straight through, but the pipeline asked for `ALPHA_BLENDING`, whose source
+  factor is `SrcAlpha` — so the GPU multiplied by alpha a *second* time and every
+  translucent quad came out as `rgb·α² + dst·(1-α)`. Anything fully opaque was
+  unaffected, which is why it went unnoticed; everything below it was wrong, and
+  worse the more transparent it was. The `░` shade character (α=0.25) rendered at
+  an effective 0.0625 — nearly invisible against the background — and window
+  background-opacity, cell backgrounds under opacity, the selection highlight,
+  the cursor cell tint, hairline separators and every panel shadow were all
+  darker than configured. Now `PREMULTIPLIED_ALPHA_BLENDING`, verified by
+  sampling the rendered output: the 25/50/75/100% shade steps measure 91/125/150/171
+  against a predicted 93/125/149/171, where before they were 47/90/132/171.
+
+- **The find bar no longer renders on top of the resource strip.** It pinned
+  itself to the absolute bottom edge of the window, which is where the
+  CPU/RAM/GPU indicators live — two rows of text in the same 26 logical pixels,
+  both illegible. It now clears whatever chrome owns the bottom (resource strip,
+  bottom status bar, bottom tab bar), the way the AI suggestion bar already did.
+
+- **The command palette no longer draws outside itself.** Key bindings were
+  right-aligned against an *estimated* text width (glyph count × cell width × a
+  fudge factor) that did not match the smaller size the bindings are rendered at,
+  so long ones — `Ctrl+Shift+ArrowRight` — started too far right and ran past the
+  panel edge. And the placeholder was given the full panel width, so it rendered
+  straight through the right-aligned result count, the two strings overlapping.
+  Both are now laid out against the *measured* shaped width, the same way the
+  status bar already did it, and the input row clips instead of wrapping onto the
+  first result.
+- **Shortcuts are shown the way people write them.** Bindings are stored as typed
+  in the TOML, so the palette displayed raw winit key names: `Ctrl+Shift+ArrowLeft`
+  is now `Ctrl+Shift+←`, `PageDown` is `PgDn`, `ctrl+t` is `Ctrl+T`. Tokens that
+  are not recognised are passed through untouched rather than mangled into a key
+  name that does not exist.
+
+- **A hidden window no longer renders once a second, forever.** `SurfaceError::
+  Timeout` — the compositor declining to hand over a swapchain image, which is
+  what it does to a window nobody can see — was treated like a lost surface and
+  answered with an immediate redraw request. Each retry then blocked a full
+  second inside `get_current_texture` before the frame was thrown away, so a
+  minimized terminale sat in a permanent one-frame-per-second loop, doing a
+  complete glyph prepare and submit every time. Timeouts now back off and wait
+  for the next real event instead.
+- **Animation frames are suppressed for windows the compositor is not accepting,
+  on X11 too.** The existing `occluded` gate is driven by
+  `WindowEvent::Occluded`, which winit never delivers on X11 — and terminale
+  defaults to X11/XWayland on Linux, because Wayland forbids the window
+  positioning Quake mode and the snap actions need. So the optimisation had no
+  effect on the platform that needed it most. Repeated acquire timeouts are now
+  taken as the same signal, cleared by the first frame the compositor accepts.
+- **"Slow render frame (possible freeze)" no longer fires for frames the
+  compositor is simply pacing.** A frame that is almost entirely surface acquire
+  is not a stall; warning about it once a second for every hidden window buried
+  the real stalls the watchdog exists to catch, and read as a hang when nothing
+  was wrong. Those are logged at debug now; slow glyph preparation and slow
+  submit/present still warn.
+
+### Fixed
+- **Shell integration now actually reaches bash, so the OSC 133 half of the
+  feature set works on a stock install.** This module only ever instrumented
+  PowerShell (and only for cwd reporting), which meant command blocks, exit-code
+  badges, jump-to-failed-command, *"fix this command"*, copy-last-command-output
+  and `terminale ctl last-command` were all documented, all implemented, and all
+  inert on a default bash — they only came alive if the user had already built
+  `OSC 133` marks into their own prompt. terminale now materialises a bash hook
+  and launches the shell with `--rcfile`. The hook sources the user's own
+  `~/.bashrc` first, installs itself last, re-wraps `PS1` on every prompt (so
+  starship and friends do not clobber it), and steps aside entirely when the
+  prompt already emits marks, when the profile passes its own `-c`/`--rcfile`/
+  `--norc`, or when the shell is a login shell. zsh and fish are recognised but
+  not yet instrumented.
+- **Captured command output no longer ends with a stray prompt line.** The `D`
+  mark is emitted by the shell's *prompt* hook, so the line it lands on is where
+  the next prompt is about to be drawn — not output. Every consumer treated the
+  span as inclusive, so the following prompt was appended to what "fix this
+  command" sent to the AI, to what copy-last-command-output put on the clipboard,
+  and to the suggestion bar's error context. Now expressed once, in
+  `CommandBlock::output_span`, which also reports "printed nothing" instead of
+  handing back the prompt as though it were output.
+- **The captured command is the command, not the prompt plus the command.**
+  Command text was recovered by reading the prompt line off the grid, which
+  cannot tell `[user@host ~]$ ` apart from what was typed — so a captured command
+  came out as `[rubber@host ~]$ cargo test`, and that string is what got re-run by
+  rerun-last-command, sent to the AI, and copied. The bash hook now reports the
+  command line explicitly with `OSC 633;E` (read from history, so a pipeline is
+  reported whole), which takes priority over grid scraping.
+- **`OSC 633` is understood as an alias of `OSC 133`.** VS Code's shell
+  integration emits the `633` spelling; a shell already set up for it now gets
+  command blocks in terminale with no extra configuration.
+
+### Added
+- **A control API: `terminale ctl` drives a running instance.** The per-user
+  control socket has existed since Quake mode needed a way for a desktop
+  keybinding to reach the app; it answered exactly two commands. It now speaks a
+  small JSON protocol: `list-tabs`, `list-panes`, `get-text` (viewport or full
+  scrollback), `last-command` (the command, its output, its **exit code**, and
+  whether it is still running), `list-actions` / `action <name>` for anything the
+  command palette can do, `send-text`, `send-keys`, `screenshot`, and `version`.
+  The two original bare words (`ping`, `toggle-quake`) still parse and still
+  answer `ok`, so no existing keybinding or `socat` one-liner breaks.
+
+  The point is not scripting for its own sake — it is that a terminal sitting
+  next to an AI coding agent should not make the agent guess. The exit code and
+  the exact output of the last command are already known to the emulator through
+  OSC 133 marks; `last-command` just hands them over. Reference:
+  [`docs/control-api.md`](docs/control-api.md).
+- **`send-keys` encodes for the pane's current modes, not a guess.** Specs like
+  `ctrl+c`, `shift+tab` or `"down down enter"` are parsed into the same shapes a
+  real key event carries and run through the *existing* encoders, so application
+  cursor-key mode is honoured and — when the program in that pane has engaged the
+  kitty keyboard protocol — `shift+enter` arrives as `CSI 13;2u`, distinguishable
+  from a plain `Enter`. Nothing re-implements an encoding, so `send-keys` cannot
+  drift from what typing does.
+- **Screenshots the app takes of itself.** `terminale ctl screenshot <path>`
+  reads back the frame the GPU is about to present and writes a PNG. No
+  compositor screenshot permission is involved, so it behaves identically on X11
+  and Wayland (where GNOME refuses the D-Bus screenshot API outright), and it can
+  run headless in CI.
+- **`[integration.control_api]` — four scopes for the above**, with controls in
+  **Settings → Desktop integration → Automation & AI control**: `allow_read`
+  (terminal content), `allow_input` (typing and actions), `allow_submit`, and
+  `allow_screenshot`. `allow_submit` is **off by default**, and that is the whole
+  trust model: something on the socket may compose a command at your prompt, but
+  pressing Enter stays yours. A newline smuggled into a `send-text` payload, or a
+  `send-keys enter`, is gated the same way — the check is on the effect, not the
+  spelling. Every refusal names the setting to flip.
+
 ## [0.1.42]
 
 ### Fixed

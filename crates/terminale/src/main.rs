@@ -13,8 +13,13 @@ mod app_icon;
 mod config_watch;
 mod confirm_close;
 mod context_menu_window;
-mod copy_mode;
 #[cfg(target_os = "linux")]
+// The control API's vocabulary and handler. Unix-only for as long as its only
+// transport is the Unix socket in `ipc`; a Windows named-pipe transport is what
+// would flip this on there, without changing anything in the module itself.
+#[cfg(unix)]
+mod control;
+mod copy_mode;
 mod desktop_entry;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod desktop_shortcut;
@@ -24,6 +29,10 @@ pub mod icons;
 #[cfg(unix)]
 mod ipc;
 mod keymap;
+/// Text key specs (`"ctrl+c"`) → PTY bytes, for the control API's `send-keys`.
+/// Unix-only alongside [`control`], which is its only caller.
+#[cfg(unix)]
+mod keyspec;
 mod kitty_keyboard;
 mod links;
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -280,6 +289,11 @@ enum UserEvent {
     /// dead-code lint rightly points out, and CI turns into an error.
     #[cfg_attr(not(unix), allow(dead_code))]
     ToggleQuake,
+    /// A control-socket client asked for something that has to be done on the
+    /// UI thread — read a pane, dispatch an action, type into a shell. Carries
+    /// the channel the reply goes back on; see [`control::handle`].
+    #[cfg(unix)]
+    Control(Box<ipc::ControlCall>),
     /// The XDG global-shortcuts portal accepted our Quake binding, so the
     /// desktop now owns it. The OS key grab is released on receipt: under a
     /// Wayland session it can still fire while an XWayland window has focus,
@@ -428,6 +442,34 @@ struct Cli {
     #[cfg(target_os = "linux")]
     #[arg(long)]
     uninstall_desktop_entry: bool,
+
+    /// Subcommand, when one is given. Without it `terminale` opens a window,
+    /// which is the overwhelmingly common case — hence `Option`.
+    #[cfg(unix)]
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+/// Subcommands that act on an *already-running* terminale instead of starting
+/// one.
+///
+/// Kept to a single variant on purpose: `ctl` is the whole automation surface,
+/// and nesting it means `terminale ctl --help` lists the commands rather than
+/// polluting the top-level help of a GUI application.
+#[cfg(unix)]
+#[derive(Debug, clap::Subcommand)]
+enum Command {
+    /// Drive a running terminale over its control socket — list tabs, read a
+    /// pane, run an action, type at a prompt, grab a screenshot.
+    ///
+    /// What each command is allowed to do is governed by
+    /// `[integration.control_api]`; `terminale ctl version` prints the
+    /// permissions currently in effect.
+    Ctl {
+        /// The control command to send.
+        #[command(subcommand)]
+        cmd: ipc::CtlCommand,
+    },
 }
 
 /// When launched from a shell (so a parent console exists), re-attach to
@@ -585,13 +627,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `terminale ctl …` — talk to the running instance and exit. First, like
+    // `--toggle-quake` below and for the same reason: it must not pay for a
+    // config load or a GPU probe it will never use.
+    #[cfg(unix)]
+    if let Some(Command::Ctl { cmd }) = &cli.command {
+        ipc::run_ctl(cmd);
+    }
+
     // Drive the running instance, then exit. Handled before anything else that
     // costs time (config load, tracing setup, GPU) because this path is on the
     // critical path of a keypress: a desktop keybinding spawns this process
     // every time the user hits the Quake key.
     #[cfg(unix)]
     if cli.toggle_quake {
-        match ipc::send_command(ipc::CMD_TOGGLE_QUAKE) {
+        match ipc::send_command(control::CMD_TOGGLE_QUAKE) {
             Ok(reply) if reply == "ok" => return Ok(()),
             Ok(reply) => {
                 eprintln!("terminale refused the request: {reply}");
@@ -1639,9 +1689,11 @@ struct Pane {
     /// Lines scrolled up into history (`0` = pinned to live output).
     /// Auto-resets to 0 whenever the PTY produces new bytes.
     scroll_lines: usize,
-    /// Set when the emulator panicked while processing PTY bytes. We
-    /// stop feeding new chunks into a crashed pane — the user can still
-    /// read its existing buffer until they close it.
+    /// Set when the emulator panicked while processing PTY bytes, or the
+    /// backing session never came up in the first place (spawn failure, a
+    /// failed SSH connect). We stop feeding new chunks into a crashed pane —
+    /// the user can still read its existing buffer until they close it, or
+    /// restart it once the underlying problem is fixed.
     crashed: bool,
     /// Autodetected URL ranges in the visible viewport. Refreshed
     /// every time the active grid changes. Each entry is
@@ -2513,6 +2565,21 @@ struct TermWindow {
     /// so a hidden window costs no GPU/CPU. PTY output still drains and wakes
     /// the loop, and we repaint once when the window becomes visible again.
     occluded: bool,
+    /// `true` when the compositor is refusing to hand us a swapchain image in
+    /// time — i.e. it does not currently want frames from this window.
+    ///
+    /// This is [`Self::occluded`] arrived at empirically, and it exists because
+    /// `WindowEvent::Occluded` is not delivered on X11 (and terminale defaults to
+    /// X11/XWayland on Linux, because Wayland forbids the window positioning that
+    /// Quake mode and the snap actions need). Without it, a minimized or fully
+    /// covered window on X11 keeps waking at the cursor-blink rate, each frame
+    /// blocking a full second inside `get_current_texture` before being thrown
+    /// away — invisible, but not free.
+    ///
+    /// Set when a frame ends in `SurfaceError::Timeout`, cleared by the next
+    /// successful frame. Gates only *animation* redraws: PTY output still drains
+    /// and still repaints, so nothing goes stale.
+    presentation_throttled: bool,
     /// Mirror of `config.terminal.os_notifications`. When `true`, OSC 9 /
     /// OSC 777 notifications are forwarded to the OS notification centre
     /// (but only while the window is not focused).
@@ -3311,6 +3378,7 @@ impl TerminaleApp {
             show_prompt_marks: self.config.terminal.show_prompt_marks,
             window_focused: true,
             occluded: false,
+            presentation_throttled: false,
             os_notifications: self.config.terminal.os_notifications,
             os_notification_rate_limit: self.config.terminal.os_notification_rate_limit,
             tab_bar_fingerprint: 0,
@@ -6256,6 +6324,17 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // Control socket / global-shortcuts portal. Both are already
             // authenticated by construction, so there is no id to check.
             UserEvent::ToggleQuake => self.toggle_quake_all(),
+            // The socket thread is blocked on the other end of `call.reply`
+            // until we answer, so this arm must never itself block. A send
+            // error means the client gave up (timeout) — the work is already
+            // done either way, so there is nothing to undo.
+            #[cfg(unix)]
+            UserEvent::Control(call) => {
+                let reply = control::handle(self, &call.request);
+                if call.reply.send(reply).is_err() {
+                    tracing::debug!("control client went away before its reply");
+                }
+            }
             UserEvent::PortalShortcutBound => {
                 self.portal_shortcut_active = true;
                 // Release the OS grab: the desktop delivers the toggle now, and
@@ -10579,7 +10658,11 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // a hidden window must cost no GPU/CPU. The PTY drain above still
             // runs (and requests a redraw on new output), so content is never
             // starved; we just don't animate what nobody can see.
-            let visible = !state.occluded;
+            //
+            // `occluded` is the event-driven signal and `presentation_throttled`
+            // the empirical one, needed because X11 never delivers
+            // `WindowEvent::Occluded` — see its field docs.
+            let visible = !state.occluded && !state.presentation_throttled;
             // Drive any in-flight Quake open/close slide.
             if let Some(d) = pump_quake_anim(state) {
                 next_wake = Some(match next_wake {
@@ -10885,13 +10968,26 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     && sg_trigger == terminale_config::SuggestionTrigger::Auto
                     && sg_provider_ok
                 {
-                    if suggestions::should_auto_fire(
-                        &state.suggestions,
-                        sg_trigger,
-                        sg_enabled,
-                        sg_idle,
-                        now,
-                    ) {
+                    // A full-screen TUI (Claude Code, vim, less, btop, …) owns
+                    // the alternate screen; auto-firing the suggestion bar
+                    // over it draws terminale's own overlay on top of a
+                    // session that's simply idle waiting for input, not
+                    // sitting at a shell prompt. Only the automatic trigger
+                    // is suppressed — the manual request handled above still
+                    // fires regardless of alt-screen state.
+                    let alt_screen = state
+                        .tabs
+                        .get(state.active_tab)
+                        .is_some_and(|tab| tab.emulator.lock().is_alt_screen());
+                    if !alt_screen
+                        && suggestions::should_auto_fire(
+                            &state.suggestions,
+                            sg_trigger,
+                            sg_enabled,
+                            sg_idle,
+                            now,
+                        )
+                    {
                         sg_fire.push(idx);
                     } else if !state.suggestions.fired_for_prompt {
                         if let Some(t) = state.suggestions.last_output_at {
@@ -10986,6 +11082,39 @@ fn spawn_tab(
     ))
 }
 
+/// User-visible text for a failed PTY spawn, fed straight into the crashed
+/// pane's emulator (`Emulator::advance`) so the failure is readable in the
+/// pane itself rather than only in the log — a `tracing::warn!` alone is
+/// invisible to anyone not tailing the log file.
+///
+/// Pure and independent of `Session`/`Renderer`, so it's testable without a
+/// real PTY or GPU context.
+fn spawn_failure_message(command: &str, err: &terminale_core::CoreError) -> String {
+    format!(
+        "\r\n\x1b[31mFailed to launch \"{command}\":\x1b[0m {err}\r\n\r\n\
+         Fix the shell/profile in Settings, then restart this pane.\r\n"
+    )
+}
+
+/// A dead-end [`Session`] to back a pane whose PTY failed to spawn: a
+/// never-fed receiver plus no-op write/resize closures, so the pane behaves
+/// like any other crashed tab (read-only, restartable) instead of holding a
+/// `None` session or a live PTY handle. Mirrors the recovery shape
+/// `ssh_tabs::finish_ssh_tab` already uses for a failed SSH connect.
+fn crashed_pty_backing(
+    cols: u16,
+    rows: u16,
+) -> (Session, tokio::sync::mpsc::UnboundedReceiver<bytes::Bytes>) {
+    let (_dead_tx, dead_rx) = tokio::sync::mpsc::unbounded_channel();
+    let noop_write: terminale_core::RemoteWriter = Arc::new(|_: &[u8]| Ok(()));
+    let noop_resize: terminale_core::RemoteResizer = Arc::new(|_: u16, _: u16| Ok(()));
+    let mut session = Session::from_remote(cols, rows, dead_rx, noop_write, noop_resize);
+    let output_rx = session
+        .take_output()
+        .expect("a freshly built Session::from_remote always has an output channel");
+    (session, output_rx)
+}
+
 /// Like [`spawn_tab`] but produces a raw [`Pane`] without wrapping it in
 /// a fresh `TabState`. Used by the split-pane actions to seed a sibling
 /// leaf inside an existing tab's tree.
@@ -11014,13 +11143,37 @@ fn spawn_pane(
             let _ = proxy.send_event(UserEvent::PtyDataReady);
         }
     });
-    let mut session = Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier)
-        .expect("failed to spawn shell behind PTY");
-    let output_rx = session.take_output().expect("session must have output");
     let (cols, rows) = renderer.pixels_to_cells(width_px, height_px);
-    session.resize(cols, rows).ok();
     let mut emu = Emulator::new(cols, rows);
     emu.set_scrollback(scrollback);
+
+    // A spawn failure (bad shell path in a profile / `--shell` override, fd
+    // exhaustion, no usable PTY on this platform/sandbox) must degrade to one
+    // crashed pane, never take the whole process down — this is reachable
+    // from a plain "new tab" / split action, and from replaying a saved
+    // session whose profile no longer resolves to a real binary, which used
+    // to crash-loop the app on every launch. `restart_focused_pane` already
+    // knows how to respawn a crashed pane once the user fixes the profile.
+    let (session, output_rx, crashed) =
+        match Session::spawn_with_notifier(&spec, initial.0, initial.1, notifier) {
+            Ok(mut session) => {
+                let output_rx = session
+                    .take_output()
+                    .expect("freshly spawned session must expose an output channel");
+                session.resize(cols, rows).ok();
+                (session, output_rx, false)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    command = %spec.command,
+                    ?e,
+                    "failed to spawn shell behind PTY; pane marked as crashed"
+                );
+                emu.advance(spawn_failure_message(&spec.command, &e).as_bytes());
+                let (session, output_rx) = crashed_pty_backing(cols, rows);
+                (session, output_rx, true)
+            }
+        };
     let emulator = Arc::new(Mutex::new(emu));
 
     let name = profile
@@ -11040,7 +11193,7 @@ fn spawn_pane(
         cols,
         rows,
         scroll_lines: 0,
-        crashed: false,
+        crashed,
         autodetect_links: Vec::new(),
         link_scan_generation: u64::MAX, // force scan on first refresh
         last_output_at: None,
@@ -11293,13 +11446,7 @@ fn build_suggestion_context(
                 if let Some(code) = b.exit_code.filter(|&c| c != 0) {
                     #[allow(clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
                     let hist = emu.history_size() as i32;
-                    let out_end = b.end_line.unwrap_or(b.output_start_line);
-                    let output = crate::shortcuts::extract_block_output_lines(
-                        &all_lines,
-                        hist,
-                        b.output_start_line,
-                        out_end,
-                    );
+                    let output = crate::shortcuts::block_output_lines(b, &all_lines, hist);
                     sctx.last_error = Some(terminale_ai::LastError {
                         command: b.command_text.clone(),
                         exit: code,
@@ -11458,6 +11605,20 @@ fn render_main(state: &mut RunningState) {
             Vec::new()
         };
         state.renderer.set_prompt_marks(marks);
+
+        // Search-match highlights, on the same terms and for the same reason:
+        // they are stored as absolute lines, so the viewport mapping has to be
+        // redone whenever the view may have moved — which is every frame, not
+        // just when search was the thing that scrolled it.
+        let highlights = match state.search.as_ref() {
+            Some(s) if !s.matches.is_empty() => {
+                let scroll = specs.get(focused_idx).map_or(0, |spec| spec.scroll_lines);
+                let rows = state.tabs.get(state.active_tab).map_or(0, |t| t.rows);
+                search_highlight_ranges(&s.matches, scroll, rows)
+            }
+            _ => Vec::new(),
+        };
+        state.renderer.set_search_highlights(highlights);
     }
 
     // ── Quick-select / pane-select label badge overlay ───────────────────
@@ -11536,31 +11697,70 @@ fn render_main(state: &mut RunningState) {
             // (surface acquire / compositor, glyph prepare = atlas growth +
             // shaping, or GPU submit+present) instead of just "slow frame".
             let phases = state.renderer.last_frame_phases();
-            tracing::warn!(
-                frame_ms = frame_ms as u64,
-                acquire_ms = phases.acquire.as_millis() as u64,
-                prepare_ms = phases.prepare.as_millis() as u64,
-                submit_present_ms = phases.submit_present.as_millis() as u64,
-                threshold_ms = state.slow_frame_warn_ms,
-                "slow render frame (possible freeze) — main window stalled"
-            );
+            let acquire_ms = phases.acquire.as_millis();
+            // A frame that is *almost entirely* surface acquire is not a freeze:
+            // it is the compositor declining to hand us an image, which is what
+            // it does to a window nobody can see. Reporting that at WARN once a
+            // second — forever, for a minimized window — buries the real stalls
+            // it was added to catch, and reads as "terminale is hanging" when
+            // nothing is wrong. Real stalls (glyph prepare, submit/present) keep
+            // their warning.
+            let compositor_paced = acquire_ms * 10 >= frame_ms * 9;
+            if compositor_paced {
+                tracing::debug!(
+                    frame_ms = frame_ms as u64,
+                    acquire_ms = acquire_ms as u64,
+                    "frame paced by the compositor (window not accepting frames)"
+                );
+            } else {
+                tracing::warn!(
+                    frame_ms = frame_ms as u64,
+                    acquire_ms = acquire_ms as u64,
+                    prepare_ms = phases.prepare.as_millis() as u64,
+                    submit_present_ms = phases.submit_present.as_millis() as u64,
+                    threshold_ms = state.slow_frame_warn_ms,
+                    "slow render frame (possible freeze) — main window stalled"
+                );
+            }
         }
     }
-    if let Err(e) = render_result {
-        tracing::warn!(?e, "render frame failed");
-        // The renderer already reconfigures + retries on a lost/outdated
-        // surface; if even that failed (driver mid-reset), ask for another
-        // frame instead of leaving the window frozen until the next input.
-        // Only for *transient* surface errors — an OutOfMemory must not spin.
-        if matches!(
-            e,
-            terminale_render::RenderError::Surface(
-                wgpu::SurfaceError::Lost
-                    | wgpu::SurfaceError::Outdated
-                    | wgpu::SurfaceError::Timeout
-            )
-        ) {
-            state.window.request_redraw();
+    match render_result {
+        Ok(()) => {
+            // The compositor took a frame, so it wants frames again.
+            state.presentation_throttled = false;
+        }
+        Err(e) => {
+            // `Timeout` is the compositor declining to give us an image, not a
+            // failure: retrying immediately would spin at one blocked second per
+            // iteration for as long as the window stays hidden. Back off instead
+            // and let the next real event (or the compositor's own redraw
+            // request, when the window is shown again) restart us.
+            if matches!(
+                e,
+                terminale_render::RenderError::Surface(wgpu::SurfaceError::Timeout)
+            ) {
+                if !state.presentation_throttled {
+                    tracing::debug!(
+                        "surface acquire timed out; pausing animation frames \
+                         until this window is presentable again"
+                    );
+                }
+                state.presentation_throttled = true;
+                return;
+            }
+            tracing::warn!(?e, "render frame failed");
+            // The renderer already reconfigures + retries on a lost/outdated
+            // surface; if even that failed (driver mid-reset), ask for another
+            // frame instead of leaving the window frozen until the next input.
+            // Only for *transient* surface errors — an OutOfMemory must not spin.
+            if matches!(
+                e,
+                terminale_render::RenderError::Surface(
+                    wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated
+                )
+            ) {
+                state.window.request_redraw();
+            }
         }
     }
 }
@@ -11745,10 +11945,10 @@ fn handle_search_input(
 
 fn close_search(state: &mut RunningState) {
     state.search = None;
-    state.renderer.set_extra_underlines(Vec::new());
     state.renderer.set_search_overlay(None);
-    // Refresh autodetect underlines now that the search highlights are
-    // gone — they share the same extra-underlines slot.
+    // Link underlines are a separate slot, so closing search no longer has to
+    // put them back — but a scroll during search may have moved which links are
+    // visible, so recompute them for the row they are on now.
     refresh_autodetect_links(state);
 }
 
@@ -12340,8 +12540,6 @@ fn refresh_search_matches(state: &mut RunningState) {
     // Incremental find: jump to the first match as you type (browser-style).
     if total > 0 {
         search_jump_to(state, 0);
-    } else {
-        state.renderer.set_extra_underlines(Vec::new());
     }
     state
         .renderer
@@ -12352,23 +12550,30 @@ fn refresh_search_matches(state: &mut RunningState) {
         }));
 }
 
-/// Recompute which matches fall inside the current viewport and hand their
-/// viewport-row ranges to the renderer as highlight underlines.
-fn update_search_highlights(state: &mut RunningState) {
-    let Some(s) = state.search.as_ref() else {
-        return;
-    };
-    let rows = state.tabs.get(state.active_tab).map_or(0, |t| t.rows) as i32;
-    let off = state.renderer.scroll_lines() as i32;
-    let mut ranges: Vec<(u16, u16, u16)> = Vec::new();
-    for &(line_abs, c0, c1) in &s.matches {
-        // Absolute line `L` is shown at viewport row `L + off`.
-        let row = line_abs + off;
-        if row >= 0 && row < rows {
-            ranges.push((c0, c1, row as u16));
-        }
-    }
-    state.renderer.set_extra_underlines(ranges);
+/// Map absolute-line search matches to the viewport rows they occupy at
+/// `scroll_lines`, dropping the ones scrolled out of view.
+///
+/// Pure, and that is the point: the bug this replaces was not bad arithmetic but
+/// bad timing. The mapping used to be recomputed only when *search itself*
+/// scrolled the view, so any other scroll — wheel, keyboard, jump-to-prompt —
+/// left the highlights drawn on whatever rows the previous offset had put them
+/// under. It is now recomputed every frame from these absolute lines, next to the
+/// prompt-mark pass that already worked this way, so it cannot go stale again.
+fn search_highlight_ranges(
+    matches: &[(i32, u16, u16)],
+    scroll_lines: usize,
+    rows: u16,
+) -> Vec<(u16, u16, u16)> {
+    let off = i32::try_from(scroll_lines).unwrap_or(i32::MAX);
+    let rows = i32::from(rows);
+    matches
+        .iter()
+        .filter_map(|&(line_abs, c0, c1)| {
+            // Absolute line `L` is shown at viewport row `L + off`.
+            let row = line_abs.checked_add(off)?;
+            (row >= 0 && row < rows).then(|| (c0, c1, u16::try_from(row).unwrap_or(u16::MAX)))
+        })
+        .collect()
 }
 
 /// Scroll so match `idx` sits comfortably in view, then refresh highlights.
@@ -12394,7 +12599,6 @@ fn search_jump_to(state: &mut RunningState, idx: usize) {
         tab.scroll_lines = off_usize;
     }
     state.renderer.set_scroll_lines(off_usize);
-    update_search_highlights(state);
     state.window.request_redraw();
 }
 
@@ -15110,6 +15314,50 @@ mod tests {
         assert!(!s.contains("\x1b[200~"));
     }
 
+    // ── search-match highlights (absolute line → viewport row) ───────────────
+
+    /// The mapping itself: a match on absolute line `L` is drawn at viewport row
+    /// `L + scroll`, and matches outside the viewport are dropped rather than
+    /// clamped onto its first or last row.
+    #[test]
+    fn search_highlight_ranges_maps_visible_matches_only() {
+        // Two on-screen matches and one 30 lines up in the scrollback.
+        let matches = [(0_i32, 2_u16, 5_u16), (3, 0, 4), (-30, 1, 2)];
+        let out = search_highlight_ranges(&matches, 0, 24);
+        assert_eq!(out, vec![(2, 5, 0), (0, 4, 3)]);
+    }
+
+    /// The regression this function exists for: highlights must follow the
+    /// viewport when something *other than search* scrolls it. Scrolled up by 30,
+    /// the scrollback match comes into view and the live-screen ones leave.
+    #[test]
+    fn search_highlight_ranges_follow_an_unrelated_scroll() {
+        let matches = [(0_i32, 2_u16, 5_u16), (3, 0, 4), (-30, 1, 2)];
+        let out = search_highlight_ranges(&matches, 30, 24);
+        assert_eq!(
+            out,
+            vec![(1, 2, 0)],
+            "the scrollback match must appear at row 0 once scrolled to"
+        );
+        // Half-way there, the two live-screen matches are still visible — but
+        // pushed 10 rows down the viewport, which is precisely what the old
+        // jump-only refresh got wrong: it left them drawn at rows 0 and 3.
+        assert_eq!(
+            search_highlight_ranges(&matches, 10, 24),
+            vec![(2, 5, 10), (0, 4, 13)]
+        );
+    }
+
+    #[test]
+    fn search_highlight_ranges_handles_empty_and_extreme_inputs() {
+        assert!(search_highlight_ranges(&[], 0, 24).is_empty());
+        // A zero-row viewport can show nothing, and must not panic.
+        assert!(search_highlight_ranges(&[(0, 0, 1)], 0, 0).is_empty());
+        // A scroll offset large enough to overflow the addition is dropped, not
+        // wrapped into a bogus on-screen row.
+        assert!(search_highlight_ranges(&[(i32::MAX, 0, 1)], usize::MAX, 24).is_empty());
+    }
+
     #[test]
     fn spawn_spec_empty_command_falls_back_to_default_shell() {
         // The cwd-inheriting "new tab" builds a profile with an empty
@@ -15137,6 +15385,71 @@ mod tests {
 
         // No profile → default shell.
         assert_eq!(build_spawn_spec(None, None, false).command, default_shell());
+    }
+
+    // ── spawn-failure recovery (regression: a bad shell path used to
+    // `.expect()`-panic the whole process instead of crashing one pane) ──
+
+    #[test]
+    fn spawn_failure_message_names_the_command_and_the_underlying_error() {
+        let err = terminale_core::CoreError::Pty(
+            "spawn `/nonexistent/nosuchshell` failed: No such file or directory".into(),
+        );
+        let msg = spawn_failure_message("/nonexistent/nosuchshell", &err);
+        assert!(msg.contains("/nonexistent/nosuchshell"));
+        assert!(msg.contains("No such file or directory"));
+        // Fed straight into `Emulator::advance` — must start on its own line
+        // and never panic regardless of what the error text contains.
+        assert!(msg.starts_with("\r\n"));
+    }
+
+    #[test]
+    fn crashed_pty_backing_is_a_harmless_no_op_session() {
+        let (mut session, mut output_rx) = crashed_pty_backing(80, 24);
+        // Writing to / resizing a crashed pane's session must never error or
+        // panic — the pane is read-only but still gets driven by the normal
+        // per-frame code paths (resize on window resize, etc.).
+        assert!(session.write_input(b"echo hi\n").is_ok());
+        assert!(session.resize(100, 40).is_ok());
+        // Never fed: the crashed pane shows only the message written into
+        // its emulator, nothing arrives from a "process" that never started.
+        assert!(output_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn spawn_pane_falls_back_to_a_crashed_pane_instead_of_panicking() {
+        // Exercises the exact recovery path `spawn_pane` takes on a spawn
+        // failure, without needing a real PTY or a GPU-backed `Renderer`:
+        // build the crashed backing directly (as `spawn_pane` does inside
+        // its `Err` arm) and assert the resulting `Pane` is safe to use.
+        let err = terminale_core::CoreError::Pty("spawn `/bad/shell` failed: ENOENT".into());
+        let mut emu = terminale_term::Emulator::new(80, 24);
+        emu.advance(spawn_failure_message("/bad/shell", &err).as_bytes());
+        let (session, output_rx) = crashed_pty_backing(80, 24);
+        let pane = Pane {
+            profile_name: "bad profile".into(),
+            icon: None,
+            custom_title: None,
+            user_title: None,
+            session,
+            output_rx,
+            emulator: Arc::new(Mutex::new(emu)),
+            cols: 80,
+            rows: 24,
+            scroll_lines: 0,
+            crashed: true,
+            autodetect_links: Vec::new(),
+            link_scan_generation: u64::MAX,
+            last_output_at: None,
+            last_input_at: None,
+        };
+        assert!(pane.crashed);
+        assert!(pane
+            .emulator
+            .lock()
+            .buffer_lines_text()
+            .iter()
+            .any(|l| l.contains("Failed to launch")));
     }
 
     #[test]

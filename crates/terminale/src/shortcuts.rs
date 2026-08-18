@@ -626,19 +626,58 @@ pub(crate) fn fix_last_command(state: &mut RunningState) {
     let exit_code = block.exit_code.unwrap_or(-1);
     let command_text = block.command_text.clone();
     let cwd = block.cwd.clone().unwrap_or_else(|| "unknown".to_string());
-    let output_start = block.output_start_line;
-    let output_end = block.end_line.unwrap_or(output_start);
+    let block = block.clone();
 
     // Extract output while we still hold the emulator lock.
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let output = extract_block_output_lines(&all_lines, hist, output_start, output_end);
+    let output = block_output_lines(&block, &all_lines, hist);
 
     let prompt = build_fix_prompt(&command_text, exit_code, &cwd, &output);
     state.pending_ai_prompt = Some(prompt);
     state.open_ai_requested = true;
+}
+
+/// Absolute index of the last line held by `all_lines` (as returned by
+/// `Emulator::buffer_lines_text`, where `abs_line = index - history_size`).
+///
+/// Needed to bound the output of a command that is *still running*: it has no
+/// `D` mark yet, so "everything printed so far" means "up to the end of the
+/// buffer".
+fn buffer_last_line(all_lines: &[String], history_size: i32) -> i32 {
+    i32::try_from(all_lines.len()).unwrap_or(i32::MAX) - 1 - history_size
+}
+
+/// A command block's output as text, or an empty string when it printed none.
+///
+/// Every caller wants exactly this, and every caller previously computed the
+/// span by hand as `output_start..=end_line` — which silently appended the next
+/// prompt line to the result (see [`CommandBlock::output_span`]). Funnelling
+/// them through one helper is what keeps that fixed in all of them at once.
+pub(crate) fn block_output_text(
+    block: &terminale_term::CommandBlock,
+    all_lines: &[String],
+    history_size: i32,
+) -> String {
+    match block.output_span(buffer_last_line(all_lines, history_size)) {
+        Some((start, end)) => extract_block_output_text(all_lines, history_size, start, end),
+        None => String::new(),
+    }
+}
+
+/// As [`block_output_text`], but truncated for a prompt that is about to be sent
+/// to an AI provider (see [`extract_block_output_lines`]).
+pub(crate) fn block_output_lines(
+    block: &terminale_term::CommandBlock,
+    all_lines: &[String],
+    history_size: i32,
+) -> String {
+    match block.output_span(buffer_last_line(all_lines, history_size)) {
+        Some((start, end)) => extract_block_output_lines(all_lines, history_size, start, end),
+        None => String::new(),
+    }
 }
 
 /// Pull the lines of the buffer that fall within `[output_start, output_end]`
@@ -731,18 +770,18 @@ pub(crate) fn copy_last_command_output(state: &mut RunningState) {
     };
     // Only copy finished blocks — an in-flight block (end_line == None) has
     // incomplete output.
-    let Some(end_line) = block.end_line else {
+    if block.end_line.is_none() {
         tracing::debug!("copy_last_command_output: last block is still running");
         drop(emu);
         return;
-    };
+    }
 
-    let output_start = block.output_start_line;
+    let block = block.clone();
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let text = extract_block_output_text(&all_lines, hist, output_start, end_line);
+    let text = block_output_text(&block, &all_lines, hist);
     crate::push_clipboard_history(state, text.clone());
     if let Some(cb) = state.clipboard.as_mut() {
         if let Err(e) = cb.set_text(text) {
@@ -781,18 +820,18 @@ pub(crate) fn copy_block_output(state: &mut RunningState) {
         drop(emu);
         return;
     };
-    let Some(end_line) = block.end_line else {
+    if block.end_line.is_none() {
         tracing::debug!("copy_block_output: block at cursor is still running");
         drop(emu);
         return;
-    };
+    }
 
-    let output_start = block.output_start_line;
+    let block = block.clone();
     let all_lines = emu.buffer_lines_text();
     let hist = emu.history_size() as i32;
     drop(emu);
 
-    let text = extract_block_output_text(&all_lines, hist, output_start, end_line);
+    let text = block_output_text(&block, &all_lines, hist);
     crate::push_clipboard_history(state, text.clone());
     if let Some(cb) = state.clipboard.as_mut() {
         if let Err(e) = cb.set_text(text) {
@@ -908,6 +947,58 @@ pub(crate) fn extract_block_output_text(
 }
 
 // ── binding_for ───────────────────────────────────────────────────────────────
+
+/// Render a binding string for *display* — `ctrl+shift+ArrowLeft` → `Ctrl+Shift+←`.
+///
+/// Bindings are stored as the user typed them in the TOML, which means the
+/// command palette was showing raw winit key names: `Ctrl+Shift+ArrowRight` is
+/// both wider than the panel and not how anyone writes a shortcut. Only tokens
+/// that are recognised are rewritten; anything unfamiliar is passed through
+/// untouched, so a binding this function has never heard of still displays as
+/// the user wrote it rather than being mangled.
+pub(crate) fn pretty_binding(binding: &str) -> String {
+    if binding.is_empty() {
+        return String::new();
+    }
+    binding
+        .split('+')
+        .map(|token| {
+            let t = token.trim();
+            match t.to_ascii_lowercase().as_str() {
+                "ctrl" | "control" => "Ctrl".to_string(),
+                "shift" => "Shift".to_string(),
+                "alt" | "option" | "opt" => "Alt".to_string(),
+                "super" | "cmd" | "command" | "win" | "meta" => "Super".to_string(),
+                "arrowleft" | "left" => "\u{2190}".to_string(),
+                "arrowup" | "up" => "\u{2191}".to_string(),
+                "arrowright" | "right" => "\u{2192}".to_string(),
+                "arrowdown" | "down" => "\u{2193}".to_string(),
+                "pageup" | "prior" => "PgUp".to_string(),
+                "pagedown" | "next" => "PgDn".to_string(),
+                "escape" | "esc" => "Esc".to_string(),
+                "enter" | "return" => "Enter".to_string(),
+                "backspace" => "Backspace".to_string(),
+                "delete" | "del" => "Del".to_string(),
+                "insert" | "ins" => "Ins".to_string(),
+                "space" => "Space".to_string(),
+                "tab" => "Tab".to_string(),
+                "home" => "Home".to_string(),
+                "end" => "End".to_string(),
+                "backquote" | "grave" => "`".to_string(),
+                // A single character reads best upper-cased (`ctrl+t` → `Ctrl+T`);
+                // function keys and anything longer keep the user's spelling.
+                _ => {
+                    let mut chars = t.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(c), None) => c.to_ascii_uppercase().to_string(),
+                        _ => t.to_string(),
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
+}
 
 /// The configured key binding for an action (the same string shown in
 /// the settings panel). Empty string = unbound.
@@ -2130,10 +2221,43 @@ pub(crate) fn scroll_to_bytes(
 mod tests {
     use super::{
         binding_for, build_fix_prompt, build_scrollback_export_content, combo_shadows_user_binding,
-        extract_block_output_lines, extract_block_output_text, is_bare_ctrl_c,
+        extract_block_output_lines, extract_block_output_text, is_bare_ctrl_c, pretty_binding,
         scrollback_export_filename, translate_key,
     };
     use winit::keyboard::{Key, KeyCode, ModifiersState, PhysicalKey, SmolStr};
+
+    // ── pretty_binding ────────────────────────────────────────────────────────
+
+    /// The palette showed raw winit key names, which are both unidiomatic and
+    /// wide enough to overflow the panel.
+    #[test]
+    fn pretty_binding_rewrites_modifiers_and_arrows() {
+        assert_eq!(pretty_binding("ctrl+t"), "Ctrl+T");
+        assert_eq!(
+            pretty_binding("Ctrl+Shift+ArrowLeft"),
+            "Ctrl+Shift+\u{2190}"
+        );
+        assert_eq!(
+            pretty_binding("ctrl+shift+ArrowRight"),
+            "Ctrl+Shift+\u{2192}"
+        );
+        assert_eq!(pretty_binding("alt+ArrowUp"), "Alt+\u{2191}");
+        assert_eq!(pretty_binding("super+PageDown"), "Super+PgDn");
+        assert_eq!(pretty_binding("ctrl+shift+p"), "Ctrl+Shift+P");
+        assert_eq!(pretty_binding("Escape"), "Esc");
+        assert_eq!(pretty_binding("ctrl+Backquote"), "Ctrl+`");
+    }
+
+    /// Unbound stays empty, and anything unfamiliar keeps the user's spelling —
+    /// mangling a key name would leave the palette naming a key that does not
+    /// exist.
+    #[test]
+    fn pretty_binding_leaves_the_unfamiliar_alone() {
+        assert_eq!(pretty_binding(""), "");
+        assert_eq!(pretty_binding("F11"), "F11");
+        assert_eq!(pretty_binding("ctrl+F5"), "Ctrl+F5");
+        assert_eq!(pretty_binding("ctrl+IntlBackslash"), "Ctrl+IntlBackslash");
+    }
 
     // ── translate_key: Ctrl must never echo a literal character ───────────────
 
