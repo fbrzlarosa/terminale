@@ -357,7 +357,7 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
 /// This exists because of one number. Mutter's focus-stealing prevention
 /// compares an activation request's timestamp against the user's last input;
 /// a request carrying `CurrentTime` (0) cannot be compared, so it takes the
-/// safe path and shows "<app> is ready" instead of focusing. winit's
+/// safe path and shows `<app> is ready` instead of focusing. winit's
 /// `focus_window()` sends exactly that — `_NET_ACTIVE_WINDOW` with
 /// `CURRENT_TIME` — which is why a Quake reveal announced itself in the
 /// notification tray rather than taking the keyboard.

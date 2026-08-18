@@ -654,7 +654,7 @@ fn buffer_last_line(all_lines: &[String], history_size: i32) -> i32 {
 ///
 /// Every caller wants exactly this, and every caller previously computed the
 /// span by hand as `output_start..=end_line` — which silently appended the next
-/// prompt line to the result (see [`CommandBlock::output_span`]). Funnelling
+/// prompt line to the result (see [`terminale_term::CommandBlock::output_span`]). Funnelling
 /// them through one helper is what keeps that fixed in all of them at once.
 pub(crate) fn block_output_text(
     block: &terminale_term::CommandBlock,

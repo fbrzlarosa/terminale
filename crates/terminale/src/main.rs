@@ -29,8 +29,10 @@ pub mod icons;
 #[cfg(unix)]
 mod ipc;
 mod keymap;
-/// Text key specs (`"ctrl+c"`) → PTY bytes, for the control API's `send-keys`.
-/// Unix-only alongside [`control`], which is its only caller.
+// Text key specs ("ctrl+c") → PTY bytes, for the control API's `send-keys`.
+// Unix-only alongside `control`, its only caller. A plain comment, not a doc
+// comment: an outer doc on a module that also carries inner `//!` docs merges the
+// two, and rustdoc then resolves the inner links in the wrong scope.
 #[cfg(unix)]
 mod keyspec;
 mod kitty_keyboard;
@@ -284,10 +286,14 @@ enum UserEvent {
     /// fires there. Carries no id — the sender is already authenticated by
     /// owning the socket / holding the portal session.
     ///
-    /// Only ever constructed on Unix (the control socket) and Linux/BSD (the
-    /// portal), so on Windows it is matched but never built — which the
-    /// dead-code lint rightly points out, and CI turns into an error.
-    #[cfg_attr(not(unix), allow(dead_code))]
+    /// Constructed only by the XDG global-shortcuts portal, which exists on
+    /// Linux/BSD alone — so the variant is gated to exactly that, rather than
+    /// carrying an `allow(dead_code)` for every platform that cannot build it.
+    ///
+    /// The control socket used to construct this too; it now sends its Quake
+    /// toggle as a [`Self::Control`] request like every other command, which is
+    /// what left this variant unconstructed on macOS and failed the build there.
+    #[cfg(all(unix, not(target_os = "macos")))]
     ToggleQuake,
     /// A control-socket client asked for something that has to be done on the
     /// UI thread — read a pane, dispatch an action, type into a shell. Carries
@@ -3004,7 +3010,7 @@ impl TerminaleApp {
     ///
     /// Shared by all three ways a toggle can arrive: the OS key grab
     /// ([`UserEvent::GlobalHotkey`]), the control socket, and the XDG
-    /// global-shortcuts portal (both [`UserEvent::ToggleQuake`]).
+    /// global-shortcuts portal.
     fn toggle_quake_all(&mut self) {
         let quake = self.config.quake.clone();
         let any_visible = self.windows.iter().any(|w| w.quake_visible);
@@ -3038,7 +3044,7 @@ impl TerminaleApp {
             // Timestamped WM activation, not a bare focus request: this is the
             // one focus call a Quake reveal actually makes (the per-window shows
             // above deliberately run unfocused), so it is the one that decides
-            // whether GNOME focuses us or shows "<app> is ready" instead.
+            // whether GNOME focuses us or shows "app is ready" instead.
             crate::window_anim::take_quake_focus(&self.windows[idx].window);
             crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
         }
@@ -6327,6 +6333,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             }
             // Control socket / global-shortcuts portal. Both are already
             // authenticated by construction, so there is no id to check.
+            #[cfg(all(unix, not(target_os = "macos")))]
             UserEvent::ToggleQuake => self.toggle_quake_all(),
             // The socket thread is blocked on the other end of `call.reply`
             // until we answer, so this arm must never itself block. A send

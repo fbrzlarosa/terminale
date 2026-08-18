@@ -1692,7 +1692,7 @@ pub(crate) fn toggle_quake(
 ///
 /// winit sends `_NET_ACTIVE_WINDOW` with `CurrentTime`, and Mutter refuses to
 /// compare a zero timestamp against the user's last input — so instead of
-/// focusing, GNOME shows its "<app> is ready" notification and the reveal lands
+/// focusing, GNOME shows its `<app> is ready` notification and the reveal lands
 /// without the keyboard. [`crate::linux_window::activate_window`] sends the same
 /// request with a real server timestamp; when that is unavailable (no X11
 /// connection, a native Wayland surface, a lost round-trip) this falls straight
