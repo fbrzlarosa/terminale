@@ -129,7 +129,15 @@ fn ensure_script(name: &str, contents: &str) -> Option<std::path::PathBuf> {
     }
     // Write to a sibling and rename, so a shell starting concurrently either
     // sees the old complete file or the new one, never a half-written script.
-    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    //
+    // The scratch name has to be unique per *call*, not per process: keying it on
+    // the pid alone made every thread share one temp file, so two concurrent
+    // spawns could have one truncating it while the other renamed it into place —
+    // leaving a reader with an empty script. (Found by the test suite doing
+    // exactly that, in parallel, on one CI target.)
+    static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let scratch = NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = dir.join(format!("{name}.{}.{scratch}.tmp", std::process::id()));
     if let Err(e) = std::fs::write(&tmp, contents) {
         tracing::warn!(?e, path = %tmp.display(), "could not write the shell-integration script");
         return None;
@@ -477,6 +485,38 @@ mod tests {
         assert_eq!(third, first);
         assert_eq!(std::fs::read_to_string(&third).expect("read"), "two\n");
         let _ = std::fs::remove_file(&third);
+    }
+
+    /// `ensure_script` is called once per pane spawn, so several calls can be in
+    /// flight at once — and it must never hand back a path to a partially written
+    /// file. This hammers it from eight threads and reads the result every time.
+    ///
+    /// Regression test: with the scratch file named after the pid alone, every
+    /// thread shared one temp path, so one could truncate it while another renamed
+    /// it into place and a reader would get an empty script. That surfaced as a
+    /// single CI target failing while every other one passed.
+    #[test]
+    fn ensure_script_is_safe_under_concurrent_calls() {
+        const BODY: &str = "concurrent body\n";
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    for _ in 0..60 {
+                        let Some(path) = ensure_script("terminale-race-test.bash", BODY) else {
+                            return; // no home directory on this host
+                        };
+                        let got = std::fs::read_to_string(&path).unwrap_or_default();
+                        assert_eq!(got, BODY, "a concurrent call exposed a partial script");
+                    }
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("worker thread panicked");
+        }
+        if let Some(dir) = terminale_config::paths::shell_integration_dir() {
+            let _ = std::fs::remove_file(dir.join("terminale-race-test.bash"));
+        }
     }
 
     /// The cases where `--rcfile` would be wrong: a shell already told what to
