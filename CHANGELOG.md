@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   appear and the setting costs nothing.
 
 ### Fixed
+- **The Quake hotkey silently died when terminale was launched from another
+  terminal.** 0.1.42 taught terminale to claim its own systemd app scope so the
+  global-shortcuts portal would accept the binding however the app was started —
+  but the "do I already have an application id?" check only asked whether the
+  cgroup leaf *looked* like an application unit, not whether it was **ours**.
+  Launch terminale from a terminal emulator that scopes each of its windows —
+  ghostty names them `app-ghostty-surface-transient-<n>.scope` — and that check
+  passed, so terminale never claimed a scope, wore the host terminal's identity,
+  and the portal answered `NotAllowed("An app id is required")`. The symptom is
+  the drop-down hiding once and never coming back, for the whole session. The
+  check now matches on the app id as a whole dash-delimited segment, which still
+  accepts both spellings a real launch produces (`app-terminale-<pid>.scope` and
+  GNOME's `app-gnome-terminale-<pid>.scope`) while rejecting other applications'.
+
 - **Search highlights and link underlines were overwriting each other.** Both
   wrote to one shared slot in the renderer, so whichever ran last won. With the
   default `link_underline = "hover"` that meant the *next mouse move* erased the

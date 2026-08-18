@@ -157,13 +157,24 @@ pub(crate) fn ensure_app_scope(runtime: &tokio::runtime::Runtime) -> bool {
     }
 }
 
-/// The leaf systemd unit this process lives in, when it is an *application*
-/// unit (`app-….scope` / `app-….service`) — the form the desktop parses an
-/// application id out of.
+/// The leaf systemd unit this process lives in, when it is *our* application
+/// unit — the form the desktop parses our application id out of.
 ///
-/// Only the leaf counts. A shell inside GNOME Console, say, sits at
-/// `…/app-…-org.gnome.Console.slice/vte-spawn-….scope`: an `app-…` ancestor,
-/// but a leaf that names the terminal's spawn helper, not an application.
+/// Two things make this narrower than it looks.
+///
+/// Only the leaf counts. A shell inside GNOME Console sits at
+/// `…/app-…-org.gnome.Console.slice/vte-spawn-….scope`: an `app-…` ancestor, but
+/// a leaf that names the terminal's spawn helper, not an application.
+///
+/// And the unit has to name *terminale*, not merely some application. Launch
+/// terminale from a terminal emulator that puts each of its windows in its own
+/// app scope — ghostty does, as `app-ghostty-surface-transient-<n>.scope` — and
+/// the leaf passes for an application unit while announcing somebody else's
+/// identity. Accepting it meant terminale skipped claiming a scope of its own,
+/// inherited the host terminal's app id, and the global-shortcuts portal then
+/// refused the Quake binding with `NotAllowed("An app id is required")`. The
+/// hotkey silently did nothing for the entire session, which is exactly how it
+/// presents: the drop-down hides once and never comes back.
 fn current_app_unit() -> Option<String> {
     let cgroup = std::fs::read_to_string("/proc/self/cgroup").ok()?;
     app_unit_in_cgroup(&cgroup)
@@ -177,6 +188,32 @@ fn is_app_unit(leaf: &str) -> bool {
         && (leaf.strip_suffix(".scope").is_some() || leaf.strip_suffix(".service").is_some())
 }
 
+/// Whether a cgroup leaf names an application unit belonging to *terminale*.
+///
+/// The desktop reads the app id out of `app-<app id>-<instance>.scope` (or the
+/// bare `app-<app id>.scope`), and `terminale.desktop` makes that id [`APP_ID`].
+/// So a unit that starts `app-ghostty-` is an application unit, just not ours —
+/// and treating it as ours is what left the process wearing another app's
+/// identity. Matching on the id keeps both real cases right: a launch from the
+/// application menu already sits in `app-terminale-….scope` and is left alone,
+/// while a launch from any other app's scope goes on to claim its own.
+fn is_our_app_unit(leaf: &str) -> bool {
+    if !is_app_unit(leaf) {
+        return false;
+    }
+    let stem = leaf
+        .strip_suffix(".scope")
+        .or_else(|| leaf.strip_suffix(".service"))
+        .unwrap_or(leaf);
+    // Match on a whole dash-delimited segment, because the id is not always the
+    // first one: GNOME Shell launches apps as `app-gnome-<app id>-<pid>.scope`,
+    // while a self-claimed or systemd-run scope is `app-<app id>-<pid>.scope`.
+    // Comparing segments accepts both and still rejects
+    // `app-ghostty-surface-transient-<n>.scope`, where our id appears nowhere.
+    stem.strip_prefix("app-")
+        .is_some_and(|rest| rest.split('-').any(|seg| seg == APP_ID))
+}
+
 /// Pure half of [`current_app_unit`]: pick the application unit out of the
 /// contents of `/proc/self/cgroup`. Split out so the parsing is testable
 /// without a particular process placement.
@@ -187,7 +224,7 @@ fn app_unit_in_cgroup(cgroup: &str) -> Option<String> {
         .lines()
         .filter_map(|l| l.rsplit(':').next())
         .filter_map(|path| path.rsplit('/').next())
-        .find(|leaf| is_app_unit(leaf))
+        .find(|leaf| is_our_app_unit(leaf))
         .map(ToString::to_string)
 }
 
@@ -526,6 +563,39 @@ mod tests {
         let service = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
                        app-terminale-7.service\n";
         assert!(app_unit_in_cgroup(service).is_some());
+    }
+
+    /// Another application's scope is not ours, however much it looks like an
+    /// application unit.
+    ///
+    /// Launching terminale from a terminal emulator that scopes each of its
+    /// windows — ghostty names them `app-ghostty-surface-transient-<n>.scope` —
+    /// used to satisfy the "am I already identified?" check, so terminale never
+    /// claimed a scope of its own and wore ghostty's identity instead. The
+    /// global-shortcuts portal then answered `NotAllowed("An app id is
+    /// required")` and the Quake hotkey did nothing for the whole session.
+    #[test]
+    fn another_apps_scope_is_not_ours() {
+        let ghostty = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                       app-ghostty-surface-transient-6975.scope\n";
+        assert_eq!(app_unit_in_cgroup(ghostty), None);
+        // Same shape, different neighbours: still not us.
+        for leaf in [
+            "app-ghostty.scope",
+            "app-org.wezfurlong.wezterm-1234.scope",
+            "app-Alacritty-9.scope",
+        ] {
+            assert!(!is_our_app_unit(leaf), "{leaf} must not read as ours");
+        }
+        // …and the ones that are ours keep matching, whoever launched them.
+        for leaf in [
+            "app-terminale.scope",
+            "app-terminale-201486.scope",
+            "app-gnome-terminale-4242.scope",
+            "app-flatpak-terminale-7.service",
+        ] {
+            assert!(is_our_app_unit(leaf), "{leaf} must read as ours");
+        }
     }
 
     /// A process outside any application unit (a plain login shell, a system
