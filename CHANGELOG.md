@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.43]
+
 ### Changed
 - **Prompt status dots are on by default.** `terminal.show_prompt_marks` draws a
   small dot in the left margin at each prompt — green for exit 0, red for a
@@ -1310,7 +1312,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.42...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...HEAD
+[0.1.43]: https://github.com/fbrzlarosa/terminale/compare/v0.1.42...v0.1.43
 [0.1.42]: https://github.com/fbrzlarosa/terminale/compare/v0.1.41...v0.1.42
 [0.1.41]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...v0.1.41
 [0.1.40]: https://github.com/fbrzlarosa/terminale/compare/v0.1.39...v0.1.40
