@@ -1624,7 +1624,7 @@ pub(crate) fn toggle_quake(
             ) {
                 state.quake_anim = None;
                 if focus_on_show {
-                    state.window.focus_window();
+                    take_quake_focus(&state.window);
                     assert_quake_focus(state);
                 }
                 return;
@@ -1659,7 +1659,7 @@ pub(crate) fn toggle_quake(
             }
             state.window.set_visible(true);
             if focus_on_show {
-                state.window.focus_window();
+                take_quake_focus(&state.window);
                 assert_quake_focus(state);
             }
             state.quake_anim = Some(QuakeAnim {
@@ -1682,9 +1682,27 @@ pub(crate) fn toggle_quake(
     set_window_alpha(&state.window, 255);
     state.window.set_visible(true);
     if focus_on_show {
-        state.window.focus_window();
+        take_quake_focus(&state.window);
         assert_quake_focus(state);
     }
+}
+
+/// Take keyboard focus for a Quake reveal, preferring a properly timestamped
+/// window-manager activation over winit's own request.
+///
+/// winit sends `_NET_ACTIVE_WINDOW` with `CurrentTime`, and Mutter refuses to
+/// compare a zero timestamp against the user's last input — so instead of
+/// focusing, GNOME shows its "<app> is ready" notification and the reveal lands
+/// without the keyboard. [`crate::linux_window::activate_window`] sends the same
+/// request with a real server timestamp; when that is unavailable (no X11
+/// connection, a native Wayland surface, a lost round-trip) this falls straight
+/// back to winit, which is no worse than before.
+pub(crate) fn take_quake_focus(window: &Window) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if crate::linux_window::activate_window(window) {
+        return;
+    }
+    window.focus_window();
 }
 
 /// Force the app's own idea of "this window is focused" to match immediately
