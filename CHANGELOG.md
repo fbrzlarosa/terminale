@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **A Quake reveal took the keyboard instead of announcing itself in the
+  notification tray.** Showing the drop-down produced GNOME's "terminale is
+  ready" banner and left focus where it was. The cause is a single number: winit's
+  `focus_window()` sends `_NET_ACTIVE_WINDOW` with `CurrentTime` (0), and Mutter's
+  focus-stealing prevention cannot compare a zero timestamp against the user's
+  last input, so it takes the safe path and notifies rather than focusing.
+  terminale now sends that request itself, via the X11 connection it already
+  keeps for EWMH writes, carrying a real server timestamp obtained the way the
+  protocol intends — appending zero bytes to a property on its own window and
+  reading the time off the resulting `PropertyNotify`. Source indication stays 1
+  (application), which was always correct; the widely repeated trick of claiming
+  to be a pager to bypass the check is folklore, and the one Mutter-lineage source
+  that spells the rule out treats a zero-timestamp pager request *more* strictly.
+  Falls back to winit's request when there is no X11 connection or the round-trip
+  is lost, which is no worse than before.
+
+
 ## [0.1.43]
 
 ### Changed

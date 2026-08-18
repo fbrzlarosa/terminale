@@ -288,6 +288,11 @@ struct X11Conn {
     /// `_NET_CURRENT_DESKTOP` — indexes into `_NET_WORKAREA`, which holds one
     /// rect per virtual desktop.
     current_desktop: u32,
+    /// `_NET_ACTIVE_WINDOW` — the "please focus this window" request.
+    active_window: u32,
+    /// A private property used only as a timestamp probe; see
+    /// [`server_timestamp`].
+    timestamp_probe: u32,
 }
 
 /// Lazily-opened shared X11 connection. `None` once an attempt has failed, so
@@ -325,6 +330,14 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         .intern_atom(false, b"_NET_CURRENT_DESKTOP")?
         .reply()?
         .atom;
+    let active_window = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")?
+        .reply()?
+        .atom;
+    let timestamp_probe = conn
+        .intern_atom(false, b"_TERMINALE_TIMESTAMP")?
+        .reply()?
+        .atom;
     Ok(X11Conn {
         conn,
         root,
@@ -332,7 +345,122 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         desktop,
         workarea,
         current_desktop,
+        active_window,
+        timestamp_probe,
     })
+}
+
+/// A genuine X server timestamp, obtained the way the protocol intends:
+/// append zero bytes to a property on our own window and read the time out of
+/// the `PropertyNotify` the server sends back.
+///
+/// This exists because of one number. Mutter's focus-stealing prevention
+/// compares an activation request's timestamp against the user's last input;
+/// a request carrying `CurrentTime` (0) cannot be compared, so it takes the
+/// safe path and shows "<app> is ready" instead of focusing. winit's
+/// `focus_window()` sends exactly that — `_NET_ACTIVE_WINDOW` with
+/// `CURRENT_TIME` — which is why a Quake reveal announced itself in the
+/// notification tray rather than taking the keyboard.
+///
+/// The event mask is selected and cleared around the probe: X11 event masks are
+/// per-client, so this neither disturbs winit's own selection on the same window
+/// nor leaves `PropertyNotify` traffic accumulating unread on this connection.
+fn server_timestamp(x: &X11Conn, win: u32) -> Option<u32> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{
+        AtomEnum, ChangeWindowAttributesAux, ConnectionExt, EventMask, PropMode,
+    };
+    use x11rb::protocol::Event;
+    // `change_property8` lives on the wrapper trait, not the protocol one; both
+    // are called `ConnectionExt`, hence the anonymous import.
+    use x11rb::wrapper::ConnectionExt as _;
+
+    x.conn
+        .change_window_attributes(
+            win,
+            &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE),
+        )
+        .ok()?
+        .check()
+        .ok()?;
+    // Appending nothing still counts as a property change, so the server
+    // timestamps it without the property ever growing.
+    let probe = x
+        .conn
+        .change_property8(
+            PropMode::APPEND,
+            win,
+            x.timestamp_probe,
+            AtomEnum::STRING,
+            &[],
+        )
+        .ok()
+        .and_then(|c| c.check().ok());
+    let mut stamp = None;
+    if probe.is_some() {
+        let _ = x.conn.flush();
+        // Bounded: a lost round-trip must cost a fallback, not the UI thread.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        while std::time::Instant::now() < deadline {
+            match x.conn.poll_for_event() {
+                Ok(Some(Event::PropertyNotify(e))) if e.window == win => {
+                    stamp = Some(e.time);
+                    break;
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(2)),
+                Err(_) => break,
+            }
+        }
+    }
+    let _ = x.conn.change_window_attributes(
+        win,
+        &ChangeWindowAttributesAux::new().event_mask(EventMask::NO_EVENT),
+    );
+    let _ = x.conn.flush();
+    stamp
+}
+
+/// Ask the window manager to focus `window`, with a real timestamp.
+///
+/// Returns `false` when there is no X11 connection or the request could not be
+/// sent, so the caller can fall back to winit's own `focus_window()`.
+///
+/// Source indication is 1 (application), per EWMH — which is the truth, and the
+/// part that was already right. Only the timestamp was wrong. (Source 2, "pager",
+/// is often described as bypassing focus-stealing prevention; that is folklore.
+/// The one Mutter-lineage source that spells the rule out treats a *pager*
+/// request with a zero timestamp more strictly, not less, so this stays honest
+/// about what it is and supplies a timestamp the WM can actually compare.)
+pub(crate) fn activate_window(window: &Window) -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
+
+    let Some(x) = x11() else {
+        return false;
+    };
+    let Some(win) = x11_window_id(window) else {
+        return false;
+    };
+    let Some(time) = server_timestamp(x, win) else {
+        tracing::debug!("no X server timestamp; leaving activation to winit");
+        return false;
+    };
+    let event = ClientMessageEvent::new(32, win, x.active_window, [1, time, 0, 0, 0]);
+    let sent = x
+        .conn
+        .send_event(
+            false,
+            x.root,
+            EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+            event,
+        )
+        .is_ok();
+    let _ = x.conn.flush();
+    if sent {
+        tracing::debug!(time, "asked the window manager to activate the window");
+    }
+    sent
 }
 
 /// Read a CARDINAL array property from the root window.

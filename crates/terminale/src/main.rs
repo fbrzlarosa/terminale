@@ -13,13 +13,13 @@ mod app_icon;
 mod config_watch;
 mod confirm_close;
 mod context_menu_window;
-#[cfg(target_os = "linux")]
 // The control API's vocabulary and handler. Unix-only for as long as its only
 // transport is the Unix socket in `ipc`; a Windows named-pipe transport is what
 // would flip this on there, without changing anything in the module itself.
 #[cfg(unix)]
 mod control;
 mod copy_mode;
+#[cfg(target_os = "linux")]
 mod desktop_entry;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod desktop_shortcut;
@@ -3035,7 +3035,11 @@ impl TerminaleApp {
             .and_then(|id| self.window_index(id))
             .or_else(|| self.windows.len().checked_sub(1))
         {
-            self.windows[idx].window.focus_window();
+            // Timestamped WM activation, not a bare focus request: this is the
+            // one focus call a Quake reveal actually makes (the per-window shows
+            // above deliberately run unfocused), so it is the one that decides
+            // whether GNOME focuses us or shows "<app> is ready" instead.
+            crate::window_anim::take_quake_focus(&self.windows[idx].window);
             crate::window_anim::assert_quake_focus(&mut self.windows[idx]);
         }
     }
