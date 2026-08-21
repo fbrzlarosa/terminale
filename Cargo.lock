@@ -327,6 +327,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ashpd"
+version = "0.13.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb8421aaa9644a5faf26735f258b669b15f063313ef8f8e2bdb28912a1a6f111"
+dependencies = [
+ "enumflags2",
+ "futures-util",
+ "getrandom 0.4.2",
+ "serde",
+ "tokio",
+ "zbus 5.15.0",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5076,7 +5090,7 @@ version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a15ad77d9e70a92437d8f74c35d99b4e4691128df018833e99f90bcd36152672"
 dependencies = [
- "ashpd",
+ "ashpd 0.11.1",
  "block2 0.6.2",
  "dispatch2",
  "js-sys",
@@ -6294,7 +6308,7 @@ version = "0.1.44"
 dependencies = [
  "anyhow",
  "arboard",
- "ashpd",
+ "ashpd 0.13.13",
  "bytes",
  "chrono",
  "clap",
