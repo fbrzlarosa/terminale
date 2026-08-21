@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **"Update failed: atomically replace the running binary: No such file or
+  directory".** Linux's `/proc/self/exe` gains a ` (deleted)` suffix once the
+  binary behind a process has been unlinked, and `std::env::current_exe()`
+  returns that verbatim — a path that cannot exist. `self_replace` resolves its
+  own target through that call, so it was trying to replace a file named
+  `… (deleted)` and failing with `ENOENT`, reported a long way from the cause.
+  The state is ordinary, not exotic: it is what a completed self-update, a
+  package-manager upgrade or a rebuild during development leaves behind, so
+  updating twice in one session hit it every time. terminale now recognises the
+  marker and, when the install path still holds a binary, puts the new one there
+  itself — staged in the same directory so the rename is atomic, carrying over
+  the install's own mode rather than assuming `0o755`. When nothing is left at
+  that path there is genuinely nothing to update, and it says so instead of
+  reporting a missing file.
+- **A `.desktop` entry could be written with an unlaunchable `Exec=`.** The
+  application-menu, drop-down and autostart entries all take their `Exec` from
+  the running executable's path, so the same ` (deleted)` marker could be
+  baked into a launcher — most easily by toggling the entry off and on again
+  in a session whose binary had been replaced. All three now go through the
+  same resolution.
+
 
 ## [0.1.45]
 

@@ -133,7 +133,10 @@ pub fn ensure_installed() -> io::Result<bool> {
     let Some(data) = data_home() else {
         return Ok(false);
     };
-    let exec = std::env::current_exe()?.to_string_lossy().into_owned();
+    // Not `current_exe()`: on Linux that carries a `(deleted)` marker once the
+    // binary has been replaced under this process, and writing it into `Exec=`
+    // produces a launcher that cannot launch anything. See `update::running_exe`.
+    let exec = crate::update::running_exe()?.to_string_lossy().into_owned();
 
     let icon_dir = data.join("icons/hicolor/scalable/apps");
     std::fs::create_dir_all(&icon_dir)?;
@@ -213,7 +216,10 @@ pub fn ensure_autostart() -> io::Result<bool> {
     let Some(path) = autostart_path() else {
         return Ok(false);
     };
-    let exec = std::env::current_exe()?.to_string_lossy().into_owned();
+    // Not `current_exe()`: on Linux that carries a `(deleted)` marker once the
+    // binary has been replaced under this process, and writing it into `Exec=`
+    // produces a launcher that cannot launch anything. See `update::running_exe`.
+    let exec = crate::update::running_exe()?.to_string_lossy().into_owned();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -259,7 +265,10 @@ pub fn ensure_quake_launcher() -> io::Result<bool> {
     let Some(data) = data_home() else {
         return Ok(false);
     };
-    let exec = std::env::current_exe()?.to_string_lossy().into_owned();
+    // Not `current_exe()`: on Linux that carries a `(deleted)` marker once the
+    // binary has been replaced under this process, and writing it into `Exec=`
+    // produces a launcher that cannot launch anything. See `update::running_exe`.
+    let exec = crate::update::running_exe()?.to_string_lossy().into_owned();
     let apps_dir = data.join("applications");
     std::fs::create_dir_all(&apps_dir)?;
     write_if_changed(
