@@ -18,6 +18,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   not answering is not helped by starting a second one. New
   `integration.quake_launch_on_demand` (default `true`), with a switch in
   Settings › Desktop integration.
+- **Start hidden at login, so the first press of the hotkey is instant.** A
+  press that has to *start* terminale cannot feel quick however fast terminale
+  is — the process, the GPU surface and the shell all come up before anything
+  appears, and that is the whole latency of a cold drop-down.
+  `integration.autostart` moves the cost to login: it writes an autostart entry
+  running `terminale --start-hidden`, which builds the window, brings up its
+  surface and starts its shell, and then simply does not map it. The first press
+  is a reveal like every press after it. Turning the setting off removes the
+  entry, and the new `--start-hidden` flag is usable on its own from a session
+  script. Switch in Settings › Desktop integration.
 - **A drop-down launcher entry, for desktops where a shell extension owns the
   drop-down.** On GNOME under Wayland an application may not grab a global key,
   may not place its own window, and may not animate it onto the screen — between

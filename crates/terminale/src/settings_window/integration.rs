@@ -230,6 +230,51 @@ impl SettingsWindow {
 
             ui.add_space(6.0);
 
+            // ── Warm start ──────────────────────────────────────────────────
+            card(ui, |ui| {
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Start hidden when you log in");
+                    let on = self.config.integration.autostart;
+                    if toggle_switch(ui, on).clicked() {
+                        let now_on = !on;
+                        self.config.integration.autostart = now_on;
+                        dirty = true;
+                        // Apply immediately, in both directions: a switch that
+                        // only ever writes the entry is a switch that cannot be
+                        // turned off.
+                        if now_on {
+                            if let Err(e) = crate::desktop_entry::ensure_autostart() {
+                                self.quake_extension_status =
+                                    Some(format!("Could not write the autostart entry: {e}"));
+                            }
+                        } else {
+                            crate::desktop_entry::remove_autostart();
+                        }
+                    }
+                    ui.add_space(8.0);
+                    let on = self.config.integration.autostart;
+                    ui.label(
+                        egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                            egui::Color32::from_rgb(120, 220, 140)
+                        } else {
+                            egui::Color32::from_rgb(140, 150, 175)
+                        }),
+                    );
+                });
+                self.highlight_row(
+                    ui,
+                    hr.response.rect,
+                    Section::Integration,
+                    "Start hidden when you log in",
+                );
+                sublabel(
+                    ui,
+                    "This is what makes the drop-down feel instant. A hotkey that has to                      start terminale cannot be quick however fast terminale is — the                      process, the GPU surface and the shell all have to come up before                      anything appears. With this on all of that happens at login, the                      window simply stays unmapped, and the first press of the hotkey is a                      reveal like every press after it. Writes an autostart entry under                      ~/.config/autostart; turning it off removes it.",
+                );
+            });
+
+            ui.add_space(6.0);
+
             // ── Hand the drop-down to a shell extension ─────────────────────
             self.section_quake_extension(ui, &mut dirty);
 

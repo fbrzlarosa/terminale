@@ -407,6 +407,15 @@ struct Cli {
     #[arg(long)]
     quake: bool,
 
+    /// Start with the window hidden, ready for the Quake hotkey to reveal it.
+    ///
+    /// This is what makes a drop-down feel instant: the process, the GPU
+    /// surface and the shell are all up before you ever press the key, so the
+    /// first press is a show rather than a launch. Intended for an autostart
+    /// entry — see `integration.autostart`, which writes one.
+    #[arg(long)]
+    start_hidden: bool,
+
     /// Override the application id this instance presents to the desktop —
     /// the Wayland `app_id` / X11 `WM_CLASS`.
     ///
@@ -984,6 +993,21 @@ fn main() -> Result<()> {
         }
     }
 
+    // Autostart follows its setting in both directions, for the same reason as
+    // the launcher below: a switch that only ever writes is a switch that
+    // cannot be turned off.
+    #[cfg(target_os = "linux")]
+    if config.integration.autostart {
+        match desktop_entry::ensure_autostart() {
+            Ok(true) => tracing::info!("registered the autostart entry"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(?e, "could not register the autostart entry"),
+        }
+    } else if desktop_entry::autostart_installed() {
+        desktop_entry::remove_autostart();
+        tracing::info!("removed the autostart entry");
+    }
+
     // The drop-down launcher is opt-in, and follows the setting in both
     // directions: turning it off has to actually take the entry out of the
     // application list, not just stop refreshing it.
@@ -1125,6 +1149,7 @@ fn main() -> Result<()> {
         hotkeys,
         quake_hotkey_id,
         quake_binding_registered,
+        start_hidden: cli.start_hidden,
         portal_shortcut_active: false,
         quake_hotkey_suspended: false,
         plugins,
@@ -1610,6 +1635,10 @@ struct TerminaleApp {
     /// `id()` of the Quake-toggle hotkey, set when registration
     /// succeeded so `about_to_wait` knows which event to react to.
     quake_hotkey_id: Option<u32>,
+    /// `--start-hidden`: skip revealing the first window, so the Quake hotkey
+    /// has something warm to show instead of something to launch. Cleared once
+    /// honoured — a second window opened later is an ordinary window.
+    start_hidden: bool,
     /// The Quake hotkey binding currently registered with the OS. Compared to
     /// `config.keybinds.quake` every tick so a Settings change or config-file
     /// reload re-registers the hotkey live instead of needing a restart.
@@ -7734,10 +7763,21 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     open_settings(state);
                 }
             }
-            // Paint the first frame into the hidden window, then reveal it
-            // (cloak-around-show on Windows) so the user never sees a white
-            // flash — the window appears already showing the dark UI.
-            reveal_window(state);
+            if std::mem::take(&mut self.start_hidden) {
+                // Stay hidden, and tell the Quake state machine so — otherwise
+                // it believes the window is on screen and the first press of
+                // the hotkey would try to hide what is already hidden. The
+                // window, its GPU surface and its shell are all live; the only
+                // thing missing is the map, which is exactly what makes the
+                // first reveal instant.
+                state.quake_visible = false;
+                tracing::info!("started hidden; the Quake hotkey will reveal this window");
+            } else {
+                // Paint the first frame into the hidden window, then reveal it
+                // (cloak-around-show on Windows) so the user never sees a white
+                // flash — the window appears already showing the dark UI.
+                reveal_window(state);
+            }
             // Apply the configured startup position, if any. Done AFTER
             // reveal so the monitor + scale factor are stable; the snap
             // helper already handles missing-monitor gracefully.

@@ -185,6 +185,18 @@ pub struct IntegrationConfig {
     /// second one would not help. Unix only. Default: `true`.
     #[serde(default = "default_true")]
     pub quake_launch_on_demand: bool,
+    /// Start terminale hidden when you log in, so the drop-down hotkey has a
+    /// window to reveal rather than an application to launch.
+    ///
+    /// A drop-down that starts the terminal on the first keypress cannot feel
+    /// instant however fast the terminal is — the process, the GPU surface and
+    /// the shell all have to come up first, and only then does anything appear.
+    /// With this on, all of that happened at login and the first press is a
+    /// reveal like every press after it. Writes an autostart entry under
+    /// `$XDG_CONFIG_HOME/autostart`; turning it off removes the entry again.
+    /// Linux only. Default: `false`.
+    #[serde(default)]
+    pub autostart: bool,
     /// On Linux, also install a second, drop-down-only desktop entry
     /// (`terminale.Quake.desktop`) alongside the application-menu one.
     ///
@@ -214,6 +226,7 @@ impl Default for IntegrationConfig {
             global_shortcuts_portal: true,
             control_api: ControlApiConfig::default(),
             quake_launch_on_demand: true,
+            autostart: false,
             quake_desktop_entry: false,
         }
     }
@@ -250,6 +263,8 @@ mod tests {
         // A hotkey that does nothing on the first press of the session is the
         // behaviour this defaults away from.
         assert!(cfg.quake_launch_on_demand);
+        // Neither writes anything into the user's session uninvited.
+        assert!(!cfg.autostart);
         // The second launcher entry only makes sense with a drop-down shell
         // extension, so it is opt-in.
         assert!(!cfg.quake_desktop_entry);
@@ -264,6 +279,7 @@ mod tests {
             toml::from_str("desktop_entry = true\ncontrol_socket = true\n")
                 .expect("an older config must still parse");
         assert!(cfg.quake_launch_on_demand);
+        assert!(!cfg.autostart);
         assert!(!cfg.quake_desktop_entry);
     }
 

@@ -2749,6 +2749,10 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Integration,
+            label: "Start hidden when you log in",
+        },
+        SearchEntry {
+            section: Section::Integration,
             label: "Drop-down via shell extension",
         },
     ]

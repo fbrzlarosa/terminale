@@ -32,6 +32,9 @@ pub const QUAKE_APP_ID: &str = "terminale.Quake";
 /// A desktop entry's *id* is its basename, and that is what a shell extension
 /// stores as the app to launch — so the file name is part of the contract.
 const QUAKE_DESKTOP_FILE: &str = "terminale.Quake.desktop";
+/// Autostart entries live under their own directory, one file per application,
+/// and are keyed by file name — so this one shares the application's name.
+const AUTOSTART_FILE: &str = "terminale.desktop";
 
 /// `$XDG_DATA_HOME`, falling back to `$HOME/.local/share` per the XDG spec.
 /// A relative `$XDG_DATA_HOME` is ignored (the spec requires an absolute path).
@@ -146,6 +149,84 @@ pub fn ensure_installed() -> io::Result<bool> {
     Ok(changed)
 }
 
+/// `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` per the XDG spec.
+/// A relative `$XDG_CONFIG_HOME` is ignored (the spec requires an absolute path).
+fn config_home() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        let p = PathBuf::from(xdg);
+        if p.is_absolute() {
+            return Some(p);
+        }
+    }
+    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
+}
+
+/// Render the autostart entry's body.
+///
+/// It launches terminale `--start-hidden`, which is the whole point: a
+/// drop-down that has to start an application on the first keypress cannot feel
+/// instant, however fast the application is. With the process, the GPU surface
+/// and the shell already up and only the window unmapped, the first press is a
+/// reveal like every press after it.
+///
+/// `X-GNOME-Autostart-enabled=true` is what GNOME's own tooling writes and
+/// what it flips when a user disables an entry from the Tweaks UI, so honouring
+/// the key keeps that switch meaningful. `NoDisplay=true` keeps this entry out
+/// of the application menu — the menu already has one, and this file exists to
+/// be read by the session, not clicked.
+fn autostart_contents(exec: &str) -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Version=1.0\n\
+         Name=terminale\n\
+         Comment=Start terminale hidden, ready for the drop-down hotkey\n\
+         Exec=\"{exec}\" --start-hidden\n\
+         Icon={ICON_NAME}\n\
+         Terminal=false\n\
+         NoDisplay=true\n\
+         X-GNOME-Autostart-enabled=true\n"
+    )
+}
+
+/// Path the autostart entry is installed at, if there is anywhere to put it.
+fn autostart_path() -> Option<PathBuf> {
+    config_home().map(|c| c.join("autostart").join(AUTOSTART_FILE))
+}
+
+/// Whether terminale is set to start hidden at login.
+#[must_use]
+pub fn autostart_installed() -> bool {
+    autostart_path().is_some_and(|p| p.is_file())
+}
+
+/// Install (or refresh) the autostart entry for the current executable.
+///
+/// Returns `Ok(true)` when the file was written, `Ok(false)` when it was
+/// already up to date.
+///
+/// # Errors
+///
+/// Propagates filesystem errors. Returns `Ok(false)` if neither
+/// `$XDG_CONFIG_HOME` nor `$HOME` is set (nowhere to install).
+pub fn ensure_autostart() -> io::Result<bool> {
+    let Some(path) = autostart_path() else {
+        return Ok(false);
+    };
+    let exec = std::env::current_exe()?.to_string_lossy().into_owned();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_if_changed(&path, autostart_contents(&exec).as_bytes())
+}
+
+/// Remove the autostart entry. Best-effort.
+pub fn remove_autostart() {
+    if let Some(p) = autostart_path() {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
 /// Path the drop-down launcher is installed at, if there is anywhere to put it.
 fn quake_launcher_path() -> Option<PathBuf> {
     data_home().map(|d| d.join("applications").join(QUAKE_DESKTOP_FILE))
@@ -248,6 +329,21 @@ mod tests {
         // A desktop entry's id is its basename; the extension stores it verbatim.
         assert_eq!(quake_launcher_id(), QUAKE_DESKTOP_FILE);
         assert!(QUAKE_DESKTOP_FILE.ends_with(".desktop"));
+    }
+
+    #[test]
+    fn autostart_entry_starts_hidden_and_stays_out_of_the_menu() {
+        let body = autostart_contents("/usr/bin/terminale");
+        assert!(body.starts_with("[Desktop Entry]"));
+        // The whole reason the entry exists: warm, not visible.
+        assert!(body.contains("--start-hidden"));
+        // The application menu already has an entry; this one is for the
+        // session to read, not for anyone to click.
+        assert!(body.contains("NoDisplay=true"));
+        // Honour the switch GNOME's own tooling flips.
+        assert!(body.contains("X-GNOME-Autostart-enabled=true"));
+        // An autostart entry that opened a drop-down would defeat itself.
+        assert!(!body.contains("--quake"));
     }
 
     #[test]

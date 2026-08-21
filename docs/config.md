@@ -444,6 +444,7 @@ linux_backend           = "auto" # auto | x11 | wayland — see below
 control_socket          = true   # serve `terminale --toggle-quake` + `terminale ctl`
 global_shortcuts_portal = true   # register the Quake hotkey with the desktop
 quake_launch_on_demand  = true   # the Quake hotkey may START terminale, not just toggle it
+autostart               = false  # start hidden at login so the first press is instant
 quake_desktop_entry     = false  # also install terminale.Quake.desktop for a shell extension
 
 [integration.control_api]        # what `terminale ctl` may do — see control-api.md
@@ -512,6 +513,25 @@ every press after it is a plain toggle — which is what makes a desktop-owned
 hotkey work from a fresh login without anything in your autostart. Only a
 *missing* socket triggers it: an instance that is running but not answering is
 not helped by starting a second one.
+
+#### Making the first press instant
+
+`quake_launch_on_demand` keeps the hotkey from doing nothing, but a press that
+has to *start* terminale cannot feel instant however fast terminale is: the
+process, the GPU surface and the shell all come up first, and only then does a
+window appear.
+
+`autostart = true` removes that cost by moving it to login. It writes an entry
+under `$XDG_CONFIG_HOME/autostart` that launches `terminale --start-hidden`: the
+window is built, its surface is live and its shell is running, and the only thing
+that has not happened is the map. The first press of the hotkey is then a reveal,
+like every press after it. Turning the setting off removes the entry again.
+**Settings → Desktop integration → "Start hidden when you log in"** is the same
+switch.
+
+`--start-hidden` is also usable on its own, from a session script or a unit of
+your own making; it applies to the first window only, so a window opened later is
+an ordinary window.
 
 #### Letting a shell extension own the drop-down
 
