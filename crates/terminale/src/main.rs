@@ -8883,7 +8883,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.window.request_redraw();
                     return;
                 }
-                // Smart copy (Tabby / Windows Terminal behaviour): a bare
+                // Smart copy: a bare
                 // Ctrl+C while text is selected copies it instead of sending
                 // ^C (SIGINT) to the running program. The selection is
                 // cleared on copy, so the NEXT Ctrl+C interrupts as usual —

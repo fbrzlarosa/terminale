@@ -124,7 +124,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   but the "do I already have an application id?" check only asked whether the
   cgroup leaf *looked* like an application unit, not whether it was **ours**.
   Launch terminale from a terminal emulator that scopes each of its windows —
-  ghostty names them `app-ghostty-surface-transient-<n>.scope` — and that check
+  named `app-<that app>-surface-transient-<n>.scope` — and that check
   passed, so terminale never claimed a scope, wore the host terminal's identity,
   and the portal answered `NotAllowed("An app id is required")`. The symptom is
   the drop-down hiding once and never coming back, for the whole session. The
@@ -540,7 +540,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   metacharacters), and an optional trailing space (`terminal.drop_path_trailing_space`).
 - **Scroll to bottom on input.** Typing or pasting while scrolled up into
   history now snaps the viewport back to the live prompt (the standard
-  iTerm2 / Windows Terminal behaviour). Toggle under **Settings → Terminal**
+  "type to return to the prompt" behaviour). Toggle under **Settings → Terminal**
   (`window.scroll_on_input`, on by default).
 - **Per-tab "waiting for input" indicator.** When the program in a background
   tab rings the terminal bell (e.g. Claude Code finishing its turn and waiting
@@ -590,7 +590,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   unambiguous key events, most importantly `Shift+Enter` (`CSI 13;2u`) for
   multi-line input, plus disambiguated Ctrl/Alt combos, key press/repeat/release
   events, and associated text. The terminal also self-identifies via
-  `TERM_PROGRAM`/`TERM_PROGRAM_VERSION` like iTerm2/kitty/WezTerm. Toggle in
+  `TERM_PROGRAM`/`TERM_PROGRAM_VERSION`, as terminals conventionally do. Toggle in
   **Settings → Terminal → Kitty keyboard protocol** (default on).
 - **The app reopens exactly as you left it.** With session restore enabled, the
   last session now also restores the window's position and size, the monitor it
@@ -767,7 +767,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   views the focus border was drawn inset INSIDE the pane, landing right under
   the first and last text rows and columns. Each stroke is now centred on the
   pane boundary — recolouring the divider band and the window padding instead
-  (iTerm2-style) — so the content area stays untouched. Same treatment for
+  — so the content area stays untouched. Same treatment for
   the amber broadcast-input border.
 - **The text selection now follows the text.** Selecting and then scrolling
   (or new output arriving) left the highlight glued to fixed screen rows over
@@ -779,8 +779,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [0.1.25]
 
 ### Added
-- **Ctrl+C now copies when text is selected** — the smart-copy behaviour of
-  Tabby, Windows Terminal, and VS Code. With an active selection, a bare
+- **Ctrl+C now copies when text is selected** — the smart-copy behaviour
+  common on desktop terminals. With an active selection, a bare
   Ctrl+C copies it to the clipboard (and clears the selection) instead of
   sending the interrupt to the running program; pressing Ctrl+C again — or
   with nothing selected — sends `^C`/SIGINT exactly as before. Explicit

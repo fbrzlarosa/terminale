@@ -221,8 +221,8 @@ fn encode_press(
 
 /// Map a lower-cased key name to its winit named key.
 ///
-/// Aliases follow what other terminals' `send-keys` accept (tmux, kitty,
-/// wezterm), so a script written against one of those mostly works here.
+/// Aliases follow the spellings `send-keys` implementations conventionally
+/// accept, so a script written against one of those mostly works here.
 fn named_key(lower: &str) -> Option<NamedKey> {
     Some(match lower {
         "enter" | "return" | "cr" | "kpenter" | "kp_enter" => NamedKey::Enter,

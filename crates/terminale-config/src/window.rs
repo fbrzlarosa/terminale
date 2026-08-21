@@ -279,8 +279,8 @@ pub struct WindowConfig {
     pub smooth_scroll: bool,
     /// Snap the viewport back to the live edge (newest output) whenever you
     /// type a key or paste while scrolled up into history — the standard
-    /// "type to return to the prompt" behaviour of iTerm2, Windows Terminal,
-    /// and friends. When `false`, input is sent but the view stays parked in
+    /// "type to return to the prompt" behaviour. When `false`, input is sent
+    /// but the view stays parked in
     /// the scrollback (you keep reading history while typing blind). On by
     /// default. Note: this is independent of follow-on-output, which always
     /// keeps you pinned to the bottom while you are already there.

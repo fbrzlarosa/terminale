@@ -76,7 +76,6 @@ scrollback_lines = 10000       # 0 disables scrollback; applied live
 copy_on_select   = false       # copy to clipboard on selection
 scroll_on_input  = true        # typing/pasting while scrolled up in history
                                # snaps the view back to the live prompt
-                               # (iTerm2 / Windows Terminal behaviour)
 scrollbar        = "auto"      # interactive scrollback scrollbar: drag the
                                # thumb, click the track to jump. auto = shown
                                # while scrolled or on right-edge hover;
@@ -200,8 +199,7 @@ still leave a timestamped trace. It applies live and is also exposed in
 ```toml
 [terminal]
 ctrl_c_copies_selection = true # Ctrl+C with text selected copies it instead of
-                               # interrupting (like Tabby / Windows Terminal);
-                               # the selection clears on copy, so a second
+                               # interrupting; the selection clears on copy, so a second
                                # Ctrl+C interrupts as usual. false = always ^C
 # Drag & drop: dropping files onto the window inserts their paths into the
 # focused pane (like a paste) — drop an image onto Claude Code and it reads it.

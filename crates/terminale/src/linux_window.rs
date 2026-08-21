@@ -167,9 +167,9 @@ pub(crate) fn ensure_app_scope(runtime: &tokio::runtime::Runtime) -> bool {
 /// a leaf that names the terminal's spawn helper, not an application.
 ///
 /// And the unit has to name *terminale*, not merely some application. Launch
-/// terminale from a terminal emulator that puts each of its windows in its own
-/// app scope — ghostty does, as `app-ghostty-surface-transient-<n>.scope` — and
-/// the leaf passes for an application unit while announcing somebody else's
+/// terminale from an application that puts each of its windows in its own app
+/// scope — `app-<that app>-surface-transient-<n>.scope` — and the leaf passes
+/// for an application unit while announcing somebody else's
 /// identity. Accepting it meant terminale skipped claiming a scope of its own,
 /// inherited the host terminal's app id, and the global-shortcuts portal then
 /// refused the Quake binding with `NotAllowed("An app id is required")`. The
@@ -192,8 +192,8 @@ fn is_app_unit(leaf: &str) -> bool {
 ///
 /// The desktop reads the app id out of `app-<app id>-<instance>.scope` (or the
 /// bare `app-<app id>.scope`), and `terminale.desktop` makes that id [`APP_ID`].
-/// So a unit that starts `app-ghostty-` is an application unit, just not ours —
-/// and treating it as ours is what left the process wearing another app's
+/// So a unit naming some other application is an application unit, just not
+/// ours — and treating it as ours is what left the process wearing another app's
 /// identity. Matching on the id keeps both real cases right: a launch from the
 /// application menu already sits in `app-terminale-….scope` and is left alone,
 /// while a launch from any other app's scope goes on to claim its own.
@@ -208,8 +208,8 @@ fn is_our_app_unit(leaf: &str) -> bool {
     // Match on a whole dash-delimited segment, because the id is not always the
     // first one: GNOME Shell launches apps as `app-gnome-<app id>-<pid>.scope`,
     // while a self-claimed or systemd-run scope is `app-<app id>-<pid>.scope`.
-    // Comparing segments accepts both and still rejects
-    // `app-ghostty-surface-transient-<n>.scope`, where our id appears nowhere.
+    // Comparing segments accepts both and still rejects another application's
+    // `app-<name>-surface-transient-<n>.scope`, where our id appears nowhere.
     stem.strip_prefix("app-")
         .is_some_and(|rest| rest.split('-').any(|seg| seg == APP_ID))
 }
@@ -811,22 +811,22 @@ mod tests {
     /// Another application's scope is not ours, however much it looks like an
     /// application unit.
     ///
-    /// Launching terminale from a terminal emulator that scopes each of its
-    /// windows — ghostty names them `app-ghostty-surface-transient-<n>.scope` —
-    /// used to satisfy the "am I already identified?" check, so terminale never
-    /// claimed a scope of its own and wore ghostty's identity instead. The
+    /// Launching terminale from an application that scopes each of its windows
+    /// — `app-<that app>-surface-transient-<n>.scope` — used to satisfy the
+    /// "am I already identified?" check, so terminale never claimed a scope of
+    /// its own and wore the other application's identity instead. The
     /// global-shortcuts portal then answered `NotAllowed("An app id is
     /// required")` and the Quake hotkey did nothing for the whole session.
     #[test]
     fn another_apps_scope_is_not_ours() {
-        let ghostty = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
-                       app-ghostty-surface-transient-6975.scope\n";
-        assert_eq!(app_unit_in_cgroup(ghostty), None);
+        let other = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                     app-someterm-surface-transient-6975.scope\n";
+        assert_eq!(app_unit_in_cgroup(other), None);
         // Same shape, different neighbours: still not us.
         for leaf in [
-            "app-ghostty.scope",
-            "app-org.wezfurlong.wezterm-1234.scope",
-            "app-Alacritty-9.scope",
+            "app-someterm.scope",
+            "app-com.example.OtherTerm-1234.scope",
+            "app-Whatever-9.scope",
         ] {
             assert!(!is_our_app_unit(leaf), "{leaf} must not read as ours");
         }
