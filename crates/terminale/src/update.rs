@@ -837,6 +837,7 @@ mod tests {
         assert_eq!(strip_deleted_marker(Path::new(" (deleted)")), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn running_exe_leaves_a_real_path_alone() {
         // Whatever this test binary is, it exists — so nothing is stripped and
