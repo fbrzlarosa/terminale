@@ -36,12 +36,43 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   extension's own hotkey, size and animation untouched. Also
   `--install-quake-launcher` / `--uninstall-quake-launcher`, which record the
   choice in the config so the next launch does not undo it.
+- **The Quake page now says when a shell extension owns the drop-down.** With
+  `integration.quake_desktop_entry` on, the window that extension shows never
+  goes through terminale's own Quake mode, so Animation, Duration and the rest
+  of the `[quake]` section do not reach it — while still applying to a drop-down
+  terminale opens itself. Nothing said so, and the controls moved and saved as
+  usual, which is indistinguishable from a setting that is simply broken. The
+  page now leads with the explanation and points at where those knobs actually
+  live.
 - **`--class` (`--app-id`)** overrides the application id an instance presents to
   the desktop — the Wayland `app_id` / X11 `WM_CLASS`. A desktop resolves a
   window to a `.desktop` entry through this id, so it is what makes a dedicated
   launcher entry possible at all.
 
 ### Fixed
+- **The right-click menu opened behind the terminal.** A menu window was
+  reaching the window manager as `_NET_WM_WINDOW_TYPE_NORMAL` with no
+  `WM_TRANSIENT_FOR` — telling it, in as many words, that it was an ordinary
+  application window belonging to nothing. So it was stacked as a peer of the
+  terminal, and lost to it whenever the terminal sat in the compositor's "above"
+  layer: `window.always_on_top`, the Quake drop-down, or a shell extension
+  driving the drop-down each put it there. It now says what it is
+  (`_NET_WM_WINDOW_TYPE_POPUP_MENU`), says which window it belongs to, and
+  writes `_NET_WM_STATE_ABOVE` itself, because winit's `AlwaysOnTop` is set at
+  creation and this window is created hidden, so the state never survived to the
+  map. Verified against the X server's real stacking order rather than the
+  properties alone; as a bonus Mutter now also keeps the menu out of the taskbar
+  and the alt-tab list, which it declines to do for a "normal" window. The
+  password prompt, the close confirmation and the paste confirmation carried the
+  same two omissions and are now announced as dialogs of their parent.
+- **Auxiliary windows asked for focus in the way that does not work.** The menu
+  and the three dialogs called winit's `focus_window()`, which sends
+  `_NET_ACTIVE_WINDOW` with `CurrentTime`; Mutter cannot compare a zero
+  timestamp against the user's last input, so it declines. The Quake reveal was
+  fixed for exactly this a release ago — the fix simply had not been carried
+  across. All of them now share one helper that prefers the request with a real
+  server timestamp. A popup that never receives focus never sees the Esc that
+  should dismiss it, and dismisses itself a moment later instead.
 - **Ctrl+C, Ctrl+X and Ctrl+V could not be recorded as shortcuts.** The hotkey
   recorder in Settings reads egui key events, and egui-winit turns exactly those
   three chords into `Copy`/`Cut`/`Paste` events instead, returning before it ever

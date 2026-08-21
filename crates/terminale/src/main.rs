@@ -9346,6 +9346,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.renderer.device(),
                     state.renderer.queue(),
                     true, // root picker — take focus so Esc works
+                    &state.window,
                 ));
             }
         }
@@ -9392,6 +9393,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.renderer.device(),
                     state.renderer.queue(),
                     true, // root picker — take focus so Esc works
+                    &state.window,
                 ));
             }
         }
@@ -9482,6 +9484,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 state.renderer.device(),
                 state.renderer.queue(),
                 true, // root context menu — take focus so Esc/click-outside works
+                &state.window,
             );
             if let Some(idx) = submenu_idx {
                 menu.force_open_submenu(idx);

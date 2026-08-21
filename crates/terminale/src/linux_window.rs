@@ -293,6 +293,17 @@ struct X11Conn {
     /// A private property used only as a timestamp probe; see
     /// [`server_timestamp`].
     timestamp_probe: u32,
+    /// `_NET_WM_WINDOW_TYPE` and the `_NET_WM_WINDOW_TYPE_POPUP_MENU` value —
+    /// how a window says "I am a menu", which is what puts it above its parent.
+    window_type: u32,
+    window_type_popup_menu: u32,
+    window_type_dialog: u32,
+    /// `_NET_WM_STATE` and its `_NET_WM_STATE_ABOVE` member, written directly
+    /// because a window that has not been mapped yet cannot ask the window
+    /// manager to change its state — before the map, the property *is* the
+    /// request (EWMH §_NET_WM_STATE).
+    wm_state: u32,
+    wm_state_above: u32,
 }
 
 /// Lazily-opened shared X11 connection. `None` once an attempt has failed, so
@@ -338,6 +349,23 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         .intern_atom(false, b"_TERMINALE_TIMESTAMP")?
         .reply()?
         .atom;
+    let window_type = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE")?
+        .reply()?
+        .atom;
+    let window_type_popup_menu = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_POPUP_MENU")?
+        .reply()?
+        .atom;
+    let window_type_dialog = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DIALOG")?
+        .reply()?
+        .atom;
+    let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+    let wm_state_above = conn
+        .intern_atom(false, b"_NET_WM_STATE_ABOVE")?
+        .reply()?
+        .atom;
     Ok(X11Conn {
         conn,
         root,
@@ -347,6 +375,11 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         current_desktop,
         active_window,
         timestamp_probe,
+        window_type,
+        window_type_popup_menu,
+        window_type_dialog,
+        wm_state,
+        wm_state_above,
     })
 }
 
@@ -632,6 +665,88 @@ pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
         }
     }
     let _ = x.conn.flush();
+}
+
+/// What kind of child window is being announced to the window manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildKind {
+    /// A popup menu: stacked above its parent, kept out of the taskbar and the
+    /// alt-tab list, and dismissed rather than managed.
+    Menu,
+    /// A modal-ish dialog: stacked above its parent and centred on it by most
+    /// window managers.
+    Dialog,
+}
+
+/// Tell the window manager what `window` is, and which `parent` it belongs to.
+///
+/// Three properties, all written before the window is mapped, because a child
+/// window that has not announced itself as one is stacked as an ordinary
+/// application window — and then loses to any terminal window sitting in the
+/// "above" layer. That is not a rare configuration: `window.always_on_top`, the
+/// Quake drop-down and a shell extension driving the drop-down all put it
+/// there, and in each case a right-click menu opened *behind* the terminal it
+/// belonged to.
+///
+/// * `_NET_WM_WINDOW_TYPE` — the window's kind. Mutter (and every other EWMH
+///   window manager) stacks a menu or dialog above its parent and keeps a menu
+///   out of the taskbar and the alt-tab list, none of which it will do for a
+///   window claiming to be `_NET_WM_WINDOW_TYPE_NORMAL`.
+/// * `WM_TRANSIENT_FOR` — *which* window it belongs to. Without it there is no
+///   parent to be stacked above; the window is merely another top-level.
+/// * `_NET_WM_STATE_ABOVE` — belt and braces, and the reason it is written
+///   directly rather than requested: winit's `WindowLevel::AlwaysOnTop` is set
+///   at creation, but these windows are created hidden, and the state did not
+///   survive to the map. Before a window is mapped the property *is* the
+///   request (EWMH §_NET_WM_STATE).
+///
+/// Returns whether the type was written. No-op without an X connection (a
+/// native Wayland surface, where a client cannot place or stack its own
+/// top-levels at all and this whole approach does not apply).
+pub(crate) fn mark_as_child_window(window: &Window, parent: &Window, kind: ChildKind) -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win)) = (x11(), x11_window_id(window)) else {
+        return false;
+    };
+    let type_atom = match kind {
+        ChildKind::Menu => x.window_type_popup_menu,
+        ChildKind::Dialog => x.window_type_dialog,
+    };
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        x.window_type,
+        AtomEnum::ATOM,
+        &[type_atom],
+    ) {
+        tracing::debug!(?e, "could not write _NET_WM_WINDOW_TYPE");
+        return false;
+    }
+    if let Some(owner) = x11_window_id(parent) {
+        if let Err(e) = x.conn.change_property32(
+            PropMode::REPLACE,
+            win,
+            u32::from(AtomEnum::WM_TRANSIENT_FOR),
+            AtomEnum::WINDOW,
+            &[owner],
+        ) {
+            tracing::debug!(?e, "could not write WM_TRANSIENT_FOR");
+        }
+    }
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        x.wm_state,
+        AtomEnum::ATOM,
+        &[x.wm_state_above],
+    ) {
+        tracing::debug!(?e, "could not write _NET_WM_STATE");
+    }
+    let _ = x.conn.flush();
+    true
 }
 
 #[cfg(test)]

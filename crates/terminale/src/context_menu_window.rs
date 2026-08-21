@@ -200,6 +200,7 @@ impl ContextMenuWindow {
     /// `focus_on_open` controls whether the new window immediately steals OS
     /// keyboard focus. Pass `true` for the root menu so Esc and click-outside
     /// work correctly.
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
         screen_px: PhysicalPosition<i32>,
@@ -209,6 +210,7 @@ impl ContextMenuWindow {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         focus_on_open: bool,
+        parent: &Window,
     ) -> Self {
         let (w, h) = window_outer_size(&entries);
 
@@ -237,6 +239,19 @@ impl ContextMenuWindow {
             event_loop
                 .create_window(attrs)
                 .expect("failed to create context menu window"),
+        );
+
+        // Say what this window *is*, while it is still unmapped. A menu that
+        // reaches the window manager claiming to be an ordinary top-level is
+        // stacked as one — and loses to any terminal window in the "above"
+        // layer, which is where `window.always_on_top`, the Quake drop-down and
+        // a shell extension driving the drop-down each put it. The symptom is a
+        // right-click menu that opens *behind* the terminal it came from.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        crate::linux_window::mark_as_child_window(
+            &window,
+            parent,
+            crate::linux_window::ChildKind::Menu,
         );
 
         // Panic-safe size read: winit's inherent `MonitorHandle::size()`
@@ -377,7 +392,7 @@ impl ContextMenuWindow {
         set_dwm_cloak(&this.window, false);
 
         if focus_on_open {
-            this.window.focus_window();
+            crate::window_anim::take_focus(&this.window);
         }
 
         this
@@ -414,7 +429,7 @@ impl ContextMenuWindow {
                 // focused — keeping Esc and a genuine later click-outside working.
                 const FOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(350);
                 if self.opened_at.elapsed() < FOCUS_GRACE {
-                    self.window.focus_window();
+                    crate::window_anim::take_focus(&self.window);
                 } else {
                     self.requested_close = true;
                 }

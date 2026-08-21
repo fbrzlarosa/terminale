@@ -1698,6 +1698,24 @@ pub(crate) fn toggle_quake(
 /// connection, a native Wayland surface, a lost round-trip) this falls straight
 /// back to winit, which is no worse than before.
 pub(crate) fn take_quake_focus(window: &Window) {
+    take_focus(window);
+}
+
+/// Ask the OS for keyboard focus on `window`, the way that actually works.
+///
+/// Not `Window::focus_window()`: on X11 that sends `_NET_ACTIVE_WINDOW` with
+/// `CurrentTime`, and Mutter's focus-stealing prevention cannot compare a zero
+/// timestamp against the user's last input, so it declines and posts an
+/// "<app> is ready" notification instead. Prefers the same request carrying a
+/// real server timestamp, and falls back to winit's when there is no X
+/// connection.
+///
+/// Every window that pops up in front of the user wants this, not just the
+/// Quake reveal it was first written for: a menu or dialog that never receives
+/// focus never sees the Esc or the click that should dismiss it, and — because
+/// closing on focus loss is how a menu is meant to behave — hides itself a
+/// moment after opening instead.
+pub(crate) fn take_focus(window: &Window) {
     #[cfg(all(unix, not(target_os = "macos")))]
     if crate::linux_window::activate_window(window) {
         return;

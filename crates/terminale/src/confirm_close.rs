@@ -120,6 +120,19 @@ impl ConfirmCloseDialog {
                 .expect("failed to create confirm-close window"),
         );
 
+        // Announce what this window is while it is still unmapped: a dialog
+        // that never said so is stacked as an ordinary top-level, and then
+        // loses to a terminal window in the "above" layer — which is where
+        // `window.always_on_top`, the Quake drop-down and an extension-driven
+        // drop-down each put it. The close confirmation would open behind the
+        // window it is asking about.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        crate::linux_window::mark_as_child_window(
+            &window,
+            parent,
+            crate::linux_window::ChildKind::Dialog,
+        );
+
         let surface = instance
             .create_surface(Arc::clone(&window))
             .expect("confirm close surface");
@@ -190,7 +203,7 @@ impl ConfirmCloseDialog {
         this.window.set_visible(true);
         #[cfg(windows)]
         crate::set_dwm_cloak(&this.window, false);
-        this.window.focus_window();
+        crate::window_anim::take_focus(&this.window);
 
         this
     }
