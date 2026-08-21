@@ -4426,6 +4426,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
+name = "pollster"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc6355899e1c9462875b6757c79f3caa011a1fdae12bbb1a2e72dd1f234f8336"
+
+[[package]]
 name = "poly1305"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5085,7 +5091,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
- "pollster",
+ "pollster 0.4.0",
  "raw-window-handle",
  "urlencoding",
  "wasm-bindgen",
@@ -6309,7 +6315,7 @@ dependencies = [
  "objc2 0.6.4",
  "open",
  "parking_lot",
- "pollster",
+ "pollster 1.0.1",
  "raw-window-handle",
  "regex",
  "resvg",
@@ -6417,7 +6423,7 @@ dependencies = [
  "glyphon",
  "image",
  "insta",
- "pollster",
+ "pollster 1.0.1",
  "raw-window-handle",
  "swash",
  "terminale-config",
