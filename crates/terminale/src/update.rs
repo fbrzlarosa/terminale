@@ -174,7 +174,13 @@ pub fn download_and_apply(interactive: bool) -> Result<UpdateOutcome> {
             None => anyhow!("extract {bin} from {} (tried: {tried})", asset.name),
         }
     })?;
-    self_replace::self_replace(extracted).context("atomically replace the running binary")?;
+    if running_binary_is_gone() {
+        bail!(
+            "the binary this session is running was deleted from disk and nothing took its \
+             place, so there is no installed copy to update. Relaunch terminale and try again."
+        );
+    }
+    place_new_binary(&extracted)?;
 
     Ok(UpdateOutcome::Staged(latest.version.clone()))
 }
@@ -354,6 +360,124 @@ pub fn migrate_to_user_install() -> Result<std::path::PathBuf> {
         );
     }
     Ok(new_exe)
+}
+
+/// Strip Linux's `(deleted)` marker off an executable path, when it is one.
+///
+/// Pure half of [`running_exe`], so the rule is testable without a process
+/// whose binary has been unlinked. Returns `None` when there is nothing to
+/// strip.
+fn strip_deleted_marker(path: &Path) -> Option<PathBuf> {
+    const MARKER: &str = " (deleted)";
+    let s = path.to_str()?;
+    let stripped = s.strip_suffix(MARKER)?;
+    if stripped.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(stripped))
+}
+
+/// The path of the binary backing this process, with Linux's `(deleted)`
+/// marker resolved away.
+///
+/// `std::env::current_exe()` reads `/proc/self/exe` on Linux, and the kernel
+/// appends ` (deleted)` to that link once the file has been unlinked — which is
+/// precisely what happens to a binary replaced under a running process: a
+/// completed self-update, a package-manager upgrade, a rebuild during
+/// development. What the call then returns is a path that does not exist, so
+/// every operation on it fails with `ENOENT`, surfacing as
+/// "No such file or directory" a long way from the cause. It is also what would
+/// otherwise be written into a `.desktop` entry's `Exec=`, quietly producing a
+/// launcher that cannot launch anything.
+///
+/// The marker is only stripped when the stripped path exists and the original
+/// does not, so a file genuinely named `… (deleted)` is left alone.
+///
+/// # Errors
+///
+/// Propagates whatever `current_exe` failed with.
+///
+/// Linux-only, because the marker is: it comes from `/proc/self/exe`, and no
+/// other platform lets a running executable be unlinked in the first place.
+#[cfg(target_os = "linux")]
+pub fn running_exe() -> std::io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    if exe.exists() {
+        return Ok(exe);
+    }
+    match strip_deleted_marker(&exe) {
+        Some(stripped) if stripped.exists() => Ok(stripped),
+        _ => Ok(exe),
+    }
+}
+
+/// Whether the binary backing this process has been unlinked, and nothing has
+/// taken its place. Nothing can be replaced at that path, and the only way
+/// forward is a relaunch from whatever binary is installed now.
+fn running_binary_is_gone() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    if exe.exists() {
+        return false;
+    }
+    !strip_deleted_marker(&exe).is_some_and(|p| p.exists())
+}
+
+/// Put `new_binary` where this process's binary lives.
+///
+/// Normally this is [`self_replace::self_replace`], which knows the Windows
+/// running-exe rename dance and the Unix unlink-and-replace. The exception is
+/// the case `self_replace` cannot see: it resolves the target through
+/// `current_exe()` itself, so when that carries Linux's `(deleted)` marker it
+/// tries to replace a path that does not exist and fails with `ENOENT`. There
+/// the old inode is *already* unlinked, which means there is no running image
+/// to swap out and no atomicity to preserve on its behalf — placing the file is
+/// all that is left, and a rename within the same directory is atomic for
+/// anyone reading it.
+fn place_new_binary(new_binary: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        let raw = std::env::current_exe().context("locate the running binary")?;
+        if !raw.exists() {
+            if let Some(target) = strip_deleted_marker(&raw).filter(|p| p.exists()) {
+                place_binary_at(new_binary, &target)?;
+                tracing::info!(
+                    target = %target.display(),
+                    "replaced the installed binary directly; the running image was already unlinked"
+                );
+                return Ok(());
+            }
+        }
+    }
+    self_replace::self_replace(new_binary).context("atomically replace the running binary")
+}
+
+/// Put `new_binary` at `target`, atomically for anyone reading `target`.
+///
+/// Staged inside `target`'s own directory so the rename cannot cross a
+/// filesystem — `rename(2)` is only atomic within one. The mode is carried over
+/// from whatever is at `target` today rather than assumed, because an install
+/// may legitimately be group-executable; `0o755` is the fallback when there is
+/// nothing to read it from.
+#[cfg(unix)]
+fn place_binary_at(new_binary: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = target
+        .parent()
+        .ok_or_else(|| anyhow!("the installed binary has no parent directory"))?;
+    let staged = dir.join(".terminale-update-staged");
+    std::fs::copy(new_binary, &staged)
+        .with_context(|| format!("stage the new binary at {}", staged.display()))?;
+    let mode = std::fs::metadata(target)
+        .map(|m| m.permissions().mode())
+        .unwrap_or(0o755);
+    std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(mode))
+        .context("make the staged binary executable")?;
+    std::fs::rename(&staged, target)
+        .with_context(|| format!("move the new binary into place at {}", target.display()))?;
+    Ok(())
 }
 
 /// Can this process create files in the directory the running binary lives
@@ -645,6 +769,98 @@ fn sha256_of(path: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn place_binary_at_replaces_an_unlinked_install_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("terminale-place-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        // An install with a deliberately non-default mode, so carrying it over
+        // is observable rather than coincidental.
+        let target = dir.join("terminale");
+        std::fs::write(&target, b"old version").expect("write target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o750))
+            .expect("chmod target");
+
+        // Hold the old inode open and unlink it: this is the state a running
+        // process is in after its binary has been replaced, and the reason
+        // `self_replace` cannot help — its target no longer exists by name.
+        let held = std::fs::File::open(&target).expect("open target");
+        std::fs::remove_file(&target).expect("unlink target");
+        assert!(!target.exists(), "the install path must be gone");
+        // Put it back, as a package upgrade or a rebuild would.
+        std::fs::write(&target, b"old version").expect("restore target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o750))
+            .expect("chmod restored");
+
+        let new_binary = dir.join("downloaded");
+        std::fs::write(&new_binary, b"new version").expect("write new");
+
+        place_binary_at(&new_binary, &target).expect("place");
+
+        assert_eq!(
+            std::fs::read(&target).expect("read placed"),
+            b"new version",
+            "the install path must now hold the new binary"
+        );
+        let mode = std::fs::metadata(&target)
+            .expect("stat")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o750, "the install's own mode must be carried over");
+        // Nothing left behind in the install directory.
+        assert!(!dir.join(".terminale-update-staged").exists());
+
+        drop(held);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn strips_the_deleted_marker_only_when_it_is_one() {
+        assert_eq!(
+            strip_deleted_marker(Path::new("/usr/bin/terminale (deleted)")),
+            Some(PathBuf::from("/usr/bin/terminale"))
+        );
+        // An ordinary path has nothing to strip.
+        assert_eq!(strip_deleted_marker(Path::new("/usr/bin/terminale")), None);
+        // The marker has to be a suffix, not merely present.
+        assert_eq!(
+            strip_deleted_marker(Path::new("/opt/x (deleted)/terminale")),
+            None
+        );
+        // Stripping must not produce an empty path.
+        assert_eq!(strip_deleted_marker(Path::new(" (deleted)")), None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn running_exe_leaves_a_real_path_alone() {
+        // Whatever this test binary is, it exists — so nothing is stripped and
+        // the answer matches `current_exe` exactly.
+        let exe = std::env::current_exe().expect("current_exe");
+        assert_eq!(running_exe().expect("running_exe"), exe);
+    }
+
+    #[test]
+    fn a_file_actually_named_deleted_is_not_mistaken_for_the_marker() {
+        // The marker is only honoured when the stripped path exists and the
+        // original does not. Here the original exists, so it wins.
+        let dir = std::env::temp_dir().join(format!("terminale-del-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let odd = dir.join("terminale (deleted)");
+        std::fs::write(&odd, b"x").expect("write");
+        assert!(odd.exists());
+        // `strip_deleted_marker` is purely syntactic; the existence rule lives
+        // in `running_exe`, so assert the rule the caller relies on.
+        let stripped = strip_deleted_marker(&odd).expect("suffix present");
+        assert!(!stripped.exists(), "the stripped path must not exist here");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_sha256_takes_first_token() {
