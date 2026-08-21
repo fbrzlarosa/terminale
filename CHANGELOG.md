@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.44]
+
 ### Added
 - **The Quake hotkey now works from a fresh login, with nothing running.**
   `terminale --toggle-quake` talks to a running instance over the control socket,
@@ -25,13 +28,6 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   available; `current` stays the default, since a window that relocates on its
   own is the more surprising of the two. Needs X11 — Wayland does not tell an
   application where the pointer is, and there `pointer` behaves as `current`.
-- **A drop-down that had never been shown appeared on an arbitrary monitor.**
-  `current` resolves through a chain of fallbacks, and a window that has never
-  been visible — which is precisely what starting hidden produces — reached the
-  end of it and landed on whichever screen the OS lists first. It now consults
-  the pointer at that point, and only at that point, so the very first reveal
-  of a session lands where you are without turning `current` into
-  pointer-following.
 - **Start hidden at login, so the first press of the hotkey is instant.** A
   press that has to *start* terminale cannot feel quick however fast terminale
   is — the process, the GPU surface and the shell all come up before anything
@@ -60,6 +56,19 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   extension's own hotkey, size and animation untouched. Also
   `--install-quake-launcher` / `--uninstall-quake-launcher`, which record the
   choice in the config so the next launch does not undo it.
+- **`--class` (`--app-id`)** overrides the application id an instance presents to
+  the desktop — the Wayland `app_id` / X11 `WM_CLASS`. A desktop resolves a
+  window to a `.desktop` entry through this id, so it is what makes a dedicated
+  launcher entry possible at all.
+
+### Fixed
+- **A drop-down that had never been shown appeared on an arbitrary monitor.**
+  `current` resolves through a chain of fallbacks, and a window that has never
+  been visible — which is precisely what starting hidden produces — reached the
+  end of it and landed on whichever screen the OS lists first. It now consults
+  the pointer at that point, and only at that point, so the very first reveal
+  of a session lands where you are without turning `current` into
+  pointer-following.
 - **The Quake page now says when a shell extension owns the drop-down.** With
   `integration.quake_desktop_entry` on, the window that extension shows never
   goes through terminale's own Quake mode, so Animation, Duration and the rest
@@ -68,12 +77,6 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   usual, which is indistinguishable from a setting that is simply broken. The
   page now leads with the explanation and points at where those knobs actually
   live.
-- **`--class` (`--app-id`)** overrides the application id an instance presents to
-  the desktop — the Wayland `app_id` / X11 `WM_CLASS`. A desktop resolves a
-  window to a `.desktop` entry through this id, so it is what makes a dedicated
-  launcher entry possible at all.
-
-### Fixed
 - **The right-click menu opened behind the terminal.** A menu window was
   reaching the window manager as `_NET_WM_WINDOW_TYPE_NORMAL` with no
   `WM_TRANSIENT_FOR` — telling it, in as many words, that it was an ordinary
@@ -1444,7 +1447,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...HEAD
+[0.1.44]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...v0.1.44
 [0.1.43]: https://github.com/fbrzlarosa/terminale/compare/v0.1.42...v0.1.43
 [0.1.42]: https://github.com/fbrzlarosa/terminale/compare/v0.1.41...v0.1.42
 [0.1.41]: https://github.com/fbrzlarosa/terminale/compare/v0.1.40...v0.1.41
