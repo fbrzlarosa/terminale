@@ -156,7 +156,7 @@ global-hotkey = "0.8"
 # on Linux: `_NET_WM_WINDOW_OPACITY` and `_NET_WM_DESKTOP`. Already in the tree
 # via winit/arboard/global-hotkey; `default-features = false` keeps it to the
 # pure-Rust connection (no libxcb link) plus the `randr`-free core protocol.
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.14", default-features = false }
 # XDG desktop portals. Only `GlobalShortcuts` is used, to register the Quake
 # hotkey under Wayland where X11 key grabs never fire. Already compiled as part
 # of rfd's `xdg-portal` backend; `default-features = false` + `tokio` matches the
