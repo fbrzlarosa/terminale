@@ -7,7 +7,121 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **The Quake hotkey now works from a fresh login, with nothing running.**
+  `terminale --toggle-quake` talks to a running instance over the control socket,
+  so on the first press after logging in there was nothing on the other end and
+  the key did the one thing a hotkey must never do: nothing at all, silently. It
+  now becomes the instance instead — the process the desktop spawned to deliver
+  the toggle opens the window itself, and every press after that is an ordinary
+  toggle. Only a *missing* socket triggers it; an instance that is running but
+  not answering is not helped by starting a second one. New
+  `integration.quake_launch_on_demand` (default `true`), with a switch in
+  Settings › Desktop integration.
+- **`quake.display = "pointer"` opens the drop-down where the mouse is.** The
+  existing `current` anchors the window to the monitor it was last seen on,
+  which is right for a drop-down you have parked deliberately and wrong for the
+  more common expectation that it appears where you are looking. Both are now
+  available; `current` stays the default, since a window that relocates on its
+  own is the more surprising of the two. Needs X11 — Wayland does not tell an
+  application where the pointer is, and there `pointer` behaves as `current`.
+- **A drop-down that had never been shown appeared on an arbitrary monitor.**
+  `current` resolves through a chain of fallbacks, and a window that has never
+  been visible — which is precisely what starting hidden produces — reached the
+  end of it and landed on whichever screen the OS lists first. It now consults
+  the pointer at that point, and only at that point, so the very first reveal
+  of a session lands where you are without turning `current` into
+  pointer-following.
+- **Start hidden at login, so the first press of the hotkey is instant.** A
+  press that has to *start* terminale cannot feel quick however fast terminale
+  is — the process, the GPU surface and the shell all come up before anything
+  appears, and that is the whole latency of a cold drop-down.
+  `integration.autostart` moves the cost to login: it writes an autostart entry
+  running `terminale --start-hidden`, which builds the window, brings up its
+  surface and starts its shell, and then simply does not map it. The first press
+  is a reveal like every press after it. Turning the setting off removes the
+  entry, and the new `--start-hidden` flag is usable on its own from a session
+  script. Switch in Settings › Desktop integration.
+- **A drop-down launcher entry, for desktops where a shell extension owns the
+  drop-down.** On GNOME under Wayland an application may not grab a global key,
+  may not place its own window, and may not animate it onto the screen — between
+  them, everything a drop-down terminal is made of. A shell extension can do all
+  three, which is why every terminal with a good drop-down there is being driven
+  by one. `integration.quake_desktop_entry` installs `terminale.Quake.desktop`
+  for exactly that: it carries an application id of its own
+  (`--class=terminale.Quake` plus the matching `StartupWMClass`), which is both
+  how such an extension finds the window it launched and what stops it from
+  grabbing the terminale you were working in. It deliberately does *not* pass
+  `--quake` — when the extension owns the geometry and the animation, docking and
+  animating the window ourselves as well is what makes a drop-down look like it
+  is fighting the desktop. Settings › Desktop integration installs the entry,
+  reports which application the extension is currently driving, and has a
+  one-click "Point it at terminale" that rewrites that one key and leaves the
+  extension's own hotkey, size and animation untouched. Also
+  `--install-quake-launcher` / `--uninstall-quake-launcher`, which record the
+  choice in the config so the next launch does not undo it.
+- **The Quake page now says when a shell extension owns the drop-down.** With
+  `integration.quake_desktop_entry` on, the window that extension shows never
+  goes through terminale's own Quake mode, so Animation, Duration and the rest
+  of the `[quake]` section do not reach it — while still applying to a drop-down
+  terminale opens itself. Nothing said so, and the controls moved and saved as
+  usual, which is indistinguishable from a setting that is simply broken. The
+  page now leads with the explanation and points at where those knobs actually
+  live.
+- **`--class` (`--app-id`)** overrides the application id an instance presents to
+  the desktop — the Wayland `app_id` / X11 `WM_CLASS`. A desktop resolves a
+  window to a `.desktop` entry through this id, so it is what makes a dedicated
+  launcher entry possible at all.
+
 ### Fixed
+- **The right-click menu opened behind the terminal.** A menu window was
+  reaching the window manager as `_NET_WM_WINDOW_TYPE_NORMAL` with no
+  `WM_TRANSIENT_FOR` — telling it, in as many words, that it was an ordinary
+  application window belonging to nothing. So it was stacked as a peer of the
+  terminal, and lost to it whenever the terminal sat in the compositor's "above"
+  layer: `window.always_on_top`, the Quake drop-down, or a shell extension
+  driving the drop-down each put it there. It now says what it is
+  (`_NET_WM_WINDOW_TYPE_POPUP_MENU`), says which window it belongs to, and
+  writes `_NET_WM_STATE_ABOVE` itself, because winit's `AlwaysOnTop` is set at
+  creation and this window is created hidden, so the state never survived to the
+  map. Verified against the X server's real stacking order rather than the
+  properties alone; as a bonus Mutter now also keeps the menu out of the taskbar
+  and the alt-tab list, which it declines to do for a "normal" window. The
+  password prompt, the close confirmation and the paste confirmation carried the
+  same two omissions and are now announced as dialogs of their parent.
+- **Settings and the AI assistant opened behind the terminal.** Both are real
+  windows, not popups, so neither could be declared a dialog without losing its
+  place in the taskbar and the window switcher — and a window *level* cannot
+  help, since asking to be "always on top" only joins the layer the terminal may
+  already be in, where the last raise wins and the terminal keeps winning.
+  Settings tied its level to `window.always_on_top`, which covers only the case
+  the user asked for; a Quake drop-down, or a shell extension holding the
+  drop-down above everything, puts the terminal up there without touching that
+  setting. Both are now transient for the terminal they were opened from, which
+  is what a window manager honours regardless of layer.
+- **Auxiliary windows asked for focus in the way that does not work.** The menu
+  and the three dialogs called winit's `focus_window()`, which sends
+  `_NET_ACTIVE_WINDOW` with `CurrentTime`; Mutter cannot compare a zero
+  timestamp against the user's last input, so it declines. The Quake reveal was
+  fixed for exactly this a release ago — the fix simply had not been carried
+  across. All of them now share one helper that prefers the request with a real
+  server timestamp. A popup that never receives focus never sees the Esc that
+  should dismiss it, and dismisses itself a moment later instead.
+- **Ctrl+C, Ctrl+X and Ctrl+V could not be recorded as shortcuts.** The hotkey
+  recorder in Settings reads egui key events, and egui-winit turns exactly those
+  three chords into `Copy`/`Cut`/`Paste` events instead, returning before it ever
+  emits a key — and its "command" modifier is plain Ctrl off macOS, so it is the
+  Ctrl combinations that vanish. Pressing one left the recorder on "Press a key…"
+  for good: the three most likely rebinds in a terminal, where Ctrl+C belongs to
+  the shell, were the three that could not be captured. The recorder now reads
+  those events too, taking the modifiers from the live keyboard state.
+- **A recorder waiting on a key the desktop had already taken looked broken.**
+  A grabbed shortcut is consumed before any window sees it, so the keypress
+  genuinely never arrives; terminale releases its own grab while recording, but a
+  binding held by the compositor, by GNOME's keyboard settings or by a shell
+  extension is not terminale's to release. After a couple of seconds of silence
+  the recorder now says so instead of waiting mutely, and the drop-down-extension
+  card names the key the extension is holding.
 - **A Quake reveal took the keyboard instead of announcing itself in the
   notification tray.** Showing the drop-down produced GNOME's "terminale is
   ready" banner and left focus where it was. The cause is a single number: winit's
@@ -44,7 +158,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   but the "do I already have an application id?" check only asked whether the
   cgroup leaf *looked* like an application unit, not whether it was **ours**.
   Launch terminale from a terminal emulator that scopes each of its windows —
-  ghostty names them `app-ghostty-surface-transient-<n>.scope` — and that check
+  named `app-<that app>-surface-transient-<n>.scope` — and that check
   passed, so terminale never claimed a scope, wore the host terminal's identity,
   and the portal answered `NotAllowed("An app id is required")`. The symptom is
   the drop-down hiding once and never coming back, for the whole session. The
@@ -460,7 +574,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   metacharacters), and an optional trailing space (`terminal.drop_path_trailing_space`).
 - **Scroll to bottom on input.** Typing or pasting while scrolled up into
   history now snaps the viewport back to the live prompt (the standard
-  iTerm2 / Windows Terminal behaviour). Toggle under **Settings → Terminal**
+  "type to return to the prompt" behaviour). Toggle under **Settings → Terminal**
   (`window.scroll_on_input`, on by default).
 - **Per-tab "waiting for input" indicator.** When the program in a background
   tab rings the terminal bell (e.g. Claude Code finishing its turn and waiting
@@ -510,7 +624,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   unambiguous key events, most importantly `Shift+Enter` (`CSI 13;2u`) for
   multi-line input, plus disambiguated Ctrl/Alt combos, key press/repeat/release
   events, and associated text. The terminal also self-identifies via
-  `TERM_PROGRAM`/`TERM_PROGRAM_VERSION` like iTerm2/kitty/WezTerm. Toggle in
+  `TERM_PROGRAM`/`TERM_PROGRAM_VERSION`, as terminals conventionally do. Toggle in
   **Settings → Terminal → Kitty keyboard protocol** (default on).
 - **The app reopens exactly as you left it.** With session restore enabled, the
   last session now also restores the window's position and size, the monitor it
@@ -687,7 +801,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   views the focus border was drawn inset INSIDE the pane, landing right under
   the first and last text rows and columns. Each stroke is now centred on the
   pane boundary — recolouring the divider band and the window padding instead
-  (iTerm2-style) — so the content area stays untouched. Same treatment for
+  — so the content area stays untouched. Same treatment for
   the amber broadcast-input border.
 - **The text selection now follows the text.** Selecting and then scrolling
   (or new output arriving) left the highlight glued to fixed screen rows over
@@ -699,8 +813,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [0.1.25]
 
 ### Added
-- **Ctrl+C now copies when text is selected** — the smart-copy behaviour of
-  Tabby, Windows Terminal, and VS Code. With an active selection, a bare
+- **Ctrl+C now copies when text is selected** — the smart-copy behaviour
+  common on desktop terminals. With an active selection, a bare
   Ctrl+C copies it to the clipboard (and clears the selection) instead of
   sending the interrupt to the running program; pressing Ctrl+C again — or
   with nothing selected — sends `^C`/SIGINT exactly as before. Explicit

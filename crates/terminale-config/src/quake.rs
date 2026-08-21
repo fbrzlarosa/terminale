@@ -120,9 +120,10 @@ impl QuakeEdge {
 /// Which monitor the Quake terminal docks on. `Current` (default) keeps
 /// the window anchored to its own monitor — show/hide always happens on
 /// the monitor the window was last visible on, and dragging the window to
-/// another monitor re-anchors it there. `Primary` always uses the
-/// OS-designated primary; `Index(n)` pins it to the n-th enumerated
-/// monitor (the order winit returns from `available_monitors()`).
+/// another monitor re-anchors it there. `Pointer` puts it wherever the mouse
+/// is. `Primary` always uses the OS-designated primary; `Index(n)` pins it to
+/// the n-th enumerated monitor (the order winit returns from
+/// `available_monitors()`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
@@ -132,6 +133,19 @@ pub enum QuakeDisplay {
     /// different monitor to re-anchor the toggle there.
     #[default]
     Current,
+    /// Use the monitor the mouse pointer is on at the moment you press the
+    /// hotkey, wherever the window was before.
+    ///
+    /// This is the behaviour people usually mean by a drop-down terminal: it
+    /// opens where you are looking. The trade-off, and the reason it is not the
+    /// default, is that the window moves between monitors on its own — which
+    /// is disorienting if you keep the drop-down parked somewhere deliberately.
+    ///
+    /// Needs a way to ask the system where the pointer is. X11 answers; Wayland
+    /// does not tell a client the global pointer position, and there this falls
+    /// back to [`Self::Current`] — the same boundary that already stops a
+    /// Wayland client from placing its own window at all.
+    Pointer,
     /// Always use the OS primary monitor.
     Primary,
     /// Pin to a specific 0-based monitor index.
@@ -281,6 +295,18 @@ mod tests {
     #[test]
     fn restore_visible_defaults_on() {
         assert!(QuakeConfig::default().restore_visible);
+    }
+
+    #[test]
+    fn pointer_display_round_trips_and_is_not_the_default() {
+        let cfg: QuakeConfig = toml::from_str("display = \"pointer\"").expect("pointer must parse");
+        assert_eq!(cfg.display, QuakeDisplay::Pointer);
+        let back = toml::to_string(&cfg).expect("serialize");
+        assert!(back.contains("display = \"pointer\""), "{back}");
+        // Following the pointer moves the window between monitors on its own,
+        // which is a deliberate choice rather than the behaviour to impose.
+        assert_ne!(QuakeDisplay::default(), QuakeDisplay::Pointer);
+        assert_eq!(QuakeDisplay::default(), QuakeDisplay::Current);
     }
 
     #[test]

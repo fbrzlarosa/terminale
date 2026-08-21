@@ -170,6 +170,46 @@ pub struct IntegrationConfig {
     /// `false`, since then there is no socket to serve.
     #[serde(default)]
     pub control_api: ControlApiConfig,
+    /// Let `terminale --toggle-quake` *start* terminale when it finds nothing
+    /// running, instead of failing.
+    ///
+    /// This is what makes a desktop-owned Quake hotkey work from a fresh login:
+    /// the first press has no instance to talk to, so the process that was
+    /// spawned to deliver the toggle becomes the instance and comes up as the
+    /// drop-down. Every press after that is a plain toggle over the socket.
+    /// Without it the hotkey silently does nothing until you have launched
+    /// terminale by hand at least once.
+    ///
+    /// Only a socket that is *absent* triggers this. A socket that exists but
+    /// does not answer means an instance is there and wedged, and starting a
+    /// second one would not help. Unix only. Default: `true`.
+    #[serde(default = "default_true")]
+    pub quake_launch_on_demand: bool,
+    /// Start terminale hidden when you log in, so the drop-down hotkey has a
+    /// window to reveal rather than an application to launch.
+    ///
+    /// A drop-down that starts the terminal on the first keypress cannot feel
+    /// instant however fast the terminal is — the process, the GPU surface and
+    /// the shell all have to come up first, and only then does anything appear.
+    /// With this on, all of that happened at login and the first press is a
+    /// reveal like every press after it. Writes an autostart entry under
+    /// `$XDG_CONFIG_HOME/autostart`; turning it off removes the entry again.
+    /// Linux only. Default: `false`.
+    #[serde(default)]
+    pub autostart: bool,
+    /// On Linux, also install a second, drop-down-only desktop entry
+    /// (`terminale.Quake.desktop`) alongside the application-menu one.
+    ///
+    /// It exists for GNOME/KDE shell extensions that implement a drop-down
+    /// terminal themselves — Quake Terminal on GNOME being the common one.
+    /// Those launch an app by desktop-entry id and then look for its window by
+    /// application id, so the drop-down needs an entry, and an identity, of its
+    /// own: pointed at the ordinary entry, such an extension would sooner or
+    /// later grab the terminale window you were working in. Harmless when no
+    /// such extension is installed — it is one more (hidden-in-plain-sight)
+    /// launcher in the application list. Default: `false`.
+    #[serde(default)]
+    pub quake_desktop_entry: bool,
 }
 
 /// Serde default for the boolean fields that default to `true`.
@@ -185,6 +225,9 @@ impl Default for IntegrationConfig {
             control_socket: true,
             global_shortcuts_portal: true,
             control_api: ControlApiConfig::default(),
+            quake_launch_on_demand: true,
+            autostart: false,
+            quake_desktop_entry: false,
         }
     }
 }
@@ -215,6 +258,32 @@ mod tests {
     }
 
     #[test]
+    fn quake_hotkey_starts_terminale_by_default_but_installs_no_extra_launcher() {
+        let cfg = IntegrationConfig::default();
+        // A hotkey that does nothing on the first press of the session is the
+        // behaviour this defaults away from.
+        assert!(cfg.quake_launch_on_demand);
+        // Neither writes anything into the user's session uninvited.
+        assert!(!cfg.autostart);
+        // The second launcher entry only makes sense with a drop-down shell
+        // extension, so it is opt-in.
+        assert!(!cfg.quake_desktop_entry);
+        cfg.validate().expect("default must validate");
+    }
+
+    #[test]
+    fn quake_fields_survive_a_config_written_before_they_existed() {
+        // Both carry `#[serde(default …)]`, so an older config.toml that names
+        // neither must still load — and land on the documented defaults.
+        let cfg: IntegrationConfig =
+            toml::from_str("desktop_entry = true\ncontrol_socket = true\n")
+                .expect("an older config must still parse");
+        assert!(cfg.quake_launch_on_demand);
+        assert!(!cfg.autostart);
+        assert!(!cfg.quake_desktop_entry);
+    }
+
+    #[test]
     fn roundtrip_toml() {
         #[derive(Serialize, Deserialize)]
         struct Wrap {
@@ -229,6 +298,8 @@ mod tests {
         let s = toml::to_string(&w).expect("serialize");
         let back: Wrap = toml::from_str(&s).expect("deserialize");
         assert!(!back.integration.desktop_entry);
+        assert!(back.integration.quake_launch_on_demand);
+        assert!(!back.integration.quake_desktop_entry);
     }
 
     #[test]

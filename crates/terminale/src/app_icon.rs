@@ -9,20 +9,73 @@
 //! source of truth (the `assets/icons/icon.svg`) without juggling
 //! pre-baked PNGs for each DPI.
 
+#[cfg(all(unix, not(target_os = "macos")))]
+use std::sync::OnceLock;
+
 use winit::window::Icon;
 use winit::window::WindowAttributes;
 
 /// SVG bytes, bundled at compile time so the binary stays self-contained.
 const ICON_SVG: &[u8] = include_bytes!("../../../assets/icons/icon.svg");
 
+/// The identity terminale presents to the desktop unless told otherwise.
+/// Matches the `terminale.desktop` entry `desktop_entry.rs` installs.
+///
+/// Only meaningful where a window carries an application id of its own —
+/// Wayland's `app_id`, X11's `WM_CLASS`. Windows takes its icon from the
+/// embedded resource and macOS from the app bundle, so there is nothing for
+/// this to name on either.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub const DEFAULT_APP_ID: &str = "terminale";
+
+/// Overridden identity, when `--class` was given. Set once before the first
+/// window exists and read on every window build after that.
+#[cfg(all(unix, not(target_os = "macos")))]
+static APP_ID: OnceLock<String> = OnceLock::new();
+
+/// Adopt `id` as this process's application identity, for the whole run.
+///
+/// A desktop groups windows, resolves the launcher icon and — the reason this
+/// override exists — matches a window against a `.desktop` entry by this id. A
+/// drop-down launcher wants its window to be *distinguishable* from ordinary
+/// terminale windows, so that a shell extension asked to toggle the drop-down
+/// never grabs the window you were working in. Spelled `--class` because on X11
+/// the identity *is* the `WM_CLASS`, and that is the conventional flag name for
+/// setting it.
+///
+/// Ignored if a window was already built, or if called twice: the id is part of
+/// a window's identity from creation and cannot be restated afterwards.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn set_app_id(id: &str) {
+    let id = id.trim();
+    if id.is_empty() {
+        return;
+    }
+    if let Err(existing) = APP_ID.set(id.to_owned()) {
+        tracing::warn!(
+            requested = id,
+            in_effect = %existing,
+            "the application id was already fixed for this process; ignoring the new one"
+        );
+    }
+}
+
+/// The application id in effect for this process.
+#[cfg(all(unix, not(target_os = "macos")))]
+#[must_use]
+pub fn app_id() -> &'static str {
+    APP_ID.get().map_or(DEFAULT_APP_ID, String::as_str)
+}
+
 /// Tag window attributes with the application identity the desktop
 /// environment uses to group windows and resolve the launcher icon.
 ///
 /// On Linux this sets the Wayland `app_id` and the X11 `WM_CLASS` (winit
 /// stores a single application name used for both). Compositors match it
-/// against the `terminale.desktop` entry installed by `desktop_entry.rs`
+/// against the `.desktop` entry installed by `desktop_entry.rs`
 /// (`StartupWMClass=terminale`) — without it the window has an empty/default
 /// identity and GNOME/KDE show a generic gear instead of the brand icon.
+/// [`set_app_id`] can point it at a different entry instead; see there.
 /// Every window builder (main, settings, AI, prompts…) must route through
 /// this so all windows group under the same dock entry.
 ///
@@ -34,7 +87,8 @@ pub fn with_app_identity(attrs: WindowAttributes) -> WindowAttributes {
         use winit::platform::wayland::WindowAttributesExtWayland;
         // Called via UFCS: the X11 extension trait declares an identical
         // `with_name`, and both write the same underlying field.
-        WindowAttributesExtWayland::with_name(attrs, "terminale", "terminale")
+        let id = app_id();
+        WindowAttributesExtWayland::with_name(attrs, id, id)
     }
     #[cfg(not(all(unix, not(target_os = "macos"))))]
     attrs

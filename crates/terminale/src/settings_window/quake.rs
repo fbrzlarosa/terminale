@@ -18,6 +18,40 @@ impl SettingsWindow {
              Confirm close) are in the Window section.",
         );
 
+        // When a shell extension owns the drop-down, everything below the hotkey
+        // is inert — the extension does the showing, the placing and the
+        // animating, and the window it drives never goes through terminale's own
+        // Quake path at all. Saying so here matters more than it looks: without
+        // it the controls still move, still save, and still do nothing, which is
+        // indistinguishable from a broken setting.
+        #[cfg(target_os = "linux")]
+        let extension_drives_quake = self.config.integration.quake_desktop_entry;
+        #[cfg(not(target_os = "linux"))]
+        let extension_drives_quake = false;
+        if extension_drives_quake {
+            card(ui, |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "A shell extension is driving the drop-down \u{2014} these settings \
+                         do not reach it",
+                    )
+                    .color(egui::Color32::from_rgb(230, 190, 120)),
+                );
+                sublabel(
+                    ui,
+                    "Desktop integration \u{203a} \"Drop-down via shell extension\" is on. The \
+                     window that extension shows is placed, sized and animated by the \
+                     extension, and never goes through terminale's own Quake mode \u{2014} so \
+                     changing Animation or Duration here will not change what you see when you \
+                     press its key. Adjust those in the extension's own settings. Everything \
+                     here still applies to a drop-down terminale opens itself, on its own \
+                     hotkey; turn the launcher off if you would rather terminale owned the \
+                     drop-down again.",
+                );
+            });
+            ui.add_space(6.0);
+        }
+
         let mut dirty = false;
 
         // ── Hotkey ──
@@ -98,6 +132,9 @@ impl SettingsWindow {
                         terminale_config::QuakeDisplay::Current => {
                             format!("Window's monitor \u{2014} {current_hint}")
                         }
+                        terminale_config::QuakeDisplay::Pointer => {
+                            "Wherever the mouse is".to_string()
+                        }
                         terminale_config::QuakeDisplay::Primary => {
                             format!("Primary \u{2014} {primary_hint}")
                         }
@@ -118,6 +155,25 @@ impl SettingsWindow {
                                 .clicked()
                             {
                                 self.config.quake.display = terminale_config::QuakeDisplay::Current;
+                                dirty = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(
+                                        self.config.quake.display,
+                                        terminale_config::QuakeDisplay::Pointer
+                                    ),
+                                    "Wherever the mouse is",
+                                )
+                                .on_hover_text(
+                                    "Opens on the monitor the pointer is on when you press \
+                                     the hotkey. Needs X11 \u{2014} Wayland does not tell an \
+                                     application where the pointer is, and there this \
+                                     behaves as \"Window's monitor\".",
+                                )
+                                .clicked()
+                            {
+                                self.config.quake.display = terminale_config::QuakeDisplay::Pointer;
                                 dirty = true;
                             }
                             if ui

@@ -273,7 +273,7 @@ impl Session {
         // Set terminfo-friendly env so apps know our capabilities.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
-        // Self-identify like every modern terminal (iTerm2, kitty, WezTerm, …).
+        // Self-identify, as terminals conventionally do.
         // Programs read `TERM_PROGRAM` to enable terminal-specific features;
         // Claude Code, for one, keys its multi-line `Shift+Enter` setup off a
         // recognised terminal here rather than the generic `xterm-256color`.

@@ -420,8 +420,8 @@ pub struct TerminalConfig {
     pub word_separators: String,
     /// When `true` (default), pressing a bare **Ctrl+C** while text is
     /// selected copies the selection to the clipboard instead of sending
-    /// the interrupt (`^C` / SIGINT) to the running program — the same
-    /// behaviour as Tabby, Windows Terminal, and VS Code. The selection is
+    /// the interrupt (`^C` / SIGINT) to the running program — the smart-copy
+    /// behaviour common on desktop terminals. The selection is
     /// cleared on copy, so pressing Ctrl+C a second time interrupts as
     /// usual. With no selection active, Ctrl+C always reaches the program
     /// untouched. Explicit `Ctrl+C` keybindings (custom keybinds, shortcut

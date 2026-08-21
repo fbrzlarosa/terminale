@@ -167,9 +167,9 @@ pub(crate) fn ensure_app_scope(runtime: &tokio::runtime::Runtime) -> bool {
 /// a leaf that names the terminal's spawn helper, not an application.
 ///
 /// And the unit has to name *terminale*, not merely some application. Launch
-/// terminale from a terminal emulator that puts each of its windows in its own
-/// app scope — ghostty does, as `app-ghostty-surface-transient-<n>.scope` — and
-/// the leaf passes for an application unit while announcing somebody else's
+/// terminale from an application that puts each of its windows in its own app
+/// scope — `app-<that app>-surface-transient-<n>.scope` — and the leaf passes
+/// for an application unit while announcing somebody else's
 /// identity. Accepting it meant terminale skipped claiming a scope of its own,
 /// inherited the host terminal's app id, and the global-shortcuts portal then
 /// refused the Quake binding with `NotAllowed("An app id is required")`. The
@@ -192,8 +192,8 @@ fn is_app_unit(leaf: &str) -> bool {
 ///
 /// The desktop reads the app id out of `app-<app id>-<instance>.scope` (or the
 /// bare `app-<app id>.scope`), and `terminale.desktop` makes that id [`APP_ID`].
-/// So a unit that starts `app-ghostty-` is an application unit, just not ours —
-/// and treating it as ours is what left the process wearing another app's
+/// So a unit naming some other application is an application unit, just not
+/// ours — and treating it as ours is what left the process wearing another app's
 /// identity. Matching on the id keeps both real cases right: a launch from the
 /// application menu already sits in `app-terminale-….scope` and is left alone,
 /// while a launch from any other app's scope goes on to claim its own.
@@ -208,8 +208,8 @@ fn is_our_app_unit(leaf: &str) -> bool {
     // Match on a whole dash-delimited segment, because the id is not always the
     // first one: GNOME Shell launches apps as `app-gnome-<app id>-<pid>.scope`,
     // while a self-claimed or systemd-run scope is `app-<app id>-<pid>.scope`.
-    // Comparing segments accepts both and still rejects
-    // `app-ghostty-surface-transient-<n>.scope`, where our id appears nowhere.
+    // Comparing segments accepts both and still rejects another application's
+    // `app-<name>-surface-transient-<n>.scope`, where our id appears nowhere.
     stem.strip_prefix("app-")
         .is_some_and(|rest| rest.split('-').any(|seg| seg == APP_ID))
 }
@@ -293,6 +293,17 @@ struct X11Conn {
     /// A private property used only as a timestamp probe; see
     /// [`server_timestamp`].
     timestamp_probe: u32,
+    /// `_NET_WM_WINDOW_TYPE` and the `_NET_WM_WINDOW_TYPE_POPUP_MENU` value —
+    /// how a window says "I am a menu", which is what puts it above its parent.
+    window_type: u32,
+    window_type_popup_menu: u32,
+    window_type_dialog: u32,
+    /// `_NET_WM_STATE` and its `_NET_WM_STATE_ABOVE` member, written directly
+    /// because a window that has not been mapped yet cannot ask the window
+    /// manager to change its state — before the map, the property *is* the
+    /// request (EWMH §_NET_WM_STATE).
+    wm_state: u32,
+    wm_state_above: u32,
 }
 
 /// Lazily-opened shared X11 connection. `None` once an attempt has failed, so
@@ -338,6 +349,23 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         .intern_atom(false, b"_TERMINALE_TIMESTAMP")?
         .reply()?
         .atom;
+    let window_type = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE")?
+        .reply()?
+        .atom;
+    let window_type_popup_menu = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_POPUP_MENU")?
+        .reply()?
+        .atom;
+    let window_type_dialog = conn
+        .intern_atom(false, b"_NET_WM_WINDOW_TYPE_DIALOG")?
+        .reply()?
+        .atom;
+    let wm_state = conn.intern_atom(false, b"_NET_WM_STATE")?.reply()?.atom;
+    let wm_state_above = conn
+        .intern_atom(false, b"_NET_WM_STATE_ABOVE")?
+        .reply()?
+        .atom;
     Ok(X11Conn {
         conn,
         root,
@@ -347,6 +375,11 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         current_desktop,
         active_window,
         timestamp_probe,
+        window_type,
+        window_type_popup_menu,
+        window_type_dialog,
+        wm_state,
+        wm_state_above,
     })
 }
 
@@ -634,6 +667,141 @@ pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
     let _ = x.conn.flush();
 }
 
+/// What kind of child window is being announced to the window manager.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildKind {
+    /// A popup menu: stacked above its parent, kept out of the taskbar and the
+    /// alt-tab list, and dismissed rather than managed.
+    Menu,
+    /// A modal-ish dialog: stacked above its parent and centred on it by most
+    /// window managers.
+    Dialog,
+}
+
+/// Tell the window manager what `window` is, and which `parent` it belongs to.
+///
+/// Three properties, all written before the window is mapped, because a child
+/// window that has not announced itself as one is stacked as an ordinary
+/// application window — and then loses to any terminal window sitting in the
+/// "above" layer. That is not a rare configuration: `window.always_on_top`, the
+/// Quake drop-down and a shell extension driving the drop-down all put it
+/// there, and in each case a right-click menu opened *behind* the terminal it
+/// belonged to.
+///
+/// * `_NET_WM_WINDOW_TYPE` — the window's kind. Mutter (and every other EWMH
+///   window manager) stacks a menu or dialog above its parent and keeps a menu
+///   out of the taskbar and the alt-tab list, none of which it will do for a
+///   window claiming to be `_NET_WM_WINDOW_TYPE_NORMAL`.
+/// * `WM_TRANSIENT_FOR` — *which* window it belongs to. Without it there is no
+///   parent to be stacked above; the window is merely another top-level.
+/// * `_NET_WM_STATE_ABOVE` — belt and braces, and the reason it is written
+///   directly rather than requested: winit's `WindowLevel::AlwaysOnTop` is set
+///   at creation, but these windows are created hidden, and the state did not
+///   survive to the map. Before a window is mapped the property *is* the
+///   request (EWMH §_NET_WM_STATE).
+///
+/// Returns whether the type was written. No-op without an X connection (a
+/// native Wayland surface, where a client cannot place or stack its own
+/// top-levels at all and this whole approach does not apply).
+pub(crate) fn mark_as_child_window(window: &Window, parent: &Window, kind: ChildKind) -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win)) = (x11(), x11_window_id(window)) else {
+        return false;
+    };
+    let type_atom = match kind {
+        ChildKind::Menu => x.window_type_popup_menu,
+        ChildKind::Dialog => x.window_type_dialog,
+    };
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        x.window_type,
+        AtomEnum::ATOM,
+        &[type_atom],
+    ) {
+        tracing::debug!(?e, "could not write _NET_WM_WINDOW_TYPE");
+        return false;
+    }
+    set_transient_for(window, parent);
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        x.wm_state,
+        AtomEnum::ATOM,
+        &[x.wm_state_above],
+    ) {
+        tracing::debug!(?e, "could not write _NET_WM_STATE");
+    }
+    let _ = x.conn.flush();
+    true
+}
+
+/// Where the pointer is, in root (whole-desktop) coordinates.
+///
+/// winit reports the cursor only relative to a window it is over, which is no
+/// use for deciding *which monitor* to put a hidden window on — by definition
+/// the pointer is somewhere else. X11 will answer the question directly.
+///
+/// Wayland deliberately will not: a client is not told the global pointer
+/// position, so this returns `None` there and the caller falls back to the
+/// monitor the window already knows about. That is the same boundary the rest
+/// of Quake docking already lives with — a Wayland client cannot place its own
+/// window either.
+pub(crate) fn pointer_position() -> Option<(i32, i32)> {
+    use x11rb::protocol::xproto::ConnectionExt;
+
+    let x = x11()?;
+    let reply = x.conn.query_pointer(x.root).ok()?.reply().ok()?;
+    // `same_screen` false means the pointer is on a different X screen than the
+    // root we asked about, and the coordinates are not meaningful.
+    if !reply.same_screen {
+        return None;
+    }
+    Some((i32::from(reply.root_x), i32::from(reply.root_y)))
+}
+
+/// Record that `window` belongs to `parent`, and nothing else.
+///
+/// `WM_TRANSIENT_FOR` is the one property that makes a window manager keep a
+/// window above another *whatever layer that other one is in*. A window level
+/// cannot do it: asking to be "always on top" only joins the layer the parent
+/// may already be in, and within a layer the last raise wins — which the parent
+/// keeps doing every time it is focused.
+///
+/// That is the difference between this and [`mark_as_child_window`]: a settings
+/// or assistant window is a real window, with its own place in the taskbar and
+/// the window switcher, and declaring it a dialog would take both away. It just
+/// also needs to stay in front of the terminal it was opened from, including
+/// when that terminal is the Quake drop-down or is being held above everything
+/// by a shell extension.
+///
+/// Returns whether the property was written; no-op without an X connection.
+pub(crate) fn set_transient_for(window: &Window, parent: &Window) -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win), Some(owner)) = (x11(), x11_window_id(window), x11_window_id(parent))
+    else {
+        return false;
+    };
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        u32::from(AtomEnum::WM_TRANSIENT_FOR),
+        AtomEnum::WINDOW,
+        &[owner],
+    ) {
+        tracing::debug!(?e, "could not write WM_TRANSIENT_FOR");
+        return false;
+    }
+    let _ = x.conn.flush();
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -696,22 +864,22 @@ mod tests {
     /// Another application's scope is not ours, however much it looks like an
     /// application unit.
     ///
-    /// Launching terminale from a terminal emulator that scopes each of its
-    /// windows — ghostty names them `app-ghostty-surface-transient-<n>.scope` —
-    /// used to satisfy the "am I already identified?" check, so terminale never
-    /// claimed a scope of its own and wore ghostty's identity instead. The
+    /// Launching terminale from an application that scopes each of its windows
+    /// — `app-<that app>-surface-transient-<n>.scope` — used to satisfy the
+    /// "am I already identified?" check, so terminale never claimed a scope of
+    /// its own and wore the other application's identity instead. The
     /// global-shortcuts portal then answered `NotAllowed("An app id is
     /// required")` and the Quake hotkey did nothing for the whole session.
     #[test]
     fn another_apps_scope_is_not_ours() {
-        let ghostty = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
-                       app-ghostty-surface-transient-6975.scope\n";
-        assert_eq!(app_unit_in_cgroup(ghostty), None);
+        let other = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/\
+                     app-someterm-surface-transient-6975.scope\n";
+        assert_eq!(app_unit_in_cgroup(other), None);
         // Same shape, different neighbours: still not us.
         for leaf in [
-            "app-ghostty.scope",
-            "app-org.wezfurlong.wezterm-1234.scope",
-            "app-Alacritty-9.scope",
+            "app-someterm.scope",
+            "app-com.example.OtherTerm-1234.scope",
+            "app-Whatever-9.scope",
         ] {
             assert!(!is_our_app_unit(leaf), "{leaf} must not read as ours");
         }

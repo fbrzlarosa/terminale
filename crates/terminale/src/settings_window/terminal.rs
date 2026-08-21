@@ -180,8 +180,7 @@ impl SettingsWindow {
             sublabel(
                 ui,
                 "Jump back to the live prompt when you type or paste while scrolled up in \
-                 history (like iTerm2 and Windows Terminal). Off keeps the view parked in \
-                 the scrollback while you type.",
+                 history. Off keeps the view parked in the scrollback while you type.",
             );
         });
 
@@ -394,9 +393,8 @@ impl SettingsWindow {
             sublabel(
                 ui,
                 "With text selected, Ctrl+C copies it instead of interrupting the running \
-                 program (like Tabby and Windows Terminal). The selection clears on copy, so \
-                 a second Ctrl+C sends the interrupt as usual. Without a selection, Ctrl+C \
-                 always reaches the program.",
+                 program. The selection clears on copy, so a second Ctrl+C sends the \
+                 interrupt as usual. Without a selection, Ctrl+C always reaches the program.",
             );
         });
 

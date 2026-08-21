@@ -273,6 +273,115 @@ pub(crate) fn unregister_gnome() -> Result<(), String> {
     Ok(())
 }
 
+// ── Drop-down shell extensions ───────────────────────────────────────────────
+
+/// UUID of the GNOME Shell extension terminale knows how to hand its drop-down
+/// over to. It owns the hotkey, the geometry and the animation itself — the
+/// three things a Wayland client is not allowed to do for itself.
+const QUAKE_EXTENSION_UUID: &str = "quake-terminal@diegodario88.github.io";
+/// Its settings schema, and the key naming the app it drives.
+const QUAKE_EXTENSION_SCHEMA: &str = "org.gnome.shell.extensions.quake-terminal";
+const QUAKE_EXTENSION_APP_KEY: &str = "terminal-id";
+/// The key holding the extension's own hotkey, read only to show the user which
+/// key they will be pressing.
+const QUAKE_EXTENSION_SHORTCUT_KEY: &str = "terminal-shortcut";
+
+/// Where the extension's compiled schema lives.
+///
+/// An extension's schema is installed inside the extension, not in the system
+/// schema directory, so plain `gsettings` cannot see it — every call needs an
+/// explicit `--schemadir`. Both install locations are probed: per-user
+/// (`$XDG_DATA_HOME`, how the Extensions app installs) and system-wide.
+fn quake_extension_schemadir() -> Option<std::path::PathBuf> {
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(data) = std::env::var_os("XDG_DATA_HOME") {
+        roots.push(std::path::PathBuf::from(data));
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(std::path::PathBuf::from(home).join(".local/share"));
+    }
+    roots.push(std::path::PathBuf::from("/usr/share"));
+    roots.push(std::path::PathBuf::from("/usr/local/share"));
+    roots
+        .into_iter()
+        .map(|r| {
+            r.join("gnome-shell/extensions")
+                .join(QUAKE_EXTENSION_UUID)
+                .join("schemas")
+        })
+        .find(|d| d.join("gschemas.compiled").is_file())
+}
+
+/// Whether the drop-down extension is installed and its settings reachable.
+pub(crate) fn quake_extension_available() -> bool {
+    quake_extension_schemadir().is_some()
+}
+
+/// The desktop-entry id the extension is currently set to drive, if readable.
+pub(crate) fn quake_extension_app() -> Option<String> {
+    let dir = quake_extension_schemadir()?;
+    let raw = gsettings_in(
+        &dir,
+        &["get", QUAKE_EXTENSION_SCHEMA, QUAKE_EXTENSION_APP_KEY],
+    )
+    .ok()?;
+    unquote_gvariant_string(raw.trim())
+}
+
+/// The key the extension will toggle the drop-down with, in GTK accelerator
+/// spelling (`<Control>backslash`), if readable.
+pub(crate) fn quake_extension_shortcut() -> Option<String> {
+    let dir = quake_extension_schemadir()?;
+    let raw = gsettings_in(
+        &dir,
+        &["get", QUAKE_EXTENSION_SCHEMA, QUAKE_EXTENSION_SHORTCUT_KEY],
+    )
+    .ok()?;
+    parse_gvariant_string_list(&raw).into_iter().next()
+}
+
+/// Point the drop-down extension at `entry_id` (a `.desktop` file name).
+///
+/// This is the one call that takes the user's existing drop-down key — whatever
+/// they already press, bound to whatever terminal they had — and makes it open
+/// terminale instead. Only the one key is written; the extension's geometry,
+/// animation and hotkey settings are left exactly as the user tuned them.
+///
+/// # Errors
+///
+/// Returns a message to show the user when the extension is not installed or
+/// `gsettings` refuses the write.
+pub(crate) fn point_quake_extension_at(entry_id: &str) -> Result<String, String> {
+    let dir = quake_extension_schemadir().ok_or_else(|| {
+        format!("the {QUAKE_EXTENSION_UUID} GNOME extension does not seem to be installed")
+    })?;
+    gsettings_in(
+        &dir,
+        &[
+            "set",
+            QUAKE_EXTENSION_SCHEMA,
+            QUAKE_EXTENSION_APP_KEY,
+            entry_id,
+        ],
+    )?;
+    tracing::info!(entry_id, "pointed the drop-down extension at terminale");
+    Ok(quake_extension_shortcut().unwrap_or_else(|| "its configured key".to_string()))
+}
+
+/// Run `gsettings` against a schema installed outside the system schema path.
+fn gsettings_in(schemadir: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = Command::new("gsettings")
+        .arg("--schemadir")
+        .arg(schemadir)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
 /// Run `gsettings` with `args`, returning its stdout on success.
 fn gsettings(args: &[&str]) -> Result<String, String> {
     let out = Command::new("gsettings")

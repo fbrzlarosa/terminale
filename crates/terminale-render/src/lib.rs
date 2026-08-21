@@ -5992,7 +5992,7 @@ impl Renderer {
                 // INSIDE the pane — an inset stroke landed right under the
                 // first/last text row and column, tinting the glyphs. On
                 // internal edges the stroke now recolours the divider band
-                // (dead space, iTerm2-style); on window edges it sits in the
+                // (dead space); on window edges it sits in the
                 // outer padding. The at-most-t/2 px that still touch the
                 // cell area are the outermost edge pixels, where glyph ink
                 // doesn't reach — and the glyph pass paints over the stroke

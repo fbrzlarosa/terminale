@@ -407,6 +407,26 @@ struct Cli {
     #[arg(long)]
     quake: bool,
 
+    /// Start with the window hidden, ready for the Quake hotkey to reveal it.
+    ///
+    /// This is what makes a drop-down feel instant: the process, the GPU
+    /// surface and the shell are all up before you ever press the key, so the
+    /// first press is a show rather than a launch. Intended for an autostart
+    /// entry — see `integration.autostart`, which writes one.
+    #[arg(long)]
+    start_hidden: bool,
+
+    /// Override the application id this instance presents to the desktop —
+    /// the Wayland `app_id` / X11 `WM_CLASS`.
+    ///
+    /// A desktop matches a window to a `.desktop` entry by this id, so a
+    /// dedicated id is what lets a shell extension toggle *the* drop-down
+    /// window and leave the terminale you were working in alone. The
+    /// drop-down launcher written by `--install-quake-launcher` passes it.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[arg(long = "class", alias = "app-id", value_name = "ID")]
+    class: Option<String>,
+
     /// Ask the already-running terminale to show or hide its Quake drop-down,
     /// then exit. Bind this to a key in your desktop / window manager to get a
     /// working Quake hotkey under Wayland, where no application is allowed to
@@ -449,6 +469,24 @@ struct Cli {
     #[arg(long)]
     uninstall_desktop_entry: bool,
 
+    /// Install the drop-down launcher entry (`terminale.Quake.desktop`) and
+    /// exit, printing the desktop-entry id to point a shell extension at.
+    ///
+    /// For desktops where a shell extension implements the drop-down terminal
+    /// — GNOME's Quake Terminal being the usual one. The extension launches an
+    /// app by entry id and then finds its window by application id, so the
+    /// drop-down gets an entry, and an identity, of its own. Also available as
+    /// `integration.quake_desktop_entry` and as a button in
+    /// Settings › Desktop integration.
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    install_quake_launcher: bool,
+
+    /// Remove the drop-down launcher entry, then exit.
+    #[cfg(target_os = "linux")]
+    #[arg(long)]
+    uninstall_quake_launcher: bool,
+
     /// Subcommand, when one is given. Without it `terminale` opens a window,
     /// which is the overwhelmingly common case — hence `Option`.
     #[cfg(unix)]
@@ -476,6 +514,38 @@ enum Command {
         #[command(subcommand)]
         cmd: ipc::CtlCommand,
     },
+}
+
+/// Whether a control-socket connect error means *nothing is listening*, as
+/// opposed to an instance that is there and not answering.
+///
+/// The distinction decides whether `--toggle-quake` may start a terminale of its
+/// own. A missing socket file (`NotFound`) or a stale one nobody accepts on
+/// (`ConnectionRefused`) means there is no instance. A timeout, or a refusal on
+/// permissions, means there is something on the other end — starting a second
+/// terminale would not deliver the toggle and would leave the user with two.
+#[cfg(unix)]
+fn nobody_home(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+    )
+}
+
+/// Whether `integration.quake_launch_on_demand` allows this process to become
+/// the instance a Quake keypress had nothing to toggle.
+///
+/// Loads the config, which the fast path above deliberately avoids — but this
+/// is only reached when there is no instance, i.e. when the whole application
+/// is about to start anyway, so the read costs nothing that was not already
+/// going to be spent. Defaults to allowing it if the config cannot be read: a
+/// hotkey that opens a terminal beats a hotkey that does nothing.
+#[cfg(unix)]
+fn launch_on_demand(config_path: Option<PathBuf>) -> bool {
+    match Config::load_or_init_at(config_path) {
+        Ok((cfg, _)) => cfg.integration.quake_launch_on_demand,
+        Err(_) => true,
+    }
 }
 
 /// When launched from a shell (so a parent console exists), re-attach to
@@ -627,6 +697,13 @@ fn main() -> Result<()> {
     install_panic_message_box();
     let cli = Cli::parse();
 
+    // Fix the desktop identity before any window exists — a window carries the
+    // app id from creation and cannot be re-labelled afterwards.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(class) = cli.class.as_deref() {
+        app_icon::set_app_id(class);
+    }
+
     if cli.schema {
         let schema = schemars::schema_for!(Config);
         println!("{}", serde_json::to_string_pretty(&schema)?);
@@ -645,6 +722,10 @@ fn main() -> Result<()> {
     // costs time (config load, tracing setup, GPU) because this path is on the
     // critical path of a keypress: a desktop keybinding spawns this process
     // every time the user hits the Quake key.
+    // Set when `--toggle-quake` found nothing to toggle and this process went
+    // on to become the instance instead. Logged once tracing is up.
+    #[cfg(unix)]
+    let mut started_for_toggle = false;
     #[cfg(unix)]
     if cli.toggle_quake {
         match ipc::send_command(control::CMD_TOGGLE_QUAKE) {
@@ -652,6 +733,18 @@ fn main() -> Result<()> {
             Ok(reply) => {
                 eprintln!("terminale refused the request: {reply}");
                 std::process::exit(1);
+            }
+            // Nothing is listening. Either there is no terminale yet — the
+            // interesting case — or the socket is off.
+            Err(e) if nobody_home(&e) && launch_on_demand(cli.config.clone()) => {
+                // Be the instance. A desktop-owned Quake hotkey has to work
+                // from a fresh login, and on the first press of the session
+                // this process is the only terminale there is; exiting with an
+                // error is how the hotkey came to do nothing at all until the
+                // user had launched terminale by hand once. So fall through
+                // into normal startup instead of returning, and the window
+                // this process opens *is* the drop-down the user asked for.
+                started_for_toggle = true;
             }
             Err(e) => {
                 eprintln!(
@@ -720,6 +813,52 @@ fn main() -> Result<()> {
         if cli.uninstall_desktop_entry {
             desktop_entry::remove();
             println!("Removed the terminale desktop entry.");
+            return Ok(());
+        }
+        if cli.install_quake_launcher {
+            // Persist the setting as well as the file. Startup reconciles the
+            // entry against `integration.quake_desktop_entry` in both
+            // directions, so installing without recording the choice would
+            // have the next launch dutifully delete what this flag just wrote.
+            match Config::load_or_init_at(cli.config.clone()) {
+                Ok((mut cfg, path)) => {
+                    if !cfg.integration.quake_desktop_entry {
+                        cfg.integration.quake_desktop_entry = true;
+                        if let Err(e) = cfg.write_to(&path) {
+                            eprintln!(
+                                "Installed the entry, but could not record it in {}: {e}\n\
+                                 Set `quake_desktop_entry = true` under [integration] by \
+                                 hand, or the next launch will remove it again.",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+                Err(e) => eprintln!("Could not read the config to record the choice: {e}"),
+            }
+            match desktop_entry::ensure_quake_launcher() {
+                Ok(_) => println!(
+                    "Installed the drop-down launcher.\n\
+                     Point your drop-down shell extension at: {}\n\
+                     (GNOME Quake Terminal: Extensions \u{2023} Quake Terminal \u{2023} \
+                     Application, or `gsettings set \
+                     org.gnome.shell.extensions.quake-terminal terminal-id '{}'`)",
+                    desktop_entry::quake_launcher_id(),
+                    desktop_entry::quake_launcher_id(),
+                ),
+                Err(e) => eprintln!("Could not install the drop-down launcher: {e}"),
+            }
+            return Ok(());
+        }
+        if cli.uninstall_quake_launcher {
+            desktop_entry::remove_quake_launcher();
+            if let Ok((mut cfg, path)) = Config::load_or_init_at(cli.config.clone()) {
+                if cfg.integration.quake_desktop_entry {
+                    cfg.integration.quake_desktop_entry = false;
+                    let _ = cfg.write_to(&path);
+                }
+            }
+            println!("Removed the drop-down launcher entry.");
             return Ok(());
         }
     }
@@ -854,6 +993,36 @@ fn main() -> Result<()> {
         }
     }
 
+    // Autostart follows its setting in both directions, for the same reason as
+    // the launcher below: a switch that only ever writes is a switch that
+    // cannot be turned off.
+    #[cfg(target_os = "linux")]
+    if config.integration.autostart {
+        match desktop_entry::ensure_autostart() {
+            Ok(true) => tracing::info!("registered the autostart entry"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(?e, "could not register the autostart entry"),
+        }
+    } else if desktop_entry::autostart_installed() {
+        desktop_entry::remove_autostart();
+        tracing::info!("removed the autostart entry");
+    }
+
+    // The drop-down launcher is opt-in, and follows the setting in both
+    // directions: turning it off has to actually take the entry out of the
+    // application list, not just stop refreshing it.
+    #[cfg(target_os = "linux")]
+    if config.integration.quake_desktop_entry {
+        match desktop_entry::ensure_quake_launcher() {
+            Ok(true) => tracing::info!("registered the drop-down launcher entry"),
+            Ok(false) => {}
+            Err(e) => tracing::warn!(?e, "could not register the drop-down launcher entry"),
+        }
+    } else if desktop_entry::quake_launcher_installed() {
+        desktop_entry::remove_quake_launcher();
+        tracing::info!("removed the drop-down launcher entry");
+    }
+
     let chosen_profile = pick_profile(&config, cli.profile.as_deref(), cli.shell.as_deref());
 
     tracing::info!(
@@ -864,6 +1033,11 @@ fn main() -> Result<()> {
             .map_or("(none)", |p| p.name.as_str()),
         "terminale starting"
     );
+
+    #[cfg(unix)]
+    if started_for_toggle {
+        tracing::info!("the Quake hotkey found no running terminale, so this process became one");
+    }
 
     // Async runtime for the AI assistant's streaming provider calls.
     // Kept alive for the whole process; AI tasks are spawned onto it and
@@ -975,6 +1149,7 @@ fn main() -> Result<()> {
         hotkeys,
         quake_hotkey_id,
         quake_binding_registered,
+        start_hidden: cli.start_hidden,
         portal_shortcut_active: false,
         quake_hotkey_suspended: false,
         plugins,
@@ -1460,6 +1635,10 @@ struct TerminaleApp {
     /// `id()` of the Quake-toggle hotkey, set when registration
     /// succeeded so `about_to_wait` knows which event to react to.
     quake_hotkey_id: Option<u32>,
+    /// `--start-hidden`: skip revealing the first window, so the Quake hotkey
+    /// has something warm to show instead of something to launch. Cleared once
+    /// honoured — a second window opened later is an ordinary window.
+    start_hidden: bool,
     /// The Quake hotkey binding currently registered with the OS. Compared to
     /// `config.keybinds.quake` every tick so a Settings change or config-file
     /// reload re-registers the hotkey live instead of needing a restart.
@@ -7584,10 +7763,21 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     open_settings(state);
                 }
             }
-            // Paint the first frame into the hidden window, then reveal it
-            // (cloak-around-show on Windows) so the user never sees a white
-            // flash — the window appears already showing the dark UI.
-            reveal_window(state);
+            if std::mem::take(&mut self.start_hidden) {
+                // Stay hidden, and tell the Quake state machine so — otherwise
+                // it believes the window is on screen and the first press of
+                // the hotkey would try to hide what is already hidden. The
+                // window, its GPU surface and its shell are all live; the only
+                // thing missing is the map, which is exactly what makes the
+                // first reveal instant.
+                state.quake_visible = false;
+                tracing::info!("started hidden; the Quake hotkey will reveal this window");
+            } else {
+                // Paint the first frame into the hidden window, then reveal it
+                // (cloak-around-show on Windows) so the user never sees a white
+                // flash — the window appears already showing the dark UI.
+                reveal_window(state);
+            }
             // Apply the configured startup position, if any. Done AFTER
             // reveal so the monitor + scale factor are stable; the snap
             // helper already handles missing-monitor gracefully.
@@ -8733,7 +8923,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.window.request_redraw();
                     return;
                 }
-                // Smart copy (Tabby / Windows Terminal behaviour): a bare
+                // Smart copy: a bare
                 // Ctrl+C while text is selected copies it instead of sending
                 // ^C (SIGINT) to the running program. The selection is
                 // cleared on copy, so the NEXT Ctrl+C interrupts as usual —
@@ -8985,6 +9175,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             if self.settings.is_none() {
                 let win = SettingsWindow::new(
                     event_loop,
+                    &state.window,
                     self.config.clone(),
                     self.config_path.clone(),
                     state.renderer.instance(),
@@ -9010,6 +9201,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     terminale_ai::assistant_context_block(&build_suggestion_context(state, 40));
                 let win = ai_assistant_window::AiAssistantWindow::open(
                     event_loop,
+                    &state.window,
                     self.config.ai.clone(),
                     self.proxy.clone(),
                     self.runtime.handle().clone(),
@@ -9196,6 +9388,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.renderer.device(),
                     state.renderer.queue(),
                     true, // root picker — take focus so Esc works
+                    &state.window,
                 ));
             }
         }
@@ -9242,6 +9435,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     state.renderer.device(),
                     state.renderer.queue(),
                     true, // root picker — take focus so Esc works
+                    &state.window,
                 ));
             }
         }
@@ -9332,6 +9526,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 state.renderer.device(),
                 state.renderer.queue(),
                 true, // root context menu — take focus so Esc/click-outside works
+                &state.window,
             );
             if let Some(idx) = submenu_idx {
                 menu.force_open_submenu(idx);
