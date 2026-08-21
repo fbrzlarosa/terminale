@@ -725,17 +725,7 @@ pub(crate) fn mark_as_child_window(window: &Window, parent: &Window, kind: Child
         tracing::debug!(?e, "could not write _NET_WM_WINDOW_TYPE");
         return false;
     }
-    if let Some(owner) = x11_window_id(parent) {
-        if let Err(e) = x.conn.change_property32(
-            PropMode::REPLACE,
-            win,
-            u32::from(AtomEnum::WM_TRANSIENT_FOR),
-            AtomEnum::WINDOW,
-            &[owner],
-        ) {
-            tracing::debug!(?e, "could not write WM_TRANSIENT_FOR");
-        }
-    }
+    set_transient_for(window, parent);
     if let Err(e) = x.conn.change_property32(
         PropMode::REPLACE,
         win,
@@ -744,6 +734,45 @@ pub(crate) fn mark_as_child_window(window: &Window, parent: &Window, kind: Child
         &[x.wm_state_above],
     ) {
         tracing::debug!(?e, "could not write _NET_WM_STATE");
+    }
+    let _ = x.conn.flush();
+    true
+}
+
+/// Record that `window` belongs to `parent`, and nothing else.
+///
+/// `WM_TRANSIENT_FOR` is the one property that makes a window manager keep a
+/// window above another *whatever layer that other one is in*. A window level
+/// cannot do it: asking to be "always on top" only joins the layer the parent
+/// may already be in, and within a layer the last raise wins — which the parent
+/// keeps doing every time it is focused.
+///
+/// That is the difference between this and [`mark_as_child_window`]: a settings
+/// or assistant window is a real window, with its own place in the taskbar and
+/// the window switcher, and declaring it a dialog would take both away. It just
+/// also needs to stay in front of the terminal it was opened from, including
+/// when that terminal is the Quake drop-down or is being held above everything
+/// by a shell extension.
+///
+/// Returns whether the property was written; no-op without an X connection.
+pub(crate) fn set_transient_for(window: &Window, parent: &Window) -> bool {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win), Some(owner)) = (x11(), x11_window_id(window), x11_window_id(parent))
+    else {
+        return false;
+    };
+    if let Err(e) = x.conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        u32::from(AtomEnum::WM_TRANSIENT_FOR),
+        AtomEnum::WINDOW,
+        &[owner],
+    ) {
+        tracing::debug!(?e, "could not write WM_TRANSIENT_FOR");
+        return false;
     }
     let _ = x.conn.flush();
     true

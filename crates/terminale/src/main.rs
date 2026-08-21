@@ -9135,6 +9135,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             if self.settings.is_none() {
                 let win = SettingsWindow::new(
                     event_loop,
+                    &state.window,
                     self.config.clone(),
                     self.config_path.clone(),
                     state.renderer.instance(),
@@ -9160,6 +9161,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     terminale_ai::assistant_context_block(&build_suggestion_context(state, 40));
                 let win = ai_assistant_window::AiAssistantWindow::open(
                     event_loop,
+                    &state.window,
                     self.config.ai.clone(),
                     self.proxy.clone(),
                     self.runtime.handle().clone(),

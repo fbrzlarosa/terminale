@@ -65,6 +65,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   and the alt-tab list, which it declines to do for a "normal" window. The
   password prompt, the close confirmation and the paste confirmation carried the
   same two omissions and are now announced as dialogs of their parent.
+- **Settings and the AI assistant opened behind the terminal.** Both are real
+  windows, not popups, so neither could be declared a dialog without losing its
+  place in the taskbar and the window switcher — and a window *level* cannot
+  help, since asking to be "always on top" only joins the layer the terminal may
+  already be in, where the last raise wins and the terminal keeps winning.
+  Settings tied its level to `window.always_on_top`, which covers only the case
+  the user asked for; a Quake drop-down, or a shell extension holding the
+  drop-down above everything, puts the terminal up there without touching that
+  setting. Both are now transient for the terminal they were opened from, which
+  is what a window manager honours regardless of layer.
 - **Auxiliary windows asked for focus in the way that does not work.** The menu
   and the three dialogs called winit's `focus_window()`, which sends
   `_NET_ACTIVE_WINDOW` with `CurrentTime`; Mutter cannot compare a zero

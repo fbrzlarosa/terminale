@@ -72,8 +72,10 @@ pub struct AiAssistantWindow {
 
 impl AiAssistantWindow {
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn open(
         event_loop: &ActiveEventLoop,
+        parent: &Window,
         ai: AiConfig,
         proxy: EventLoopProxy<UserEvent>,
         rt: tokio::runtime::Handle,
@@ -104,6 +106,13 @@ impl AiAssistantWindow {
                 .create_window(attrs)
                 .expect("failed to create AI window"),
         );
+
+        // Stay in front of the terminal it was opened from, whatever layer that
+        // terminal is in — see `linux_window::set_transient_for`. This window
+        // has no level of its own, so before this it went behind a Quake
+        // drop-down or an extension-held terminal every time.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        crate::linux_window::set_transient_for(&window, parent);
 
         let surface = instance
             .create_surface(Arc::clone(&window))

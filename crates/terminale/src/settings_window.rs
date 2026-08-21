@@ -266,8 +266,10 @@ struct BackupUiState {
 }
 
 impl SettingsWindow {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         event_loop: &ActiveEventLoop,
+        parent: &Window,
         config: Config,
         config_path: PathBuf,
         instance: Arc<wgpu::Instance>,
@@ -298,6 +300,18 @@ impl SettingsWindow {
                 .create_window(attrs)
                 .expect("failed to create settings window"),
         );
+
+        // Stay in front of the terminal this was opened from, whatever layer
+        // that terminal is in. The window level above only covers the case the
+        // *user* asked for ("stay on top"); a Quake drop-down, or a shell
+        // extension holding the drop-down above everything, puts the terminal
+        // up there without touching that setting — and then Settings opened
+        // behind the window you opened it from. Being transient for the parent
+        // is what a window manager honours regardless of layer, and unlike
+        // declaring this a dialog it keeps Settings its own entry in the
+        // taskbar and the window switcher.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        crate::linux_window::set_transient_for(&window, parent);
 
         let surface = instance
             .create_surface(Arc::clone(&window))
