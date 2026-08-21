@@ -113,6 +113,10 @@ impl AiAssistantWindow {
         // drop-down or an extension-held terminal every time.
         #[cfg(all(unix, not(target_os = "macos")))]
         crate::linux_window::set_transient_for(&window, parent);
+        // Only the branch above reads it; every other platform stacks these
+        // windows correctly without being told who their parent is.
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let _ = parent;
 
         let surface = instance
             .create_surface(Arc::clone(&window))

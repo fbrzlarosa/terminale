@@ -253,6 +253,10 @@ impl ContextMenuWindow {
             parent,
             crate::linux_window::ChildKind::Menu,
         );
+        // Only the branch above reads it; every other platform stacks these
+        // windows correctly without being told who their parent is.
+        #[cfg(not(all(unix, not(target_os = "macos"))))]
+        let _ = parent;
 
         // Panic-safe size read: winit's inherent `MonitorHandle::size()`
         // unwrap-panics on a handle invalidated by a standby/resume cycle.

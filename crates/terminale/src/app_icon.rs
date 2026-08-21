@@ -9,6 +9,7 @@
 //! source of truth (the `assets/icons/icon.svg`) without juggling
 //! pre-baked PNGs for each DPI.
 
+#[cfg(all(unix, not(target_os = "macos")))]
 use std::sync::OnceLock;
 
 use winit::window::Icon;
@@ -19,10 +20,17 @@ const ICON_SVG: &[u8] = include_bytes!("../../../assets/icons/icon.svg");
 
 /// The identity terminale presents to the desktop unless told otherwise.
 /// Matches the `terminale.desktop` entry `desktop_entry.rs` installs.
+///
+/// Only meaningful where a window carries an application id of its own —
+/// Wayland's `app_id`, X11's `WM_CLASS`. Windows takes its icon from the
+/// embedded resource and macOS from the app bundle, so there is nothing for
+/// this to name on either.
+#[cfg(all(unix, not(target_os = "macos")))]
 pub const DEFAULT_APP_ID: &str = "terminale";
 
 /// Overridden identity, when `--class` was given. Set once before the first
 /// window exists and read on every window build after that.
+#[cfg(all(unix, not(target_os = "macos")))]
 static APP_ID: OnceLock<String> = OnceLock::new();
 
 /// Adopt `id` as this process's application identity, for the whole run.
@@ -37,6 +45,7 @@ static APP_ID: OnceLock<String> = OnceLock::new();
 ///
 /// Ignored if a window was already built, or if called twice: the id is part of
 /// a window's identity from creation and cannot be restated afterwards.
+#[cfg(all(unix, not(target_os = "macos")))]
 pub fn set_app_id(id: &str) {
     let id = id.trim();
     if id.is_empty() {
@@ -52,6 +61,7 @@ pub fn set_app_id(id: &str) {
 }
 
 /// The application id in effect for this process.
+#[cfg(all(unix, not(target_os = "macos")))]
 #[must_use]
 pub fn app_id() -> &'static str {
     APP_ID.get().map_or(DEFAULT_APP_ID, String::as_str)

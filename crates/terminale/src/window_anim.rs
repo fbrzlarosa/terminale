@@ -1742,7 +1742,7 @@ pub(crate) fn take_quake_focus(window: &Window) {
 /// Not `Window::focus_window()`: on X11 that sends `_NET_ACTIVE_WINDOW` with
 /// `CurrentTime`, and Mutter's focus-stealing prevention cannot compare a zero
 /// timestamp against the user's last input, so it declines and posts an
-/// "<app> is ready" notification instead. Prefers the same request carrying a
+/// `<app> is ready` notification instead. Prefers the same request carrying a
 /// real server timestamp, and falls back to winit's when there is no X
 /// connection.
 ///
