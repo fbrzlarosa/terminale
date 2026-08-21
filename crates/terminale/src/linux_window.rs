@@ -739,6 +739,30 @@ pub(crate) fn mark_as_child_window(window: &Window, parent: &Window, kind: Child
     true
 }
 
+/// Where the pointer is, in root (whole-desktop) coordinates.
+///
+/// winit reports the cursor only relative to a window it is over, which is no
+/// use for deciding *which monitor* to put a hidden window on — by definition
+/// the pointer is somewhere else. X11 will answer the question directly.
+///
+/// Wayland deliberately will not: a client is not told the global pointer
+/// position, so this returns `None` there and the caller falls back to the
+/// monitor the window already knows about. That is the same boundary the rest
+/// of Quake docking already lives with — a Wayland client cannot place its own
+/// window either.
+pub(crate) fn pointer_position() -> Option<(i32, i32)> {
+    use x11rb::protocol::xproto::ConnectionExt;
+
+    let x = x11()?;
+    let reply = x.conn.query_pointer(x.root).ok()?.reply().ok()?;
+    // `same_screen` false means the pointer is on a different X screen than the
+    // root we asked about, and the coordinates are not meaningful.
+    if !reply.same_screen {
+        return None;
+    }
+    Some((i32::from(reply.root_x), i32::from(reply.root_y)))
+}
+
 /// Record that `window` belongs to `parent`, and nothing else.
 ///
 /// `WM_TRANSIENT_FOR` is the one property that makes a window manager keep a

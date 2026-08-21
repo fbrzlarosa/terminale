@@ -132,6 +132,9 @@ impl SettingsWindow {
                         terminale_config::QuakeDisplay::Current => {
                             format!("Window's monitor \u{2014} {current_hint}")
                         }
+                        terminale_config::QuakeDisplay::Pointer => {
+                            "Wherever the mouse is".to_string()
+                        }
                         terminale_config::QuakeDisplay::Primary => {
                             format!("Primary \u{2014} {primary_hint}")
                         }
@@ -152,6 +155,25 @@ impl SettingsWindow {
                                 .clicked()
                             {
                                 self.config.quake.display = terminale_config::QuakeDisplay::Current;
+                                dirty = true;
+                            }
+                            if ui
+                                .selectable_label(
+                                    matches!(
+                                        self.config.quake.display,
+                                        terminale_config::QuakeDisplay::Pointer
+                                    ),
+                                    "Wherever the mouse is",
+                                )
+                                .on_hover_text(
+                                    "Opens on the monitor the pointer is on when you press \
+                                     the hotkey. Needs X11 \u{2014} Wayland does not tell an \
+                                     application where the pointer is, and there this \
+                                     behaves as \"Window's monitor\".",
+                                )
+                                .clicked()
+                            {
+                                self.config.quake.display = terminale_config::QuakeDisplay::Pointer;
                                 dirty = true;
                             }
                             if ui

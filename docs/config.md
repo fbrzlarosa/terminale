@@ -105,9 +105,26 @@ mode = "visual"                # visual | audio | both | none
 animation    = "slide"   # none | slide | bounce | scale | fade
 animation_ms = 120       # show/hide animation duration, ms
 edge         = "off"     # off | top | bottom | left | right
+display      = "current" # current | pointer | primary | { index = N }
 size_percent = 0.5       # fraction of the monitor's perpendicular extent
                           # occupied when docked (edge != "off")
 ```
+
+`display` decides which monitor a docked drop-down appears on:
+
+* `current` (default) — the monitor it was last visible on. Drag it to another
+  monitor to re-anchor it there. Deliberately *not* pointer-following: a window
+  that relocates on its own is disorienting once you have parked it somewhere.
+  When there is no history at all — the first reveal after
+  `integration.autostart` started it hidden — this falls back to the monitor the
+  pointer is on, which beats picking whichever screen the OS happens to list
+  first.
+* `pointer` — the monitor the mouse is on, every time. What most people mean by
+  a drop-down terminal: it opens where you are looking. Needs X11; Wayland does
+  not tell an application where the pointer is, and there it behaves as
+  `current`.
+* `primary` — always the OS primary monitor.
+* `{ index = N }` — pinned to the N-th enumerated monitor.
 
 The global toggle hotkey lives in `[keybinds] quake = "Ctrl+\`"`, not here.
 `edge = "off"` (the default) is a free-floating window that restores its exact

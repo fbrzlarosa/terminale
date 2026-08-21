@@ -18,6 +18,20 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   not answering is not helped by starting a second one. New
   `integration.quake_launch_on_demand` (default `true`), with a switch in
   Settings › Desktop integration.
+- **`quake.display = "pointer"` opens the drop-down where the mouse is.** The
+  existing `current` anchors the window to the monitor it was last seen on,
+  which is right for a drop-down you have parked deliberately and wrong for the
+  more common expectation that it appears where you are looking. Both are now
+  available; `current` stays the default, since a window that relocates on its
+  own is the more surprising of the two. Needs X11 — Wayland does not tell an
+  application where the pointer is, and there `pointer` behaves as `current`.
+- **A drop-down that had never been shown appeared on an arbitrary monitor.**
+  `current` resolves through a chain of fallbacks, and a window that has never
+  been visible — which is precisely what starting hidden produces — reached the
+  end of it and landed on whichever screen the OS lists first. It now consults
+  the pointer at that point, and only at that point, so the very first reveal
+  of a session lands where you are without turning `current` into
+  pointer-following.
 - **Start hidden at login, so the first press of the hotkey is instant.** A
   press that has to *start* terminale cannot feel quick however fast terminale
   is — the process, the GPU surface and the shell all come up before anything

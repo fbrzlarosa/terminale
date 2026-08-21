@@ -1289,6 +1289,42 @@ pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
     }
 }
 
+/// The monitor the mouse pointer is on, when the system will say.
+///
+/// Returns `None` where the global pointer position is not available to a
+/// client — a native Wayland surface — leaving the caller to fall back to
+/// whatever it knows about the window itself.
+fn monitor_under_pointer(
+    monitors: &[winit::monitor::MonitorHandle],
+) -> Option<winit::monitor::MonitorHandle> {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let point = crate::linux_window::pointer_position()?;
+        // Same geometry list `monitor_index_for_point` expects, built with the
+        // panic-safe size read: a handle can go stale across a resume.
+        let rects: Vec<(i32, i32, u32, u32)> = monitors
+            .iter()
+            .filter_map(|m| {
+                let size = crate::monitor_names::monitor_size(m)?;
+                let pos = m.position();
+                Some((pos.x, pos.y, size.width, size.height))
+            })
+            .collect();
+        // `filter_map` may have dropped entries, so the index is into `rects`,
+        // not `monitors` — rebuild the correspondence rather than assuming it.
+        if rects.len() != monitors.len() {
+            return None;
+        }
+        let idx = monitor_index_for_point(&rects, point)?;
+        monitors.get(idx).cloned()
+    }
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    {
+        let _ = monitors;
+        None
+    }
+}
+
 // ── monitor_for_window / monitor_index_for_point ──────────────────────────────
 
 /// Resolve the monitor the window currently sits on **by geometry** — the
@@ -1810,9 +1846,31 @@ pub(crate) fn compute_quake_target(
                 .clone()
                 .or_else(|| monitor_for_window(&state.window))
                 .or_else(|| state.window.current_monitor())
+                // Nothing knows where this window belongs yet, which is the
+                // normal state of a window that has never been on screen —
+                // `--start-hidden` produces exactly that. Falling straight to
+                // the primary monitor put the first reveal of the session on
+                // whichever screen the OS calls first, typically not the one
+                // the user was looking at. The pointer is the best available
+                // guess at that, and it is only consulted when there is no
+                // history to honour, so this does not reintroduce the
+                // pointer-chasing that `Current` deliberately moved away from.
+                .or_else(|| monitor_under_pointer(&monitors))
                 .or_else(|| state.window.primary_monitor())
                 .or_else(|| monitors.first().cloned())
         }
+        // Follow the pointer, every time. See `QuakeDisplay::Pointer`.
+        QuakeDisplay::Pointer => monitor_under_pointer(&monitors)
+            .or_else(|| {
+                tracing::debug!(
+                    "QuakeDisplay::Pointer: the pointer position is unavailable \
+                     (Wayland?); using the window's own monitor"
+                );
+                state.quake_last_monitor.clone()
+            })
+            .or_else(|| monitor_for_window(&state.window))
+            .or_else(|| state.window.primary_monitor())
+            .or_else(|| monitors.first().cloned()),
         // `Primary` uses the OS-authoritative primary on Windows (via
         // EnumDisplayMonitors + MONITORINFOF_PRIMARY) so that we pick the
         // correct display regardless of which monitor the application window
