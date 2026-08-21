@@ -396,6 +396,10 @@ fn strip_deleted_marker(path: &Path) -> Option<PathBuf> {
 /// # Errors
 ///
 /// Propagates whatever `current_exe` failed with.
+///
+/// Linux-only, because the marker is: it comes from `/proc/self/exe`, and no
+/// other platform lets a running executable be unlinked in the first place.
+#[cfg(target_os = "linux")]
 pub fn running_exe() -> std::io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     if exe.exists() {
