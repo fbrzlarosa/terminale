@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+- **`h2` upgraded past RUSTSEC-2026-0258** ("unbounded empty DATA frames",
+  [GHSA-q83h-524g-xf6h]). It arrives transitively through `reqwest`/`hyper`,
+  which is what the AI providers and the self-updater speak HTTP with, so a
+  malicious or compromised endpoint was the exposure. Lockfile only —
+  `0.4.14` → `0.4.18`, no API change and nothing to migrate.
+
+[GHSA-q83h-524g-xf6h]: https://github.com/hyperium/hyper/security/advisories/GHSA-q83h-524g-xf6h
+
 
 ## [0.1.44]
 
