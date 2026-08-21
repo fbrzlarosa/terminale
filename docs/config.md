@@ -445,6 +445,8 @@ desktop_entry           = true   # register a .desktop entry + icon on launch
 linux_backend           = "auto" # auto | x11 | wayland — see below
 control_socket          = true   # serve `terminale --toggle-quake` + `terminale ctl`
 global_shortcuts_portal = true   # register the Quake hotkey with the desktop
+quake_launch_on_demand  = true   # the Quake hotkey may START terminale, not just toggle it
+quake_desktop_entry     = false  # also install terminale.Quake.desktop for a shell extension
 
 [integration.control_api]        # what `terminale ctl` may do — see control-api.md
 enabled          = true          # serve the automation commands at all
@@ -504,6 +506,59 @@ both on by default:
   **Settings → Desktop integration → "Register in GNOME"** sets it up in one
   click, using the key from Shortcuts → Quake toggle; elsewhere, bind the
   command by hand.
+
+`--toggle-quake` talks to a *running* terminale, so on the first press after
+logging in there is nothing on the other end. `quake_launch_on_demand = true`
+(the default) makes that first press start terminale instead of failing, and
+every press after it is a plain toggle — which is what makes a desktop-owned
+hotkey work from a fresh login without anything in your autostart. Only a
+*missing* socket triggers it: an instance that is running but not answering is
+not helped by starting a second one.
+
+#### Letting a shell extension own the drop-down
+
+On GNOME under Wayland an application may not grab a global key, may not place
+its own window, and may not animate it onto the screen — which is, between them,
+everything a drop-down terminal is made of. A GNOME Shell extension can do all
+three, and that is why a terminal with a genuinely good drop-down on this
+desktop is being driven by one rather than doing it itself.
+
+`quake_desktop_entry = true` installs a second launcher entry,
+`terminale.Quake.desktop`, for exactly that. Such an extension launches an app
+by desktop-entry id and then finds its window by application id, so the
+drop-down needs both of its own: the entry passes `--class=terminale.Quake` and
+declares the matching `StartupWMClass`. Two consequences are the point of the
+whole arrangement:
+
+* the extension drives **that** window and never the terminale you were working
+  in — a shared id would let it grab either;
+* the entry does **not** pass `--quake`, so terminale comes up as an ordinary
+  window and leaves the geometry, the always-on-top and the show/hide animation
+  to the extension. Doing both at once is what makes a drop-down look like it is
+  fighting the desktop, because it is.
+
+Because the extension starts the app itself, the hotkey works from a fresh login
+with nothing running.
+
+**Settings → Desktop integration → "Drop-down via shell extension"** installs
+the entry, reports which application the extension is currently driving, and has
+a one-click **"Point it at terminale"** that rewrites just that one key —
+leaving the extension's own hotkey, size and animation exactly as you tuned
+them. The same thing from the CLI:
+
+```console
+$ terminale --install-quake-launcher
+$ gsettings set org.gnome.shell.extensions.quake-terminal terminal-id \
+    'terminale.Quake.desktop'
+```
+
+A key held by an extension is also the answer to a puzzling symptom: **recording
+that same combination in Settings appears to do nothing.** A grabbed shortcut is
+consumed by the desktop before any window sees it, so the recorder genuinely
+never receives the keypress. Terminale releases its *own* grab while a recorder
+is armed, but a binding owned by the compositor or by an extension is not
+terminale's to release — and if the extension is driving the drop-down, there is
+nothing to bind in terminale at all.
 
 ### `[resource_indicators]`
 

@@ -190,6 +190,49 @@ impl SettingsWindow {
             // ── One-click GNOME keybinding ───────────────────────────────────
             self.section_gnome_quake_shortcut(ui);
 
+            ui.add_space(6.0);
+
+            // ── Cold-start behaviour of the desktop-owned hotkey ─────────────
+            card(ui, |ui| {
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Start terminale on the Quake hotkey");
+                    let on = self.config.integration.quake_launch_on_demand;
+                    if toggle_switch(ui, on).clicked() {
+                        self.config.integration.quake_launch_on_demand = !on;
+                        dirty = true;
+                    }
+                    ui.add_space(8.0);
+                    let on = self.config.integration.quake_launch_on_demand;
+                    ui.label(
+                        egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                            egui::Color32::from_rgb(120, 220, 140)
+                        } else {
+                            egui::Color32::from_rgb(140, 150, 175)
+                        }),
+                    );
+                });
+                self.highlight_row(
+                    ui,
+                    hr.response.rect,
+                    Section::Integration,
+                    "Start terminale on the Quake hotkey",
+                );
+                sublabel(
+                    ui,
+                    "A desktop keybinding runs `terminale --toggle-quake`, which talks to a \
+                     running terminale — so on the first press after logging in there was nothing \
+                     to talk to and the key did nothing at all. With this on, that first press \
+                     starts terminale instead, and every press after it toggles. Only a missing \
+                     socket triggers it: an instance that is running but wedged is not answered \
+                     by starting a second one. Applies to the next press.",
+                );
+            });
+
+            ui.add_space(6.0);
+
+            // ── Hand the drop-down to a shell extension ─────────────────────
+            self.section_quake_extension(ui, &mut dirty);
+
             if dirty {
                 self.dirty = true;
             }
@@ -391,6 +434,158 @@ impl SettingsWindow {
                 }
             });
             if let Some(status) = self.quake_shortcut_status.clone() {
+                sublabel(ui, &status);
+            }
+        });
+    }
+
+    /// Hand the drop-down over to a shell extension that implements one.
+    ///
+    /// On GNOME under Wayland an application cannot own a global key, cannot
+    /// place its own window and cannot animate it onto the screen — the three
+    /// things a drop-down terminal is made of. A shell extension can do all
+    /// three, which is why a terminal with a working drop-down on this desktop is
+    /// in fact being driven by one. Terminale can either fight that or join it;
+    /// this card joins it.
+    ///
+    /// Two halves, in the order they have to happen: install a launcher entry
+    /// with an identity of its own, then point the extension at that entry.
+    #[cfg(target_os = "linux")]
+    pub(super) fn section_quake_extension(&mut self, ui: &mut egui::Ui, dirty: &mut bool) {
+        use crate::{desktop_entry, desktop_shortcut};
+
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Drop-down via shell extension");
+                let on = self.config.integration.quake_desktop_entry;
+                if toggle_switch(ui, on).clicked() {
+                    let now_on = !on;
+                    self.config.integration.quake_desktop_entry = now_on;
+                    *dirty = true;
+                    // Apply immediately: the extension's app picker reads the
+                    // application list, so the entry has to be there before the
+                    // user goes looking for it.
+                    if now_on {
+                        if let Err(e) = desktop_entry::ensure_quake_launcher() {
+                            self.quake_extension_status =
+                                Some(format!("Could not write the launcher entry: {e}"));
+                        }
+                    } else {
+                        desktop_entry::remove_quake_launcher();
+                    }
+                }
+                ui.add_space(8.0);
+                let on = self.config.integration.quake_desktop_entry;
+                ui.label(
+                    egui::RichText::new(if on { "Installed" } else { "Not installed" }).color(
+                        if on {
+                            egui::Color32::from_rgb(120, 220, 140)
+                        } else {
+                            egui::Color32::from_rgb(140, 150, 175)
+                        },
+                    ),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Integration,
+                "Drop-down via shell extension",
+            );
+            sublabel(
+                ui,
+                "Installs a second launcher entry, terminale.Quake.desktop, whose only job is to \
+                 be the app a drop-down shell extension launches and toggles. It carries an \
+                 application id of its own so the extension drives that window and never the \
+                 terminale you were working in, and it does not turn on terminale's own drop-down \
+                 docking — when an extension owns the geometry and the animation, doing both is \
+                 what makes the drop-down look like it is fighting the desktop. It works from \
+                 a fresh login because the extension starts the app itself.",
+            );
+
+            if !self.config.integration.quake_desktop_entry {
+                return;
+            }
+
+            ui.add_space(4.0);
+            let entry_id = desktop_entry::quake_launcher_id();
+
+            if !desktop_shortcut::quake_extension_available() {
+                sublabel(
+                    ui,
+                    "No drop-down extension was found. Install \"Quake Terminal\" from \
+                     extensions.gnome.org, then set its Application to the entry below. Any \
+                     extension of that kind works — they all launch an app by its desktop-entry \
+                     id.",
+                );
+                ui.horizontal(|ui| {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(entry_id)
+                            .monospace()
+                            .color(egui::Color32::from_rgb(200, 210, 230)),
+                    );
+                    if ui.button("Copy").clicked() {
+                        ui.ctx().copy_text(entry_id.to_string());
+                    }
+                });
+                return;
+            }
+
+            let current = desktop_shortcut::quake_extension_app();
+            let ours = current.as_deref() == Some(entry_id);
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                let (text, colour) = if ours {
+                    (
+                        "The extension is driving terminale".to_string(),
+                        egui::Color32::from_rgb(120, 220, 140),
+                    )
+                } else {
+                    (
+                        match &current {
+                            Some(app) => format!("The extension is driving {app}"),
+                            None => "The extension has no application set".to_string(),
+                        },
+                        egui::Color32::from_rgb(220, 190, 120),
+                    )
+                };
+                ui.label(egui::RichText::new(text).color(colour));
+            });
+            if let Some(key) = desktop_shortcut::quake_extension_shortcut() {
+                sublabel(
+                    ui,
+                    &format!(
+                        "Its key is {key}, and it belongs to the extension — which is also why \
+                         recording that same combination here does nothing: the desktop swallows \
+                         it before terminale can see it. Leave it with the extension and there is \
+                         nothing to bind in terminale at all."
+                    ),
+                );
+            }
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                if ui
+                    .add_enabled(!ours, egui::Button::new("Point it at terminale"))
+                    .on_hover_text(format!(
+                        "Set the extension's application to {entry_id}, keeping its key, size and \
+                         animation as you have them"
+                    ))
+                    .clicked()
+                {
+                    self.quake_extension_status =
+                        Some(match desktop_shortcut::point_quake_extension_at(entry_id) {
+                            Ok(key) => format!(
+                                "Done — {key} now opens terminale. The first press starts it."
+                            ),
+                            Err(e) => format!("Could not update the extension: {e}"),
+                        });
+                }
+                if ui.button("Copy entry id").clicked() {
+                    ui.ctx().copy_text(entry_id.to_string());
+                }
+            });
+            if let Some(status) = self.quake_extension_status.clone() {
                 sublabel(ui, &status);
             }
         });

@@ -7,7 +7,56 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **The Quake hotkey now works from a fresh login, with nothing running.**
+  `terminale --toggle-quake` talks to a running instance over the control socket,
+  so on the first press after logging in there was nothing on the other end and
+  the key did the one thing a hotkey must never do: nothing at all, silently. It
+  now becomes the instance instead — the process the desktop spawned to deliver
+  the toggle opens the window itself, and every press after that is an ordinary
+  toggle. Only a *missing* socket triggers it; an instance that is running but
+  not answering is not helped by starting a second one. New
+  `integration.quake_launch_on_demand` (default `true`), with a switch in
+  Settings › Desktop integration.
+- **A drop-down launcher entry, for desktops where a shell extension owns the
+  drop-down.** On GNOME under Wayland an application may not grab a global key,
+  may not place its own window, and may not animate it onto the screen — between
+  them, everything a drop-down terminal is made of. A shell extension can do all
+  three, which is why every terminal with a good drop-down there is being driven
+  by one. `integration.quake_desktop_entry` installs `terminale.Quake.desktop`
+  for exactly that: it carries an application id of its own
+  (`--class=terminale.Quake` plus the matching `StartupWMClass`), which is both
+  how such an extension finds the window it launched and what stops it from
+  grabbing the terminale you were working in. It deliberately does *not* pass
+  `--quake` — when the extension owns the geometry and the animation, docking and
+  animating the window ourselves as well is what makes a drop-down look like it
+  is fighting the desktop. Settings › Desktop integration installs the entry,
+  reports which application the extension is currently driving, and has a
+  one-click "Point it at terminale" that rewrites that one key and leaves the
+  extension's own hotkey, size and animation untouched. Also
+  `--install-quake-launcher` / `--uninstall-quake-launcher`, which record the
+  choice in the config so the next launch does not undo it.
+- **`--class` (`--app-id`)** overrides the application id an instance presents to
+  the desktop — the Wayland `app_id` / X11 `WM_CLASS`. A desktop resolves a
+  window to a `.desktop` entry through this id, so it is what makes a dedicated
+  launcher entry possible at all.
+
 ### Fixed
+- **Ctrl+C, Ctrl+X and Ctrl+V could not be recorded as shortcuts.** The hotkey
+  recorder in Settings reads egui key events, and egui-winit turns exactly those
+  three chords into `Copy`/`Cut`/`Paste` events instead, returning before it ever
+  emits a key — and its "command" modifier is plain Ctrl off macOS, so it is the
+  Ctrl combinations that vanish. Pressing one left the recorder on "Press a key…"
+  for good: the three most likely rebinds in a terminal, where Ctrl+C belongs to
+  the shell, were the three that could not be captured. The recorder now reads
+  those events too, taking the modifiers from the live keyboard state.
+- **A recorder waiting on a key the desktop had already taken looked broken.**
+  A grabbed shortcut is consumed before any window sees it, so the keypress
+  genuinely never arrives; terminale releases its own grab while recording, but a
+  binding held by the compositor, by GNOME's keyboard settings or by a shell
+  extension is not terminale's to release. After a couple of seconds of silence
+  the recorder now says so instead of waiting mutely, and the drop-down-extension
+  card names the key the extension is holding.
 - **A Quake reveal took the keyboard instead of announcing itself in the
   notification tray.** Showing the drop-down produced GNOME's "terminale is
   ready" banner and left focus where it was. The cause is a single number: winit's

@@ -133,6 +133,9 @@ pub struct SettingsWindow {
     /// Transient — never persisted.
     #[cfg(all(unix, not(target_os = "macos")))]
     quake_shortcut_status: Option<String>,
+    /// Same, for handing the drop-down over to a shell extension.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    quake_extension_status: Option<String>,
 
     egui_ctx: egui::Context,
     egui_state: EguiState,
@@ -389,6 +392,8 @@ impl SettingsWindow {
             backup: BackupUiState::default(),
             #[cfg(all(unix, not(target_os = "macos")))]
             quake_shortcut_status: None,
+            #[cfg(all(unix, not(target_os = "macos")))]
+            quake_extension_status: None,
             pending_import_ssh_hosts: false,
             pending_import_theme: false,
             loaded_plugin_names: Vec::new(),
@@ -2724,6 +2729,14 @@ fn search_index() -> &'static [SearchEntry] {
             section: Section::Integration,
             label: "Quake shortcut in GNOME",
         },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Start terminale on the Quake hotkey",
+        },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Drop-down via shell extension",
+        },
     ]
 }
 
@@ -3530,6 +3543,15 @@ fn ai_provider_label(value: &str) -> &'static str {
     }
 }
 
+/// How long a recorder waits, hearing nothing, before it stops looking broken
+/// and says what is probably happening instead.
+const HOTKEY_RECORDER_QUIET_HINT: f64 = 2.5;
+
+/// Remember when a recorder was armed, so it can notice that nothing arrived.
+fn hotkey_armed_at_id(id: &str) -> egui::Id {
+    egui::Id::new(("hotkey_recorder_armed_at", id))
+}
+
 /// Render a click-to-record hotkey button. When the user clicks it,
 /// the next key combination they press becomes the binding. Esc
 /// cancels recording; clicking again also cancels. Empty bindings
@@ -3583,6 +3605,9 @@ fn hotkey_recorder(
             *recording = None;
         } else {
             *recording = Some(id.to_string());
+            let now = ui.ctx().input(|i| i.time);
+            ui.ctx()
+                .memory_mut(|m| m.data.insert_temp(hotkey_armed_at_id(id), now));
         }
     }
 
@@ -3595,6 +3620,27 @@ fn hotkey_recorder(
         // into a binding string. Esc cancels.
         let captured = ui.ctx().input(|i| {
             for ev in &i.events {
+                // Ctrl+C, Ctrl+X and Ctrl+V never arrive as `Event::Key`:
+                // egui-winit turns them into these three, and returns before
+                // emitting the key. (On Linux and Windows its `command`
+                // modifier is plain Ctrl, so it is exactly the Ctrl combos
+                // that vanish.) Without this the recorder sat on
+                // "Press a key…" forever for those three chords — the one
+                // input a user is most likely to want to rebind in a terminal,
+                // where Ctrl+C belongs to the shell.
+                let clipboard_key = match ev {
+                    egui::Event::Copy => Some("C"),
+                    egui::Event::Cut => Some("X"),
+                    egui::Event::Paste(_) => Some("V"),
+                    _ => None,
+                };
+                if let Some(name) = clipboard_key {
+                    // The event carries no modifiers of its own, so read the
+                    // live state. A bare hardware Copy/Cut/Paste key produces
+                    // the same event with nothing held; recording it as the
+                    // unmodified letter is the best available reading.
+                    return Some(Some(binding_from_parts(&i.modifiers, name)));
+                }
                 if let egui::Event::Key {
                     key,
                     pressed: true,
@@ -3607,24 +3653,7 @@ fn hotkey_recorder(
                         return Some(None);
                     }
                     if let Some(name) = egui_key_name(*key) {
-                        let mut parts: Vec<&str> = Vec::new();
-                        if modifiers.ctrl {
-                            parts.push("Ctrl");
-                        }
-                        if modifiers.shift {
-                            parts.push("Shift");
-                        }
-                        if modifiers.alt {
-                            parts.push("Alt");
-                        }
-                        // Only the PHYSICAL Cmd key — NOT `modifiers.command`,
-                        // which on Windows/Linux aliases Ctrl and would
-                        // emit a phantom "Cmd" on every Ctrl combo.
-                        if modifiers.mac_cmd {
-                            parts.push("Cmd");
-                        }
-                        parts.push(name);
-                        return Some(Some(parts.join("+")));
+                        return Some(Some(binding_from_parts(modifiers, name)));
                     }
                 }
             }
@@ -3639,10 +3668,58 @@ fn hotkey_recorder(
                 // User pressed Escape — cancel without changing.
             }
             *recording = None;
+            ui.ctx()
+                .memory_mut(|m| m.data.remove::<f64>(hotkey_armed_at_id(id)));
+        }
+    }
+
+    // Nothing arrived for a while. Almost always this means the combination
+    // the user is pressing never reaches the application at all: the desktop
+    // grabbed it first, and a grabbed key is consumed before any window sees
+    // it. Terminale releases its *own* grab while a recorder is armed, but a
+    // binding owned by the compositor, GNOME's keyboard settings or a shell
+    // extension is not ours to release. Saying so beats a button that looks
+    // broken.
+    if recording.as_deref() == Some(id) {
+        let armed_at = ui
+            .ctx()
+            .memory(|m| m.data.get_temp::<f64>(hotkey_armed_at_id(id)));
+        let waited = armed_at.map_or(0.0, |t| ui.ctx().input(|i| i.time) - t);
+        if waited > HOTKEY_RECORDER_QUIET_HINT {
+            sublabel(
+                ui,
+                "Still waiting. If you are pressing a combination and nothing happens, \
+                 your desktop already owns that key — a grabbed shortcut is swallowed \
+                 before any window sees it. Free it in your desktop's keyboard settings \
+                 (or in the shell extension holding it) and try again, or pick a \
+                 different combination.",
+            );
         }
     }
 
     changed
+}
+
+/// Spell a modifier state plus a key name as a terminale binding (`Ctrl+Shift+T`).
+fn binding_from_parts(modifiers: &egui::Modifiers, key: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if modifiers.ctrl {
+        parts.push("Ctrl");
+    }
+    if modifiers.shift {
+        parts.push("Shift");
+    }
+    if modifiers.alt {
+        parts.push("Alt");
+    }
+    // Only the PHYSICAL Cmd key — NOT `modifiers.command`, which on
+    // Windows/Linux aliases Ctrl and would emit a phantom "Cmd" on every Ctrl
+    // combo.
+    if modifiers.mac_cmd {
+        parts.push("Cmd");
+    }
+    parts.push(key);
+    parts.join("+")
 }
 
 /// Map egui's [`egui::Key`] enum onto the same names accepted by
@@ -3816,6 +3893,55 @@ fn set_dwm_cloak(window: &Window, cloaked: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binding_from_parts_spells_terminale_syntax() {
+        let none = egui::Modifiers::default();
+        assert_eq!(binding_from_parts(&none, "K"), "K");
+        assert_eq!(
+            binding_from_parts(
+                &egui::Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                "\\"
+            ),
+            "Ctrl+\\"
+        );
+        // Order is fixed, not press order, so the same chord always spells the
+        // same string — it is compared against the config as text.
+        assert_eq!(
+            binding_from_parts(
+                &egui::Modifiers {
+                    alt: true,
+                    ctrl: true,
+                    shift: true,
+                    ..Default::default()
+                },
+                "T"
+            ),
+            "Ctrl+Shift+Alt+T"
+        );
+    }
+
+    #[test]
+    fn binding_from_parts_never_emits_cmd_for_a_ctrl_chord() {
+        // `Modifiers::command` aliases Ctrl off macOS, so keying off it would
+        // put a phantom "Cmd" in every Linux/Windows binding. Only the physical
+        // Cmd key counts.
+        let ctrl_as_command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        assert_eq!(binding_from_parts(&ctrl_as_command, "C"), "Ctrl+C");
+        let real_cmd = egui::Modifiers {
+            mac_cmd: true,
+            command: true,
+            ..Default::default()
+        };
+        assert_eq!(binding_from_parts(&real_cmd, "C"), "Cmd+C");
+    }
 
     /// Assert that every label in [`search_index()`] appears as a
     /// literal string somewhere across the settings source files.
