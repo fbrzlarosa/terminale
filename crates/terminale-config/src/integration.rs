@@ -120,6 +120,35 @@ impl Default for ControlApiConfig {
     }
 }
 
+/// Whether `terminale mcp` answers MCP clients.
+///
+/// MCP (Model Context Protocol) is how an AI agent is handed a typed list of
+/// tools it can call. `terminale mcp` speaks it on stdio and forwards each call
+/// to the control socket, so an agent can *see* what a command printed and what
+/// it exited with instead of asking you to paste it.
+///
+/// It adds no capability of its own: every call goes through the same gate as
+/// `terminale ctl`, so [`ControlApiConfig`] — above all
+/// [`ControlApiConfig::allow_submit`] — is what decides what an agent may do.
+/// This switch decides whether the MCP front-end answers at all, which is not
+/// the same as a security boundary: anything that can run `terminale mcp` can
+/// open the socket directly too. Turn it off to keep your own `ctl` scripts
+/// working while refusing MCP clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields, default)]
+pub struct McpConfig {
+    /// Serve MCP on `terminale mcp`. With this off the subcommand exits
+    /// immediately with a message saying which setting turns it back on, and
+    /// nothing reaches the socket. Default: `true`.
+    pub enabled: bool,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
+}
+
 /// Controls how `terminale` integrates with the host desktop environment.
 ///
 /// On Windows the MSI installer registers Start-Menu / Desktop shortcuts and on
@@ -170,6 +199,11 @@ pub struct IntegrationConfig {
     /// `false`, since then there is no socket to serve.
     #[serde(default)]
     pub control_api: ControlApiConfig,
+    /// Whether the MCP front-end (`terminale mcp`) answers AI agents — see
+    /// [`McpConfig`]. Bounded by [`Self::control_api`], which is where what an
+    /// agent may actually do is decided.
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// Let `terminale --toggle-quake` *start* terminale when it finds nothing
     /// running, instead of failing.
     ///
@@ -225,6 +259,7 @@ impl Default for IntegrationConfig {
             control_socket: true,
             global_shortcuts_portal: true,
             control_api: ControlApiConfig::default(),
+            mcp: McpConfig::default(),
             quake_launch_on_demand: true,
             autostart: false,
             quake_desktop_entry: false,
@@ -345,6 +380,24 @@ mod tests {
         assert!(api.allow_input);
         assert!(api.allow_screenshot);
         assert!(!api.allow_submit, "submit must be opt-in");
+    }
+
+    /// The MCP front-end is on by default, but it inherits the control-API
+    /// gates — so out of the box an agent may read and compose, never submit.
+    #[test]
+    fn mcp_defaults_on_but_cannot_submit() {
+        let cfg = IntegrationConfig::default();
+        assert!(cfg.mcp.enabled);
+        assert!(!cfg.control_api.allow_submit);
+    }
+
+    /// A config written before `[integration.mcp]` existed must keep the
+    /// default rather than failing to parse.
+    #[test]
+    fn legacy_config_keeps_mcp_default() {
+        let legacy: IntegrationConfig =
+            toml::from_str("desktop_entry = true").expect("legacy config must still parse");
+        assert_eq!(legacy.mcp, McpConfig::default());
     }
 
     /// A config written before `[integration.control_api]` existed must inherit

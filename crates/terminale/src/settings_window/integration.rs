@@ -397,6 +397,16 @@ impl SettingsWindow {
                      the caller chooses. Separate from reading text because an image leaks \
                      the same content in a form you cannot grep.",
                 );
+                scope(
+                    "Serve MCP to AI agents",
+                    &mut self.config.integration.mcp.enabled,
+                    "Lets an AI agent connect to `terminale mcp` and call the commands above \
+                     as MCP tools — so it can read what your last command printed and what it \
+                     exited with instead of asking you to paste it. Register it with \
+                     `claude mcp add terminale -- terminale mcp`. It grants nothing the \
+                     switches above do not: with \"May press Enter\" off, an agent can only \
+                     compose a command for you to confirm.",
+                );
             });
         });
     }

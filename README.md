@@ -152,6 +152,12 @@ A lot already works and is covered by tests. Here's the honest state.
   at your prompt **without being able to press Enter** (that permission is off by
   default). [Reference](docs/control-api.md).
 
+- **MCP server** — `terminale mcp` serves those same commands to an AI agent as
+  MCP tools, so it discovers them at connect time instead of being told: one line
+  (`claude mcp add terminale -- terminale mcp`) and the agent can read the pane
+  it just broke. Same permissions, no second model.
+  [Reference](docs/mcp.md).
+
 **On the roadmap:** persistent sessions that survive a crash/close
 (`terminale-ipc`), tmux Control Mode (`tmux -CC`), cloud settings sync, and a
 richer Lua plugin API. Full plan in [`docs/roadmap.md`](docs/roadmap.md).

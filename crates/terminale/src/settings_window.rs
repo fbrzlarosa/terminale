@@ -2759,6 +2759,10 @@ fn search_index() -> &'static [SearchEntry] {
             section: Section::Integration,
             label: "Drop-down via shell extension",
         },
+        SearchEntry {
+            section: Section::Integration,
+            label: "Serve MCP to AI agents",
+        },
     ]
 }
 

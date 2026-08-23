@@ -8,6 +8,8 @@ Everything user- and contributor-facing lives in this folder. Start here:
 | [config.md](config.md) | The `config.toml` reference — every section, with examples |
 | [theming.md](theming.md) | Built-in themes, writing your own theme TOML, drop-in theme files |
 | [plugins.md](plugins.md) | The Lua 5.4 plugin host — API, hooks, permission model, sandbox |
+| [control-api.md](control-api.md) | `terminale ctl` — driving a running instance from a script or an editor |
+| [mcp.md](mcp.md) | `terminale mcp` — the same commands as MCP tools, for an AI agent |
 | [roadmap.md](roadmap.md) | What works today and what's planned (v1.0 / v1.5 / v2.0 milestones) |
 | [uninstall.md](uninstall.md) | Clean removal per OS, including config and state files |
 
