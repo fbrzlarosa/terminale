@@ -69,6 +69,9 @@ pub struct ConfirmCloseDialog {
     requested_close: bool,
     /// Set so the "Close" button grabs focus on the first frame.
     first_frame: bool,
+    /// Tells a real click-outside apart from the focus-loss the platform emits
+    /// while this window is *taking* focus (see [`crate::popup_focus`]).
+    focus: crate::popup_focus::PopupFocus,
 }
 
 impl ConfirmCloseDialog {
@@ -193,6 +196,7 @@ impl ConfirmCloseDialog {
             outcome: None,
             requested_close: false,
             first_frame: true,
+            focus: crate::popup_focus::PopupFocus::new(),
         };
 
         // Paint the first frame BEFORE revealing the window so it never
@@ -235,10 +239,24 @@ impl ConfirmCloseDialog {
     pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CloseRequested => return true,
+            WindowEvent::Focused(true) => self.focus.focus_gained(),
             WindowEvent::Focused(false) => {
-                // Click-outside cancels (safer than closing).
-                self.outcome = Some(ConfirmCloseOutcome::Cancel);
-                self.requested_close = true;
+                // Click-outside cancels (safer than closing) — but only a real
+                // one. X11 hands a brand-new window a `Focused(false)` a
+                // millisecond before the `Focused(true)` that actually focuses
+                // it, and cancelling on that made this dialog flash and vanish,
+                // so no window could ever be closed.
+                match self.focus.focus_lost() {
+                    crate::popup_focus::FocusLoss::ClickOutside => {
+                        self.outcome = Some(ConfirmCloseOutcome::Cancel);
+                        self.requested_close = true;
+                    }
+                    // Not the user's doing — keep the dialog up, and make sure
+                    // it ends up with the focus its keyboard routes need.
+                    crate::popup_focus::FocusLoss::Spurious => {
+                        crate::window_anim::take_focus(&self.window);
+                    }
+                }
             }
             WindowEvent::KeyboardInput {
                 event:

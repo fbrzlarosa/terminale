@@ -60,6 +60,9 @@ pub struct PasswordPrompt {
     requested_close: bool,
     /// Set so the text field grabs focus on the first frame.
     first_frame: bool,
+    /// Tells a real click-outside apart from the focus-loss the platform emits
+    /// while this window is *taking* focus (see [`crate::popup_focus`]).
+    focus: crate::popup_focus::PopupFocus,
 }
 
 impl PasswordPrompt {
@@ -185,6 +188,7 @@ impl PasswordPrompt {
             submitted: None,
             requested_close: false,
             first_frame: true,
+            focus: crate::popup_focus::PopupFocus::new(),
         };
 
         this.render_frame();
@@ -219,9 +223,20 @@ impl PasswordPrompt {
     pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CloseRequested => return true,
+            WindowEvent::Focused(true) => self.focus.focus_gained(),
             WindowEvent::Focused(false) => {
-                // Click-outside cancels (treated as no secret entered).
-                self.requested_close = true;
+                // Click-outside cancels (treated as no secret entered) — but
+                // only a real click-outside: X11 hands a brand-new window a
+                // `Focused(false)` a millisecond before the `Focused(true)`
+                // that actually focuses it (see [`crate::popup_focus`]).
+                match self.focus.focus_lost() {
+                    crate::popup_focus::FocusLoss::ClickOutside => {
+                        self.requested_close = true;
+                    }
+                    crate::popup_focus::FocusLoss::Spurious => {
+                        crate::window_anim::take_focus(&self.window);
+                    }
+                }
             }
             WindowEvent::KeyboardInput {
                 event:

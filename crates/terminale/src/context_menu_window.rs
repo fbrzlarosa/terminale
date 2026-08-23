@@ -184,11 +184,10 @@ pub struct ContextMenuWindow {
     /// avoided while the same flyout stays open. Windows-only.
     #[cfg(windows)]
     last_region_key: Option<(Option<usize>, bool)>,
-    /// When the popup was shown. Used to ignore the spurious `Focused(false)`
-    /// macOS emits immediately after a trackpad two-finger tap (the press/release
-    /// hands focus straight back to the parent), which would otherwise close the
-    /// menu within milliseconds of opening.
-    opened_at: std::time::Instant,
+    /// Tells a real click-outside apart from the focus-loss X11 and macOS emit
+    /// while this window is *taking* focus, which would otherwise close the menu
+    /// within milliseconds of opening it (see [`crate::popup_focus`]).
+    focus: crate::popup_focus::PopupFocus,
 }
 
 impl ContextMenuWindow {
@@ -379,7 +378,7 @@ impl ContextMenuWindow {
             flyout_on_left,
             #[cfg(windows)]
             last_region_key: None,
-            opened_at: std::time::Instant::now(),
+            focus: crate::popup_focus::PopupFocus::new(),
         };
 
         // Render the first frame while the window is still hidden so the
@@ -423,19 +422,20 @@ impl ContextMenuWindow {
     pub fn handle_event(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::CloseRequested => return true,
+            WindowEvent::Focused(true) => self.focus.focus_gained(),
             WindowEvent::Focused(false) => {
                 // Click-outside-to-close: a focus-loss normally means the user
-                // clicked elsewhere. But macOS hands focus straight back to the
-                // parent right after a trackpad two-finger tap (the right-click
-                // press/release that opened us), firing a spurious Focused(false)
-                // within a few ms. During a short grace window, re-grab focus
-                // instead of closing so the menu survives the tap *and* stays
-                // focused — keeping Esc and a genuine later click-outside working.
-                const FOCUS_GRACE: std::time::Duration = std::time::Duration::from_millis(350);
-                if self.opened_at.elapsed() < FOCUS_GRACE {
-                    crate::window_anim::take_focus(&self.window);
-                } else {
-                    self.requested_close = true;
+                // clicked elsewhere. While this window is still *taking* focus
+                // it means nothing of the sort — X11 and a macOS trackpad tap
+                // both deliver one then — so re-grab focus instead of closing,
+                // keeping Esc and a genuine later click-outside working.
+                match self.focus.focus_lost() {
+                    crate::popup_focus::FocusLoss::ClickOutside => {
+                        self.requested_close = true;
+                    }
+                    crate::popup_focus::FocusLoss::Spurious => {
+                        crate::window_anim::take_focus(&self.window);
+                    }
                 }
             }
             WindowEvent::KeyboardInput {
