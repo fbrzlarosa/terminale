@@ -14,6 +14,9 @@ Unix only for now (the transport is a per-user Unix socket under
 `$XDG_RUNTIME_DIR`). A Windows named-pipe transport is planned; the command
 vocabulary is already platform-independent.
 
+Driving it from an AI agent instead of a script? The same commands are served as
+MCP tools — see [`mcp.md`](mcp.md).
+
 ---
 
 ## Why

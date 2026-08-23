@@ -29,6 +29,8 @@ pub mod icons;
 #[cfg(unix)]
 mod ipc;
 mod keymap;
+#[cfg(unix)]
+mod mcp;
 // Text key specs ("ctrl+c") → PTY bytes, for the control API's `send-keys`.
 // Unix-only alongside `control`, its only caller. A plain comment, not a doc
 // comment: an outer doc on a module that also carries inner `//!` docs merges the
@@ -498,9 +500,9 @@ struct Cli {
 /// Subcommands that act on an *already-running* terminale instead of starting
 /// one.
 ///
-/// Kept to a single variant on purpose: `ctl` is the whole automation surface,
-/// and nesting it means `terminale ctl --help` lists the commands rather than
-/// polluting the top-level help of a GUI application.
+/// Both are the same automation surface seen from two ends: `ctl` is the human
+/// and shell-script spelling, `mcp` the one an AI agent connects to. Nesting
+/// them keeps `terminale --help` about running a terminal.
 #[cfg(unix)]
 #[derive(Debug, clap::Subcommand)]
 enum Command {
@@ -515,6 +517,16 @@ enum Command {
         #[command(subcommand)]
         cmd: ipc::CtlCommand,
     },
+    /// Serve the same commands to an AI agent as MCP tools, on stdio.
+    ///
+    /// Meant to be spawned by an MCP client rather than run by hand: it reads
+    /// JSON-RPC on stdin and answers on stdout until the client disconnects.
+    /// Register it with, for example,
+    /// `claude mcp add terminale -- terminale mcp`.
+    ///
+    /// Permissions are `[integration.control_api]`'s, exactly as for `ctl`;
+    /// `[integration.mcp].enabled` decides whether this front-end answers.
+    Mcp,
 }
 
 /// Whether a control-socket connect error means *nothing is listening*, as
@@ -717,6 +729,24 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     if let Some(Command::Ctl { cmd }) = &cli.command {
         ipc::run_ctl(cmd);
+    }
+
+    // `terminale mcp` — serve MCP on stdio for as long as the client keeps the
+    // stream open, then exit. Loads the config (to honour the switch) but
+    // nothing else: no GPU, no window, no tracing to stdout, which is reserved
+    // for the JSON-RPC stream.
+    #[cfg(unix)]
+    if let Some(Command::Mcp) = &cli.command {
+        let enabled = Config::load_or_init_at(cli.config.clone())
+            .map_or(true, |(cfg, _)| cfg.integration.mcp.enabled);
+        if !enabled {
+            eprintln!(
+                "terminale mcp: refused — set `integration.mcp.enabled = true` \
+                 (Settings › Integration › \"Serve MCP to AI agents\") to allow it"
+            );
+            std::process::exit(1);
+        }
+        return mcp::serve().map_err(Into::into);
     }
 
     // Drive the running instance, then exit. Handled before anything else that

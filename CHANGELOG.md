@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **`terminale mcp` — the control API as MCP tools, so an AI agent can see the
+  terminal you are working in.** The pieces were already there: OSC 133 shell
+  integration knows where every command started, ended, and what it exited with,
+  and `terminale ctl` could already answer that over the socket. What was missing
+  is that an agent has to be *told* a CLI vocabulary and discovers refusals by
+  parsing prose. MCP is how an agent is handed a typed tool list at connect time,
+  one schema per tool, with a machine-readable error when a call is refused — so
+  "read what my build printed" stops being a copy-paste and becomes something it
+  can ask for. Ten tools (`list_tabs`, `list_panes`, `get_text`, `last_command`,
+  `list_actions`, `run_action`, `send_text`, `send_keys`, `screenshot`,
+  `version`), registered with one line:
+  `claude mcp add terminale -- terminale mcp`.
+
+  It is a translator, not a second automation surface: every tool call becomes
+  one control request on the same socket, checked by the same gate. There is
+  deliberately no separate MCP permission model — `[integration.control_api]`
+  decides what an agent may do, and with `allow_submit` off (the default) it can
+  compose a command at your prompt and cannot run it. A refusal comes back as a
+  failed tool call naming the setting to change, so the agent can tell you what
+  to turn on instead of retrying. `[integration.mcp].enabled` (Settings ›
+  Desktop integration › "Serve MCP to AI agents") turns the front-end off while
+  leaving your own `ctl` scripts working. See [`docs/mcp.md`](docs/mcp.md).
+
 
 ## [0.1.46]
 

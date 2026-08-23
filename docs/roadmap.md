@@ -35,6 +35,9 @@ tested.
   command + exit code, run any action, type at the prompt, screenshot. Scoped
   permissions, with "may press Enter" off by default —
   see [`control-api.md`](control-api.md)
+- MCP server (`terminale mcp`, Unix): the same commands as MCP tools, so an AI
+  agent can read what your last command printed instead of asking you to paste
+  it. Same permissions, no separate ones — see [`mcp.md`](mcp.md)
 
 ## Planned
 
@@ -52,8 +55,8 @@ include breaking changes.
 ### v2.0 — sync & automation
 - Cloud settings sync (`terminale-sync`)
 - Control API: a Windows named-pipe transport (the command vocabulary is already
-  platform-independent), an event subscription so a client can watch instead of
-  poll, and an MCP server front-end so an AI agent can use it as a tool
+  platform-independent), and an event subscription so a client — `ctl` or MCP —
+  can watch instead of poll
 - Richer Lua plugin API: pane/tab queries, per-plugin permission scoping
 
 ## Releases
