@@ -6396,6 +6396,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "terminale-ipc"
+version = "0.1.46"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "terminale-plugin"
 version = "0.1.46"
 dependencies = [

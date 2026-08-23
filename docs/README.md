@@ -11,6 +11,7 @@ Everything user- and contributor-facing lives in this folder. Start here:
 | [control-api.md](control-api.md) | `terminale ctl` — driving a running instance from a script or an editor |
 | [mcp.md](mcp.md) | `terminale mcp` — the same commands as MCP tools, for an AI agent |
 | [roadmap.md](roadmap.md) | What works today and what's planned (v1.0 / v1.5 / v2.0 milestones) |
+| [design/persistent-sessions.md](design/persistent-sessions.md) | v1.0 architecture: why the session daemon relays bytes rather than owning the emulation |
 | [uninstall.md](uninstall.md) | Clean removal per OS, including config and state files |
 
 Related, outside this folder:

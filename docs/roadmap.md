@@ -46,7 +46,9 @@ include breaking changes.
 
 ### v1.0 — persistent sessions
 - Persistent-session multiplexer (`terminale-ipc`): sessions survive a window
-  crash / close and reattach on launch
+  crash / close and reattach on launch. Architecture settled and phase 1 (the
+  wire protocol and the replay buffer) landed — see
+  [`design/persistent-sessions.md`](design/persistent-sessions.md)
 
 ### v1.5 — tmux integration
 - tmux Control Mode (`tmux -CC`) integration (`terminale-tmux-cc`): native
