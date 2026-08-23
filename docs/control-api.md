@@ -53,7 +53,7 @@ control**, and the four scopes apply immediately.
 
 ```json
 {
-  "version": "0.1.42",
+  "version": "0.1.46",
   "windows": 1,
   "permissions": { "enabled": true, "read": true, "input": true,
                    "submit": false, "screenshot": true }
