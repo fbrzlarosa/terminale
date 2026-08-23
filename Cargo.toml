@@ -105,7 +105,7 @@ bytes = { version = "1", features = ["serde"] }
 wgpu = "22"
 winit = "0.30"
 cosmic-text = "0.12"
-swash = "0.1"
+swash = "0.2"
 glyphon = "0.6"
 # Pinned to egui's version so the bundled symbol fonts (NotoEmoji,
 # emoji-icon-font) we feed into glyphon match exactly what the egui
@@ -113,7 +113,7 @@ glyphon = "0.6"
 epaint_default_fonts = "=0.29.1"
 bytemuck = { version = "1", features = ["derive"] }
 raw-window-handle = "0.6"
-pollster = "0.4"
+pollster = "1.0"
 parking_lot = "0.12"
 
 # egui-based settings panel
@@ -156,7 +156,7 @@ global-hotkey = "0.8"
 # on Linux: `_NET_WM_WINDOW_OPACITY` and `_NET_WM_DESKTOP`. Already in the tree
 # via winit/arboard/global-hotkey; `default-features = false` keeps it to the
 # pure-Rust connection (no libxcb link) plus the `randr`-free core protocol.
-x11rb = { version = "0.13", default-features = false }
+x11rb = { version = "0.14", default-features = false }
 # XDG desktop portals. Only `GlobalShortcuts` is used, to register the Quake
 # hotkey under Wayland where X11 key grabs never fire. Already compiled as part
 # of rfd's `xdg-portal` backend; `default-features = false` + `tokio` matches the
@@ -192,7 +192,7 @@ serde_json = "1"
 # `aws-lc-rs` — aws-lc-sys needs CMake/NASM toolchains that the Windows dev/CI
 # boxes don't carry.
 russh = { version = "0.62.5", default-features = false, features = ["flate2", "ring", "rsa"] }
-mlua = { version = "0.11", features = ["lua54", "vendored", "send"] }
+mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
 resvg = { version = "0.47", default-features = false }
 usvg = { version = "0.47", default-features = false }
 tiny-skia = "0.12"
