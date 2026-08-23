@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.46]
+
 ### Fixed
 - **The close-confirmation dialog flashed for a few milliseconds and vanished,
   leaving the window open.** With `window.confirm_close` enabled, closing a
@@ -1504,7 +1507,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...HEAD
+[0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...v0.1.44
 [0.1.43]: https://github.com/fbrzlarosa/terminale/compare/v0.1.42...v0.1.43
