@@ -193,7 +193,7 @@ serde_json = "1"
 # boxes don't carry.
 russh = { version = "0.62.5", default-features = false, features = ["flate2", "ring", "rsa"] }
 mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
-resvg = { version = "0.47", default-features = false }
+resvg = { version = "0.48", default-features = false }
 usvg = { version = "0.47", default-features = false }
 tiny-skia = "0.12"
 # Image decoding for background-image feature (PNG, JPEG, WebP, GIF first frame).
