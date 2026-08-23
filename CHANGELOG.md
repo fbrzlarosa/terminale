@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 ### Fixed
+- **The close-confirmation dialog flashed for a few milliseconds and vanished,
+  leaving the window open.** With `window.confirm_close` enabled, closing a
+  window or a tab became impossible. X11 delivers a `Focused(false)` for a
+  freshly mapped window *just before* the `Focused(true)` that actually gives it
+  focus, and the dialog's "clicking outside cancels" rule fired on that first
+  event — cancelling the close about 1.5 ms after asking about it (measured on
+  GNOME/Mutter under XWayland: dialog up at T, spurious focus-loss at T+1.3 ms,
+  real focus at T+2.2 ms). A focus-loss now counts as a click-outside only once
+  the popup has really held focus *and* has been on screen past a short grace
+  window; anything earlier is treated as what it is — platform noise around
+  taking focus — and the popup re-asserts focus instead of closing. The rule is
+  now one shared, tested policy covering the close confirmation, the paste
+  guard, the SSH credential prompt and the context menu, which all carried the
+  naive version. (The context menu already had a timer guard of its own for the
+  macOS half of the same problem, a trackpad two-finger tap handing focus
+  straight back to the parent; that case keeps working through the shared
+  policy.)
+- **An answered close confirmation could linger long enough to swallow the next
+  close request.** The dialog is deliberately kept alive for the tick that reads
+  its outcome, but it was then dropped only on the *next* event to reach it —
+  and while it sat there answered, the "at most one dialog at a time" guard
+  silently discarded a second close request. It is now dropped as soon as its
+  outcome has been read.
 - **"Update failed: atomically replace the running binary: No such file or
   directory".** Linux's `/proc/self/exe` gains a ` (deleted)` suffix once the
   binary behind a process has been unlinked, and `std::env::current_exe()`

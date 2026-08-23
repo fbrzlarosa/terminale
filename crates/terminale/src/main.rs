@@ -47,6 +47,7 @@ mod palette;
 mod panes;
 mod password_prompt;
 mod paste_guard;
+mod popup_focus;
 #[cfg(all(unix, not(target_os = "macos")))]
 mod portal_shortcuts;
 mod process_job;
@@ -7948,7 +7949,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 let outcome = dialog.take_outcome();
                 let target = dialog.target();
                 let parent = dialog.parent_id();
-                if close {
+                // An answered dialog is finished, even though `handle_event`
+                // deliberately returned `false` so the outcome could be read on
+                // this same tick. Leaving it parked until some later event
+                // reaches it would let the "at most one dialog" guard below
+                // swallow the user's next close request.
+                if close || outcome.is_some() {
                     self.confirm_close_dialog = None;
                 }
                 if let Some(confirm_close::ConfirmCloseOutcome::Confirm) = outcome {
