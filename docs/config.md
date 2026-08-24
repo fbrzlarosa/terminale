@@ -40,6 +40,18 @@ tab_drop_merge        = true   # drop a dragged tab/pane onto a terminal body
 tab_attention_on_bell = true   # light an amber dot on a background tab when
                                # its program rings the bell (e.g. Claude Code
                                # finished and is waiting); clears on focus
+tab_activity_spinner  = true   # animated spinner on a tab while it is busy
+tab_spinner_idle_ms   = 800    # how long output keeps a tab spinning after it
+                               # stops arriving (100-10000). This is what
+                               # decides the spinner for programs that hold the
+                               # terminal open - Claude Code, a REPL, vim, ssh -
+                               # since shell integration reports those as one
+                               # command from launch to exit. They animate while
+                               # working and go silent while waiting, so the
+                               # spinner follows that instead. Lower = clears
+                               # sooner; raise it if a bursty tool makes it
+                               # stutter. Plain commands are unaffected: they
+                               # spin for as long as they run, output or not
 ```
 
 See [`theming.md`](theming.md) to add your own themes.

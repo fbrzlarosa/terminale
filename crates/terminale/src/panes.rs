@@ -503,7 +503,10 @@ pub(crate) fn pane_specs_for_tab(state: &RunningState, tab: &TabState) -> Vec<Lo
                 continue;
             }
             if let Some(pane) = tab.panes.get(&spec.pane_id) {
-                if crate::pane_is_busy(pane) {
+                if crate::pane_is_busy(
+                    pane,
+                    std::time::Duration::from_millis(u64::from(state.tab_spinner_idle_ms)),
+                ) {
                     spec.title = format!("{spinner}  {}", spec.title);
                 }
             }

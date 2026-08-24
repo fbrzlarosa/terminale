@@ -858,6 +858,34 @@ impl SettingsWindow {
                 ui,
                 "Prepend a braille-dots animated spinner to the tab label (and to each pane header in split view) while a command is running or output is flowing. Off = no spinner.",
             );
+
+            if self.config.appearance.tab_activity_spinner {
+                ui.add_space(4.0);
+                let hr = ui.horizontal(|ui| {
+                    field_label(ui, "Spinner idle timeout");
+                    let r = ui.add(
+                        egui::Slider::new(
+                            &mut self.config.appearance.tab_spinner_idle_ms,
+                            100..=10_000,
+                        )
+                        .suffix(" ms")
+                        .text(""),
+                    );
+                    if r.changed() {
+                        dirty = true;
+                    }
+                });
+                self.highlight_row(
+                    ui,
+                    hr.response.rect,
+                    Section::Appearance,
+                    "Spinner idle timeout",
+                );
+                sublabel(
+                    ui,
+                    "How long output keeps a tab spinning after it stops arriving. This is what decides the spinner for programs that hold the terminal open \u{2014} Claude Code, a REPL, vim, ssh \u{2014} where \"a command is running\" stays true from launch to exit and would otherwise pin the spinner on forever. They animate while working and go silent while waiting, so activity is the honest signal. Lower = clears sooner; raise it if a bursty tool makes the spinner stutter.",
+                );
+            }
         });
 
         ui.add_space(6.0);
