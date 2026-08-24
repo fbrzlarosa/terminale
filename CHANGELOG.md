@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.47]
+
 ### Added
 - **`terminale mcp` — the control API as MCP tools, so an AI agent can see the
   terminal you are working in.** The pieces were already there: OSC 133 shell
@@ -39,6 +42,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   spinner clear sooner, raise it if a bursty tool makes it stutter.
 
 ### Fixed
+- **Encrypted config backups keep working on the new RustCrypto generation.**
+  `chacha20poly1305` 0.11 moved to hybrid-array and `rand_core` 0.9, taking
+  `aead::OsRng`, `AeadCore::generate_nonce` and `Array::from_slice` with it.
+  The nonce now comes from the fallible `Generate` trait rather than an unwrap:
+  continuing with a nonce the OS could not randomise would quietly undo the
+  encryption, so it gets its own error. None of it is a format change — same
+  XChaCha20-Poly1305, same 48-byte header fed in as associated data — and that
+  claim is now a test rather than a promise: a real backup file produced by
+  0.10 is committed as a fixture and decrypted by the suite, so a future bump
+  says so before anyone's backups become unreadable.
 - **A tab running Claude Code (or `vim`, `less`, a REPL, `ssh`) spun forever.**
   The busy spinner is supposed to say "something in here is working"; instead it
   came on the moment you launched an interactive program and stayed on until you
@@ -72,6 +85,13 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   the measured session — made it stutter. The typing-suppression window, which
   keeps keystroke echo from reading as work, now uses the same value, so the
   spinner can no longer flash on in the gap between the two.
+
+### Changed
+- **Dependencies:** `resvg`/`usvg` 0.48, `ashpd` 0.13. The ashpd bump needed
+  the `global_shortcuts` feature listed explicitly — 0.13 put every portal
+  behind its own feature, so with `default-features = false` the module was
+  absent rather than merely unused — and a small API migration (the lifetime
+  parameters are gone, and each call takes an options struct).
 
 
 ## [0.1.46]
@@ -1573,7 +1593,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...HEAD
+[0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...v0.1.44
