@@ -161,7 +161,9 @@ x11rb = { version = "0.14", default-features = false }
 # hotkey under Wayland where X11 key grabs never fire. Already compiled as part
 # of rfd's `xdg-portal` backend; `default-features = false` + `tokio` matches the
 # feature set rfd already selects, so no extra build cost and no async-std.
-ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+# `global_shortcuts` must be listed explicitly: 0.13 put every portal behind its
+# own feature, so without it the module is absent rather than merely unused.
+ashpd = { version = "0.13", default-features = false, features = ["tokio", "global_shortcuts"] }
 # Session-bus calls to systemd's user manager, so terminale can place itself in
 # an `app-terminale-<pid>.scope` and thereby own an application id — which is
 # what the GlobalShortcuts portal identifies callers by. Same zbus ashpd already
@@ -193,8 +195,8 @@ serde_json = "1"
 # boxes don't carry.
 russh = { version = "0.62.5", default-features = false, features = ["flate2", "ring", "rsa"] }
 mlua = { version = "0.12", features = ["lua54", "vendored", "send"] }
-resvg = { version = "0.47", default-features = false }
-usvg = { version = "0.47", default-features = false }
+resvg = { version = "0.48", default-features = false }
+usvg = { version = "0.48", default-features = false }
 tiny-skia = "0.12"
 # Image decoding for background-image feature (PNG, JPEG, WebP, GIF first frame).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
