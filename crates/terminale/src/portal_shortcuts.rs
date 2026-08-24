@@ -47,10 +47,10 @@ const BIND_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(7
 /// the call or its response failed — indistinguishable from "none" for our
 /// purposes, and the caller treats both the same way.
 async fn list_shortcuts(
-    portal: &GlobalShortcuts<'_>,
-    session: &ashpd::desktop::Session<'_, GlobalShortcuts<'_>>,
+    portal: &GlobalShortcuts,
+    session: &ashpd::desktop::Session<GlobalShortcuts>,
 ) -> Option<ashpd::desktop::global_shortcuts::ListShortcuts> {
-    match portal.list_shortcuts(session).await {
+    match portal.list_shortcuts(session, Default::default()).await {
         Ok(request) => match request.response() {
             Ok(list) => Some(list),
             Err(e) => {
@@ -116,7 +116,7 @@ async fn run(
     proxy: EventLoopProxy<UserEvent>,
 ) -> Result<(), ashpd::Error> {
     let portal = GlobalShortcuts::new().await?;
-    let session = portal.create_session().await?;
+    let session = portal.create_session(Default::default()).await?;
 
     // Subscribe BEFORE binding: the desktop may activate the shortcut as soon
     // as the binding is confirmed, and a stream created afterwards would miss
@@ -153,7 +153,10 @@ async fn run(
         if let Some(trigger) = trigger.as_deref() {
             shortcut = shortcut.preferred_trigger(trigger);
         }
-        match portal.bind_shortcuts(&session, &[shortcut], None).await {
+        match portal
+            .bind_shortcuts(&session, &[shortcut], None, Default::default())
+            .await
+        {
             Ok(request) => match request.response() {
                 Ok(bound) => {
                     if let Some(s) = bound.shortcuts().iter().find(|s| s.id() == SHORTCUT_ID) {
