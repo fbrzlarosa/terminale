@@ -356,6 +356,30 @@ pub struct AppearanceConfig {
     /// command running or received output recently. Set `false` to disable the
     /// animation entirely. Live-applied from the Settings window.
     pub tab_activity_spinner: bool,
+    /// How long (milliseconds) a pane keeps counting as "busy" after its last
+    /// burst of PTY output, on the activity-based path of the busy check.
+    ///
+    /// This is what decides the spinner for panes where "a command is running"
+    /// is not, on its own, a useful answer:
+    ///
+    /// * an **interactive program** that is still running — Claude Code, a
+    ///   REPL, `vim`, `ssh`. Shell integration reports these as one long
+    ///   command from launch to exit, so trusting it would pin the spinner on
+    ///   for the whole session. Activity is the honest signal instead: these
+    ///   programs animate while they work and go completely silent while they
+    ///   wait for you.
+    /// * a shell with **no OSC 133 integration** at all (zsh, fish), where
+    ///   there is no other signal to go on.
+    ///
+    /// The same window doubles as the typing-suppression window: output within
+    /// this long of a keystroke is treated as echo / prompt repaint, not work.
+    ///
+    /// The default of 800 ms is set from measured behaviour — Claude Code
+    /// repaints its spinner every ~100 ms while working, with occasional gaps
+    /// up to ~700 ms, so a shorter window makes the spinner stutter. Raise it
+    /// if your tools are burstier; lower it to have the spinner clear sooner.
+    /// Valid range: 100..=10000. Live-applied from the Settings window.
+    pub tab_spinner_idle_ms: u16,
     /// When `true` (default), light a static amber "attention" dot on a tab
     /// when the program running in it rings the terminal bell (BEL) while you
     /// are not looking at that tab — i.e. it finished its turn and is waiting
@@ -426,6 +450,7 @@ impl Default for AppearanceConfig {
                 [0xff, 0x70, 0xd0],
             ],
             tab_activity_spinner: true,
+            tab_spinner_idle_ms: 800,
             tab_attention_on_bell: true,
             show_tab_icons: false,
             show_tab_separators: true,
@@ -529,6 +554,12 @@ impl AppearanceConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+        if !(100..=10_000).contains(&self.tab_spinner_idle_ms) {
+            return Err(ConfigError::Invalid {
+                field: "appearance.tab_spinner_idle_ms",
+                message: "must be between 100 and 10000",
+            });
+        }
         if !(16.0..=800.0).contains(&self.tab_min_width) {
             return Err(ConfigError::Invalid {
                 field: "appearance.tab_min_width",
@@ -1456,6 +1487,36 @@ mod tests {
         parsed
             .validate()
             .expect("roundtripped config must validate");
+    }
+
+    // ── tab_spinner_idle_ms ───────────────────────────────────────────────────
+
+    /// The default is the measured Claude Code figure, not a round guess: its
+    /// spinner repaints every ~100 ms while it works, with gaps up to ~700 ms.
+    #[test]
+    fn tab_spinner_idle_ms_defaults_to_800() {
+        assert_eq!(
+            AppearanceConfig::default().tab_spinner_idle_ms,
+            800,
+            "tab_spinner_idle_ms must default to 800"
+        );
+    }
+
+    /// Out-of-range values are rejected rather than silently clamped, so a
+    /// typo'd `0` cannot disable the spinner by making every pane look idle.
+    #[test]
+    fn tab_spinner_idle_ms_range_validates() {
+        let mut cfg = AppearanceConfig {
+            tab_spinner_idle_ms: 99,
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err(), "99 ms must be rejected");
+        cfg.tab_spinner_idle_ms = 10_001;
+        assert!(cfg.validate().is_err(), "10001 ms must be rejected");
+        cfg.tab_spinner_idle_ms = 100;
+        assert!(cfg.validate().is_ok(), "100 ms is the lower bound");
+        cfg.tab_spinner_idle_ms = 10_000;
+        assert!(cfg.validate().is_ok(), "10000 ms is the upper bound");
     }
 
     // ── tab_activity_spinner ──────────────────────────────────────────────────

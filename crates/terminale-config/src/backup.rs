@@ -22,8 +22,9 @@
 
 use crate::Config;
 use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::aead::{Aead, KeyInit, OsRng, Payload};
-use chacha20poly1305::{AeadCore, XChaCha20Poly1305, XNonce};
+use chacha20poly1305::aead::common::Generate;
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -88,6 +89,11 @@ pub enum BackupError {
     /// Key derivation failed (should be unreachable with fixed params).
     #[error("key derivation failed")]
     Kdf,
+    /// The system RNG failed while generating the salt or nonce. Practically
+    /// unreachable, and the one failure a backup must never paper over: a
+    /// predictable nonce would undo the encryption.
+    #[error("the system random number generator failed")]
+    Rng,
 }
 
 /// Derive the 32-byte AEAD key from `passphrase` + `salt` via Argon2id.
@@ -117,13 +123,13 @@ pub fn encrypt(payload: &BackupPayload, passphrase: &str) -> Result<Vec<u8>, Bac
     }
     let plaintext = serde_json::to_vec(payload)?;
 
-    // Random salt + nonce.
-    let mut salt = [0u8; SALT_LEN];
-    {
-        use chacha20poly1305::aead::rand_core::RngCore;
-        OsRng.fill_bytes(&mut salt);
-    }
-    let nonce: XNonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    // Random salt + nonce, straight from the system RNG. `Generate` replaced
+    // `AeadCore::generate_nonce` and the `OsRng` re-export in
+    // chacha20poly1305 0.11; its fallible form is the one used here, because
+    // continuing with a nonce the OS could not randomise is worse than failing
+    // the export.
+    let salt = <[u8; SALT_LEN]>::try_generate().map_err(|_| BackupError::Rng)?;
+    let nonce = XNonce::try_generate().map_err(|_| BackupError::Rng)?;
 
     let key = derive_key(passphrase, &salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|_| BackupError::Kdf)?;
@@ -175,11 +181,14 @@ pub fn decrypt(bytes: &[u8], passphrase: &str) -> Result<BackupPayload, BackupEr
 
     let key = derive_key(passphrase, salt)?;
     let cipher = XChaCha20Poly1305::new_from_slice(&key).map_err(|_| BackupError::Kdf)?;
-    let nonce = XNonce::from_slice(nonce_bytes);
+    // The header length is checked above, so this cannot fail — but TryFrom
+    // replaced the panicking `from_slice`, and a backup reader has no business
+    // panicking on a malformed file.
+    let nonce = XNonce::try_from(nonce_bytes).map_err(|_| BackupError::BadFormat)?;
 
     let plaintext = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: ciphertext,
                 aad,
@@ -229,6 +238,24 @@ mod tests {
         assert_eq!(back.config.ssh_hosts[0].name, "prod");
         assert_eq!(back.credentials.len(), 1);
         assert_eq!(back.credentials[0].secret_id, "ssh:host-1");
+        assert_eq!(back.credentials[0].secret, "s3cr3t");
+    }
+
+    /// A backup written by chacha20poly1305 0.10 must still open.
+    ///
+    /// The 0.11 bump was an API change — `Generate` for the salt and nonce,
+    /// `TryFrom` for the nonce on the way back in — and not a format change:
+    /// same XChaCha20-Poly1305, same 48-byte header fed in as associated data.
+    /// This fixture is a real file produced by the old crate, so the claim is
+    /// checked rather than assumed. If it ever fails, someone's backups have
+    /// just become unreadable and the format needs a new MAGIC version byte.
+    #[test]
+    fn a_backup_from_the_previous_crypto_crate_still_opens() {
+        let blob = include_bytes!("../tests/fixtures/backup-v1-chacha10.bin");
+        let back = decrypt(blob, "correct horse battery staple")
+            .expect("a 0.10-era backup must decrypt unchanged");
+        assert_eq!(back.config.appearance.theme, "Dracula");
+        assert_eq!(back.credentials.len(), 1);
         assert_eq!(back.credentials[0].secret, "s3cr3t");
     }
 

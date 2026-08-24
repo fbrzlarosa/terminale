@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.47]
+
 ### Added
 - **`terminale mcp` — the control API as MCP tools, so an AI agent can see the
   terminal you are working in.** The pieces were already there: OSC 133 shell
@@ -30,6 +33,65 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   to turn on instead of retrying. `[integration.mcp].enabled` (Settings ›
   Desktop integration › "Serve MCP to AI agents") turns the front-end off while
   leaving your own `ctl` scripts working. See [`docs/mcp.md`](docs/mcp.md).
+
+- **`appearance.tab_spinner_idle_ms`** (Settings › Appearance › "Spinner idle
+  timeout", 100-10000 ms, default 800) — how long output keeps a tab spinning
+  after it stops arriving. It is the knob behind the busy-spinner fix below:
+  the spinner for a program that holds the terminal open is now decided by
+  activity, and this is the window that decides it. Lower it to have the
+  spinner clear sooner, raise it if a bursty tool makes it stutter.
+
+### Fixed
+- **Encrypted config backups keep working on the new RustCrypto generation.**
+  `chacha20poly1305` 0.11 moved to hybrid-array and `rand_core` 0.9, taking
+  `aead::OsRng`, `AeadCore::generate_nonce` and `Array::from_slice` with it.
+  The nonce now comes from the fallible `Generate` trait rather than an unwrap:
+  continuing with a nonce the OS could not randomise would quietly undo the
+  encryption, so it gets its own error. None of it is a format change — same
+  XChaCha20-Poly1305, same 48-byte header fed in as associated data — and that
+  claim is now a test rather than a promise: a real backup file produced by
+  0.10 is committed as a fixture and decrypted by the suite, so a future bump
+  says so before anyone's backups become unreadable.
+- **A tab running Claude Code (or `vim`, `less`, a REPL, `ssh`) spun forever.**
+  The busy spinner is supposed to say "something in here is working"; instead it
+  came on the moment you launched an interactive program and stayed on until you
+  quit it, whether the program was thinking or sitting idle at its prompt. The
+  cause was trusting the right signal for the wrong case: OSC 133 shell
+  integration reports a command as running from its `C` mark until the matching
+  `D`, and for `claude` those two marks are the launch and the exit, hours
+  apart. True, and useless — the spinner was reporting "a program is open", not
+  "a program is busy".
+
+  So that signal is now dropped for programs that own the terminal, and kept for
+  the commands it actually describes well. Telling them apart needs no
+  guesswork: a shell clears its own DECSET modes before handing over (bash emits
+  `CSI ?2004l` immediately before `OSC 133;C`), so a pane where the alternate
+  screen, bracketed paste, focus reporting or mouse reporting is set is
+  necessarily an interactive program rather than a command the shell launched.
+  Those fall through to output activity, which is the honest signal for them:
+  they animate while they work and go completely silent while they wait. A
+  measured Claude Code session repaints roughly every 100 ms while thinking, and
+  emitted nothing at all for 7.4 s while idle at its prompt.
+
+  `cargo build`, `sleep 60` and every other non-interactive command keep the
+  OSC 133 answer, so a long command that prints nothing still spins — that case
+  was the reason to trust the marks in the first place. A remote command over
+  `ssh` also keeps spinning, because the remote shell clears bracketed paste for
+  the same reason the local one does.
+
+  The idle window that decides the activity path went from a hardcoded 250 ms to
+  the configurable `appearance.tab_spinner_idle_ms` (default 800 ms): 250 ms was
+  short enough that ordinary gaps between spinner repaints — up to ~700 ms in
+  the measured session — made it stutter. The typing-suppression window, which
+  keeps keystroke echo from reading as work, now uses the same value, so the
+  spinner can no longer flash on in the gap between the two.
+
+### Changed
+- **Dependencies:** `resvg`/`usvg` 0.48, `ashpd` 0.13. The ashpd bump needed
+  the `global_shortcuts` feature listed explicitly — 0.13 put every portal
+  behind its own feature, so with `default-features = false` the module was
+  absent rather than merely unused — and a small API migration (the lifetime
+  parameters are gone, and each call takes an options struct).
 
 
 ## [0.1.46]
@@ -1531,7 +1593,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...HEAD
+[0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...v0.1.45
 [0.1.44]: https://github.com/fbrzlarosa/terminale/compare/v0.1.43...v0.1.44

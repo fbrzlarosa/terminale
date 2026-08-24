@@ -92,49 +92,92 @@ pub(crate) fn advance_caught(emulator: &Arc<Mutex<Emulator>>, chunk: &[u8]) -> b
 
 // ── pane_is_busy ──────────────────────────────────────────────────────────────
 
-/// Returns `true` when `pane` is considered "busy" — i.e. a command is
-/// running or PTY output arrived recently.
+/// `true` when the program on this pane's screen is an *interactive* one —
+/// something that owns the terminal and sits waiting for the user, rather than
+/// a command that runs to completion and exits.
 ///
-/// Two signals are checked:
+/// The distinction matters for [`pane_is_busy`] and nothing else: shell
+/// integration reports an interactive program as one single command that runs
+/// from launch until exit, which is true but useless as a busy signal.
 ///
-/// 1. **OSC 133**: `emulator.semantic().is_command_running()` is `true` when
-///    a `C` mark was seen but the matching `D` has not yet arrived. This is
-///    the authoritative signal for shells with shell integration.
+/// Four DECSET modes give it away, and crucially none of them is set by a plain
+/// command, because the shell turns its own off before handing over the
+/// terminal (bash emits `CSI ?2004l` immediately before `OSC 133;C`):
 ///
-/// 2. **Output activity fallback**: for shells without shell integration, the
-///    pane is considered busy when it received non-trivial PTY output within
-///    the last 250 ms (`last_output_at` is `Some` and the elapsed time is
-///    below the threshold). The 250 ms window is long enough to cover typical
-///    command output bursts without making the spinner linger noticeably at
-///    idle prompts.
+/// * `?1049` / `?47` — alternate screen: `vim`, `less`, `htop`, `top`.
+/// * `?2004` — bracketed paste: any program reading a line of input from a
+///   human. Claude Code, `python`, `psql`, a nested shell, `ssh`.
+/// * `?1004` — focus reporting: pauses animation when the window blurs.
+/// * `?1000`/`?1002`/`?1003` — mouse reporting.
 ///
-///    The fallback is suppressed while the user is typing: output that
-///    closely follows user input (`last_input_at` within 300 ms) is just
-///    keystroke echo or a prompt redraw — syntax-highlighting shells
-///    (PSReadLine, fish, zsh plugins) repaint the whole line on every key,
-///    so a chunk-size filter alone cannot tell echo apart from real output.
+/// Cheap: four bit tests on the emulator's mode set. The caller supplies the
+/// already-held lock, because [`pane_is_busy`] needs the semantic state anyway.
+fn emulator_is_interactive(em: &Emulator) -> bool {
+    em.is_alt_screen()
+        || em.bracketed_paste_enabled()
+        || em.focus_events_enabled()
+        || em.mouse_mode().enabled()
+}
+
+/// `true` when a pane produced real output within `idle`, ignoring keystroke
+/// echo.
+///
+/// Output that lands within `idle` of the user's last keypress is echo or a
+/// prompt repaint, not work: syntax-highlighting line editors (PSReadLine,
+/// fish, zsh plugins, Claude Code's own input box) repaint the entire line on
+/// every keystroke, so a chunk-size filter cannot tell the two apart. Using the
+/// same window on both sides keeps the spinner from flashing on in the gap
+/// between "user stopped typing" and "output window expired".
+fn had_recent_activity(
+    last_output_at: Option<Instant>,
+    last_input_at: Option<Instant>,
+    idle: Duration,
+) -> bool {
+    if last_output_at.is_none_or(|t| t.elapsed() >= idle) {
+        return false;
+    }
+    last_input_at.is_none_or(|t| t.elapsed() >= idle)
+}
+
+/// Returns `true` when `pane` is considered "busy" — i.e. something in it is
+/// actually working, and the tab deserves a spinner.
+///
+/// `idle` is `appearance.tab_spinner_idle_ms`: how long output keeps a pane
+/// busy after it stops arriving.
+///
+/// Two signals, and which one wins depends on what is running:
+///
+/// 1. **OSC 133 — authoritative, but only for non-interactive commands.**
+///    `is_command_running()` is `true` from the `C` mark until the matching
+///    `D`. For `cargo build` or `sleep 60` that is exactly right, and it is the
+///    only signal that survives a command producing no output at all.
+///
+///    For an interactive program it is right but useless. Launching Claude Code
+///    emits one `C`; the matching `D` does not arrive until you quit it, hours
+///    later. Trusting it there pinned the spinner on for the entire session —
+///    the tab looked permanently busy whether Claude was thinking or sitting
+///    idle at its prompt. Same for `vim`, `less`, a nested shell, or `ssh`. So
+///    when [`emulator_is_interactive`] recognises one, this signal is dropped
+///    and the pane falls through to activity.
+///
+/// 2. **Output activity** — used for interactive programs, and for shells with
+///    no OSC 133 integration at all (zsh, fish). Interactive programs are well
+///    behaved here: they animate while they work and fall completely silent
+///    while they wait. Claude Code repaints roughly every 100 ms while it is
+///    thinking and emits nothing for as long as it waits for you.
 ///
 /// # Lock ordering
 ///
-/// Acquires the emulator mutex briefly to read the semantic state, then
-/// releases it before returning. The caller must **not** hold any emulator
-/// lock when calling this function.
-pub(crate) fn pane_is_busy(pane: &Pane) -> bool {
-    // OSC 133 path — most accurate.
-    if pane.emulator.lock().semantic().is_command_running() {
-        return true;
+/// Acquires the emulator mutex briefly, then releases it before returning. The
+/// caller must **not** hold any emulator lock when calling this function.
+pub(crate) fn pane_is_busy(pane: &Pane, idle: Duration) -> bool {
+    {
+        let em = pane.emulator.lock();
+        if em.semantic().is_command_running() && !emulator_is_interactive(&em) {
+            return true;
+        }
     }
-    // Fallback: recent output activity…
-    let recent_output = pane
-        .last_output_at
-        .is_some_and(|t| t.elapsed() < Duration::from_millis(250));
-    if !recent_output {
-        return false;
-    }
-    // …but not while the user is typing: output right after user input is
-    // echo / prompt repaint, not a running command.
-    pane.last_input_at
-        .is_none_or(|t| t.elapsed() >= Duration::from_millis(300))
+    had_recent_activity(pane.last_output_at, pane.last_input_at, idle)
 }
 
 // ── drain_pty_output ──────────────────────────────────────────────────────────
@@ -1279,7 +1322,196 @@ pub(crate) fn update_dir_jump(state: &mut RunningState) {
 mod tests {
     use super::osc52_base64_encode;
     use super::NotifyLimiter;
+    use super::{emulator_is_interactive, had_recent_activity};
     use std::time::{Duration, Instant};
+
+    // ── emulator_is_interactive ───────────────────────────────────────────────
+
+    /// Build an emulator and feed it `bytes`.
+    fn emu(bytes: &[u8]) -> terminale_term::Emulator {
+        let mut e = terminale_term::Emulator::new(80, 24);
+        e.advance(bytes);
+        e
+    }
+
+    /// A fresh emulator — and a shell that has just handed the terminal to a
+    /// plain command — looks non-interactive, so OSC 133 stays authoritative
+    /// for `cargo build` and friends.
+    #[test]
+    fn plain_command_is_not_interactive() {
+        assert!(
+            !emulator_is_interactive(&emu(b"")),
+            "a fresh emulator must not look interactive"
+        );
+        // What bash actually emits when it runs a command: bracketed paste off,
+        // then the OSC 133 C mark. Captured from a real PTY session.
+        assert!(
+            !emulator_is_interactive(&emu(b"\x1b[?2004l\x1b]133;C\x07")),
+            "a plain command after the shell drops bracketed paste is not interactive"
+        );
+    }
+
+    /// Bracketed paste is what gives Claude Code away: it sets `?2004h` on
+    /// startup and never clears it until exit, while bash clears it before
+    /// every command. This is the case that used to spin forever.
+    #[test]
+    fn bracketed_paste_reads_as_interactive() {
+        assert!(
+            emulator_is_interactive(&emu(b"\x1b[?2004h")),
+            "bracketed paste means a program is reading a line from a human"
+        );
+    }
+
+    /// The alternate screen covers the full-screen TUIs: vim, less, htop.
+    #[test]
+    fn alt_screen_reads_as_interactive() {
+        assert!(
+            emulator_is_interactive(&emu(b"\x1b[?1049h")),
+            "the alternate screen means a full-screen TUI owns the terminal"
+        );
+    }
+
+    /// Focus reporting (`?1004`) and mouse reporting (`?1000`) each stand on
+    /// their own — a TUI may set either without touching the other two modes.
+    #[test]
+    fn focus_and_mouse_reporting_read_as_interactive() {
+        assert!(
+            emulator_is_interactive(&emu(b"\x1b[?1004h")),
+            "focus reporting means an app is tracking window focus"
+        );
+        assert!(
+            emulator_is_interactive(&emu(b"\x1b[?1000h")),
+            "mouse reporting means an app is tracking the pointer"
+        );
+    }
+
+    /// Leaving the alternate screen (quitting vim back to the prompt) drops
+    /// the alt-screen signal again.
+    #[test]
+    fn leaving_alt_screen_clears_interactive() {
+        assert!(
+            !emulator_is_interactive(&emu(b"\x1b[?1049h\x1b[?1049l")),
+            "quitting a TUI must clear the alt-screen signal"
+        );
+    }
+
+    /// Regression test for the reported bug: a tab running Claude Code showed
+    /// the busy spinner forever, whether Claude was thinking or idle.
+    ///
+    /// The byte sequence below is the real one, captured from a PTY running
+    /// `bash --rcfile <terminale shell integration>` and then `claude`. It
+    /// walks the two states that matter and pins both halves of the fix.
+    #[test]
+    fn claude_code_session_stops_looking_busy_by_osc133() {
+        let mut e = terminale_term::Emulator::new(80, 24);
+
+        // Prompt: bash arms bracketed paste and marks the prompt zone.
+        e.advance(b"\x1b[?2004h\x1b]133;A\x07$ \x1b]133;B\x07claude");
+
+        // Enter. bash drops bracketed paste, then marks the command start.
+        e.advance(b"\x1b[?2004l\x1b]133;C\x07");
+        assert!(
+            e.semantic().is_command_running(),
+            "shell integration must report the command as running"
+        );
+        assert!(
+            !emulator_is_interactive(&e),
+            "between the shell handing over and the program setting its modes, \
+             OSC 133 is the only signal and must stay authoritative"
+        );
+
+        // Claude Code starts up: alternate screen, mouse, bracketed paste,
+        // focus reporting. Exactly the modes observed, in the observed order.
+        e.advance(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?2004h\x1b[?1004h");
+
+        // The bug: no `D` mark arrives until Claude exits, which can be hours.
+        assert!(
+            e.semantic().is_command_running(),
+            "OSC 133 still reports `claude` as one long-running command - \
+             true, but useless as a busy signal"
+        );
+        // The fix: that signal is now dropped for interactive programs, so the
+        // spinner is decided by activity instead of staying pinned on.
+        assert!(
+            emulator_is_interactive(&e),
+            "Claude Code must be recognised as interactive so the busy check \
+             falls through to output activity"
+        );
+
+        // Idle at Claude's prompt: measured at 7.4s of complete silence in the
+        // captured session. Well past any sane idle window, so: not busy.
+        assert!(
+            !recent(Some(7400), None, 800),
+            "an idle Claude Code prompt must not spin"
+        );
+        // Working: it repaints its spinner every ~100ms. Busy.
+        assert!(
+            recent(Some(100), None, 800),
+            "a thinking Claude Code must spin"
+        );
+    }
+
+    // ── had_recent_activity ───────────────────────────────────────────────────
+
+    /// A pane that has never produced output is idle regardless of the window.
+    #[test]
+    fn no_output_is_never_active() {
+        let (out, inp) = (None, None);
+        assert!(!recent(out, inp, 800));
+    }
+
+    /// Output inside the window with no typing counts as work — this is Claude
+    /// Code repainting its spinner.
+    #[test]
+    fn recent_output_without_typing_is_active() {
+        assert!(recent(Some(100), None, 800), "100ms-old output is active");
+        assert!(
+            !recent(Some(900), None, 800),
+            "900ms-old output is past an 800ms window"
+        );
+    }
+
+    /// Output that lands within the window of a keystroke is echo, not work.
+    /// Both sides use the same window so the spinner cannot flash on in the
+    /// gap between the two.
+    #[test]
+    fn output_close_to_typing_is_suppressed_as_echo() {
+        assert!(
+            !recent(Some(50), Some(60), 800),
+            "a repaint right after a keystroke is echo"
+        );
+        assert!(
+            recent(Some(50), Some(900), 800),
+            "output long after the last keystroke is real work"
+        );
+    }
+
+    /// A longer window keeps a bursty program spinning across its output gaps
+    /// — the reason the default is 800ms rather than the old 250ms.
+    #[test]
+    fn window_length_decides_burst_tolerance() {
+        // A 700ms gap: measured in a real Claude Code session between spinner
+        // repaints. Too long for a 250ms window, comfortable at 800ms.
+        assert!(
+            !recent(Some(700), None, 250),
+            "700ms gap breaks a 250ms window"
+        );
+        assert!(
+            recent(Some(700), None, 800),
+            "700ms gap survives an 800ms window"
+        );
+    }
+
+    /// Helper: run [`had_recent_activity`] against synthetic ages in ms.
+    fn recent(output_ago: Option<u64>, input_ago: Option<u64>, idle_ms: u64) -> bool {
+        let now = Instant::now();
+        let ago = |ms: u64| now.checked_sub(Duration::from_millis(ms)).unwrap();
+        had_recent_activity(
+            output_ago.map(ago),
+            input_ago.map(ago),
+            Duration::from_millis(idle_ms),
+        )
+    }
 
     // ── NotifyLimiter ─────────────────────────────────────────────────────────
 
