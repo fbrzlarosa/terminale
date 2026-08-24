@@ -148,11 +148,16 @@ pub(crate) fn refresh_tab_bar(state: &mut RunningState) {
     // (user_title, profile, custom_title, cwd, crashed) — cwd and the
     // program title only change through `Emulator::advance`, which the
     // content generation covers with a single cheap lock read.
+    let spinner_idle = std::time::Duration::from_millis(u64::from(state.tab_spinner_idle_ms));
     let tab_busy_pre: Vec<bool> = if state.tab_activity_spinner {
         state
             .tabs
             .iter()
-            .map(|t| t.panes.values().any(crate::osc_handlers::pane_is_busy))
+            .map(|t| {
+                t.panes
+                    .values()
+                    .any(|p| crate::osc_handlers::pane_is_busy(p, spinner_idle))
+            })
             .collect()
     } else {
         vec![false; state.tabs.len()]

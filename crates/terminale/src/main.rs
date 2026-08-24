@@ -3121,6 +3121,9 @@ struct TermWindow {
     /// braille-dots spinner is prepended to busy tab labels and pane headers.
     /// Live-applied from the Appearance settings toggle and config reload.
     tab_activity_spinner: bool,
+    /// Mirror of `config.appearance.tab_spinner_idle_ms`: how long output
+    /// keeps a pane counting as busy once it stops arriving.
+    tab_spinner_idle_ms: u16,
     /// Mirror of `config.appearance.tab_attention_on_bell`. When `true`, a bell
     /// from a non-focused tab raises that tab's `attention` flag (the amber
     /// "waiting for input" dot). Live-applied from the Appearance settings
@@ -3711,6 +3714,7 @@ impl TerminaleApp {
             tab_group_colors: self.config.appearance.tab_group_colors.clone(),
             bundled_icons: self.config.appearance.bundled_icons,
             tab_activity_spinner: self.config.appearance.tab_activity_spinner,
+            tab_spinner_idle_ms: self.config.appearance.tab_spinner_idle_ms,
             tab_attention_on_bell: self.config.appearance.tab_attention_on_bell,
             show_tab_icons: self.config.appearance.show_tab_icons,
             show_tab_separators: self.config.appearance.show_tab_separators,
@@ -6120,6 +6124,7 @@ impl TerminaleApp {
                     state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                     state.bundled_icons = cfg.appearance.bundled_icons;
                     state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                    state.tab_spinner_idle_ms = cfg.appearance.tab_spinner_idle_ms;
                     state.show_tab_icons = cfg.appearance.show_tab_icons;
                     state.show_tab_separators = cfg.appearance.show_tab_separators;
                     state
@@ -6232,6 +6237,7 @@ impl TerminaleApp {
                     state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                     state.bundled_icons = cfg.appearance.bundled_icons;
                     state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                    state.tab_spinner_idle_ms = cfg.appearance.tab_spinner_idle_ms;
                     state.show_tab_icons = cfg.appearance.show_tab_icons;
                     state.show_tab_separators = cfg.appearance.show_tab_separators;
                     // Live-apply inactive-pane and unfocused-window dim.
@@ -10708,6 +10714,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         state.tab_group_colors = cfg.appearance.tab_group_colors.clone();
                         state.bundled_icons = cfg.appearance.bundled_icons;
                         state.tab_activity_spinner = cfg.appearance.tab_activity_spinner;
+                        state.tab_spinner_idle_ms = cfg.appearance.tab_spinner_idle_ms;
                         state.show_tab_icons = cfg.appearance.show_tab_icons;
                         state.show_tab_separators = cfg.appearance.show_tab_separators;
                         // Live-apply inactive-pane and unfocused-window dim.
@@ -11027,18 +11034,21 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             // redraw while any pane in this window is busy. When nothing is
             // busy, skip scheduling the 90 ms wakeup so we don't spin the CPU.
             //
-            // Gated on focus + visibility: a busy command (anything OSC-133
-            // reports as "running" — an editor, pager, REPL, dev server, ssh)
-            // keeps `pane_is_busy` true for its whole lifetime, so without this
-            // gate the spinner repainted the whole window ~11×/s forever even
-            // while the window sat unfocused in the background — the single
-            // biggest idle cost, and on by default. The spinner is invisible
-            // unless the window is focused and visible, so only animate then.
+            // Gated on focus + visibility: a long-running command (a build, a
+            // dev server, a download) stays busy for as long as it runs, so
+            // without this gate the spinner repainted the whole window ~11×/s
+            // for its whole lifetime even while the window sat unfocused in the
+            // background — the single biggest idle cost, and on by default. The
+            // spinner is invisible unless the window is focused and visible, so
+            // only animate then.
             if state.tab_activity_spinner && state.window_focused && visible {
-                let any_busy = state
-                    .tabs
-                    .iter()
-                    .any(|t| t.panes.values().any(crate::osc_handlers::pane_is_busy));
+                let spinner_idle =
+                    std::time::Duration::from_millis(u64::from(state.tab_spinner_idle_ms));
+                let any_busy = state.tabs.iter().any(|t| {
+                    t.panes
+                        .values()
+                        .any(|p| crate::osc_handlers::pane_is_busy(p, spinner_idle))
+                });
                 if any_busy {
                     const SPINNER_INTERVAL: std::time::Duration =
                         std::time::Duration::from_millis(90);

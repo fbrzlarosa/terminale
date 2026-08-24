@@ -1608,6 +1608,10 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Appearance,
+            label: "Spinner idle timeout",
+        },
+        SearchEntry {
+            section: Section::Appearance,
             label: "Waiting-for-input indicator",
         },
         SearchEntry {
