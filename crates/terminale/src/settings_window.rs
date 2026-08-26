@@ -2702,6 +2702,18 @@ fn search_index() -> &'static [SearchEntry] {
         },
         SearchEntry {
             section: Section::Workspaces,
+            label: "Restore all windows",
+        },
+        SearchEntry {
+            section: Section::Workspaces,
+            label: "Autosave session",
+        },
+        SearchEntry {
+            section: Section::Workspaces,
+            label: "Autosave interval",
+        },
+        SearchEntry {
+            section: Section::Workspaces,
             label: "Workspaces list",
         },
         // section_clipboard_history

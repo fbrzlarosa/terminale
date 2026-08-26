@@ -94,6 +94,34 @@ scrollbar        = "auto"      # interactive scrollback scrollbar: drag the
                                # always | never
 ```
 
+#### Session restore
+
+```toml
+[window]
+restore_session         = "off"  # off | last_session
+restore_working_dirs    = true   # reopen each pane in its last directory
+restore_window_geometry = true   # position, size, monitor, Quake state
+restore_all_windows     = true   # every window, not just the first
+session_autosave_secs   = 15     # 0 = save on close only; else 5–3600
+```
+
+With `restore_session = "last_session"` the next launch reopens the layout you
+left: every window, each with its tabs, splits, split ratios, tab groups,
+focused pane, geometry and monitor. Running processes are never restored — each
+pane starts a fresh shell (in its last directory, when
+`restore_working_dirs` is on).
+
+A window you close on its own and then keep working in is *not* brought back;
+one closed as part of quitting is. Since quitting means closing one window after
+another, a closed window stays in the snapshot for half a minute — long enough
+to cover the whole gesture, short enough that a window left closed is gone from
+the next save. `session_autosave_secs` is unrelated to that: it is how often the
+snapshot is rewritten while you work, so a crash or power loss loses at most
+that many seconds of layout. Set `restore_all_windows = false` to reopen only
+the window you opened first.
+
+All of it is in **Settings → Workspaces → Session restore**.
+
 ### `[cursor]`
 
 ```toml

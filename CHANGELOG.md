@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Restoring the last session brought back one window, whatever you had open.**
+  With `window.restore_session = "last_session"`, everything but the primary
+  window was silently dropped: extra windows, and whichever tabs, splits and
+  directories lived in them. The saved-session format only ever described a
+  single window's tabs, and each of the three ways a window can close
+  overwrote the whole file with its own — so quitting by closing window after
+  window, which is how you quit when the windows carry no OS decorations, left
+  just the last one on disk.
+
+  The snapshot now lists every window, each with its own tabs, splits, split
+  ratios, tab groups, focused pane, geometry and monitor; the launch rebuilds
+  them all, sharing one GPU device, and gives focus back to the window that had
+  it. `window.restore_all_windows` (default on, **Settings → Workspaces**) turns
+  it off for anyone who wants only the primary window back.
+
+  Two things had to be true for the closes to add up. A window closed from the
+  in-app titlebar used to clear its own tab list as the signal to be reaped —
+  destroying exactly what the snapshot needed to record — so it now signals
+  without emptying itself, and is captured on the way out. And because each
+  close rewrites the file, a closed window stays in the snapshot for half a
+  minute: long enough for an unhurried quit, short enough that a window you
+  close and leave closed is gone from the next save.
+
+- **The last-session file was rewritten on every event-loop wake.** The reap
+  pass saved unconditionally instead of only when a window had actually gone,
+  so with session restore enabled an idle terminal re-walked every pane's shell
+  for its working directory and re-`fsync`ed the snapshot many times a second.
+  It now saves when something is actually reaped.
 
 ## [0.1.47]
 

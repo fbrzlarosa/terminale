@@ -121,6 +121,40 @@ impl SettingsWindow {
         ui.add_space(6.0);
 
         card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Restore all windows");
+                let on = self.config.window.restore_all_windows;
+                if toggle_switch(ui, on).clicked() {
+                    self.config.window.restore_all_windows = !on;
+                    dirty = true;
+                }
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(if on { "Enabled" } else { "Disabled" }).color(if on {
+                        egui::Color32::from_rgb(120, 220, 140)
+                    } else {
+                        egui::Color32::from_rgb(140, 150, 175)
+                    }),
+                );
+            });
+            self.highlight_row(
+                ui,
+                hr.response.rect,
+                Section::Workspaces,
+                "Restore all windows",
+            );
+            sublabel(
+                ui,
+                "Reopen every window that was open at exit, each with its own tabs, \
+                 splits and geometry. Disable to reopen only the first window. A window \
+                 you close on its own is not brought back \u{2014} only the ones open when \
+                 you quit.",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        card(ui, |ui| {
             let on = self.config.window.session_autosave_secs > 0;
             let hr = ui.horizontal(|ui| {
                 field_label(ui, "Autosave session");
