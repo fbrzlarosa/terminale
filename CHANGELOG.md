@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.48]
+
+### Changed
+- **russh 0.63.** Host-key verification follows the new API, where the server's
+  identity arrives as a key *or* a certificate. A plain key behaves exactly as
+  before. A host certificate is refused: trusting one means checking the CA that
+  signed it — an `@cert-authority` line — which this known-hosts store does not
+  implement, and pinning the key inside the certificate would look like
+  verification while checking nothing the CA vouches for. Not reachable in
+  practice, since terminale never offers a certificate host-key algorithm.
+
 ### Fixed
 - **Restoring the last session brought back one window, whatever you had open.**
   With `window.restore_session = "last_session"`, everything but the primary
@@ -1622,7 +1634,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...HEAD
+[0.1.48]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...v0.1.45
