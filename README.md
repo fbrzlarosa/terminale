@@ -110,6 +110,11 @@ A lot already works and is covered by tests. Here's the honest state.
 - **Split panes** — split any pane horizontally or vertically, nest the splits
   arbitrarily, focus and swap panes, each with its own title and close button;
   the inactive panes dim so the focused one is obvious.
+- **Session restore** — reopen what you left: every window, its tabs and nested
+  splits, each pane's last working directory, the window geometry and the monitor
+  it was on. Layout only by design — the shells are new, so nothing half-finished
+  comes back to life. Off by default (**Settings → Workspaces**), next to named
+  workspaces you save and reload by hand.
 - **Proactive AI suggestion bar** — a strip pinned to the window bottom that
   reads recent terminal output and asks the configured AI provider for the
   *next* command. Idle-debounced, with a scanning animation while it thinks, and

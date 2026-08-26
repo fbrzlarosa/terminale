@@ -248,6 +248,11 @@ fn default_restore_window_geometry() -> bool {
     true
 }
 
+/// Convenience: every window of the last session is restored by default.
+fn default_restore_all_windows() -> bool {
+    true
+}
+
 /// Convenience: zen mode enters full-screen by default.
 fn default_zen_fullscreen() -> bool {
     true
@@ -356,6 +361,15 @@ pub struct WindowConfig {
     /// window opens at its default geometry. Default `true`.
     #[serde(default = "default_restore_window_geometry")]
     pub restore_window_geometry: bool,
+    /// When `restore_session` is active, restore **every** window that was
+    /// open at exit — each with its own tabs, splits, geometry and monitor —
+    /// instead of only the primary one. A window closed on its own and left
+    /// closed for at least one autosave cycle is not resurrected; a whole
+    /// batch of windows closed together (i.e. quitting the app) all come back.
+    /// Set to `false` to reopen just the primary window's layout.
+    /// Default `true`.
+    #[serde(default = "default_restore_all_windows")]
+    pub restore_all_windows: bool,
     /// How often the "last session" snapshot is auto-saved to disk while the
     /// app is running, in seconds. `0` means "save only on graceful close"
     /// (the legacy behaviour — a crash or power loss will lose the session).
@@ -389,6 +403,7 @@ impl Default for WindowConfig {
             restore_session: RestoreSession::Off,
             restore_working_dirs: true,
             restore_window_geometry: true,
+            restore_all_windows: true,
             session_autosave_secs: default_session_autosave_secs(),
         }
     }

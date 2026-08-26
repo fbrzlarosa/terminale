@@ -2,12 +2,19 @@
 //!
 //! # Data model
 //!
-//! A [`SavedWorkspace`] is a flat description of an entire multi-window
-//! session (currently limited to one window's worth of tabs — multi-window
-//! restore is noted as future work). Each [`SavedTab`] carries a recursive
+//! A [`SavedWorkspace`] describes an entire session. The last-session
+//! snapshot lists every top-level window in [`SavedWorkspace::windows`], each
+//! a [`SavedWindow`] with its own tabs, active-tab index, tab-group registry
+//! and window-level geometry. Each [`SavedTab`] carries a recursive
 //! [`SavedPaneTree`] that mirrors the live `PaneNode` structure, with
 //! leaf nodes extended to hold the profile name, last working directory, and
 //! display title.
+//!
+//! The flat `tabs` / `active_tab` / `tab_groups` / `window` fields at the root
+//! mirror the *first* window. They are what named workspaces use (a named
+//! workspace is always one window's layout), and they keep the file readable
+//! by builds that predate multi-window restore — a downgrade reopens the
+//! primary window instead of finding nothing.
 //!
 //! # On-disk format
 //!
@@ -151,16 +158,65 @@ pub(crate) struct SavedWindowState {
     pub(crate) quake_monitor: Option<String>,
 }
 
-/// Root of a saved workspace — a list of saved tabs.
+/// One saved top-level window: everything needed to bring that window back —
+/// its tabs and splits, which tab was active, its tab-group registry, and its
+/// geometry / monitor / Quake state.
 ///
-/// Multiple windows are not yet serialised; this struct is kept flat so
-/// it's trivial to extend later.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Scalars are declared before the nested tables on purpose: TOML requires
+/// plain values to precede the tables of the same parent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct SavedWindow {
+    /// Which tab was active in this window at save time.
+    #[serde(default)]
+    pub(crate) active_tab: usize,
+    /// The next tab-group id to use after restore, so newly-created groups
+    /// never collide with restored ones.
+    #[serde(default)]
+    pub(crate) next_group_id: u32,
+    /// This window had keyboard focus at save time; the restore focuses the
+    /// window rebuilt from it. At most one saved window is `true`.
+    #[serde(default)]
+    pub(crate) focused: bool,
+    /// Geometry / monitor / Quake state for this window.
+    #[serde(default)]
+    pub(crate) window: Option<SavedWindowState>,
+    /// The tabs in order. Index 0 corresponds to the leftmost tab.
+    #[serde(default)]
+    pub(crate) tabs: Vec<SavedTab>,
+    /// Tab group definitions referenced by this window's per-tab `group` ids.
+    #[serde(default)]
+    pub(crate) tab_groups: Vec<SavedTabGroup>,
+}
+
+impl SavedWindow {
+    /// Present this window as a [`SavedWorkspace`] so it can be handed to the
+    /// single-window restore executor.
+    pub(crate) fn into_workspace(self) -> SavedWorkspace {
+        SavedWorkspace {
+            name: String::new(),
+            tabs: self.tabs,
+            active_tab: self.active_tab,
+            tab_groups: self.tab_groups,
+            next_group_id: self.next_group_id,
+            window: self.window,
+            windows: Vec::new(),
+        }
+    }
+}
+
+/// Root of a saved workspace.
+///
+/// For the last-session snapshot the authoritative content is `windows` (one
+/// entry per top-level window). The flat fields mirror `windows[0]`; for a
+/// named workspace — always a single window's layout — they are the only
+/// content and `windows` is empty. See the module docs.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct SavedWorkspace {
     /// Human-readable name (populated when saving; empty for `last_session`).
     #[serde(default)]
     pub(crate) name: String,
     /// The tabs in order. Index 0 corresponds to the leftmost tab.
+    #[serde(default)]
     pub(crate) tabs: Vec<SavedTab>,
     /// Which tab was active at save time.
     #[serde(default)]
@@ -176,6 +232,45 @@ pub(crate) struct SavedWorkspace {
     /// for sessions saved before this field existed.
     #[serde(default)]
     pub(crate) window: Option<SavedWindowState>,
+    /// Every top-level window of the saved session, in creation order.
+    ///
+    /// Empty for named workspaces and for last-session files written before
+    /// multi-window restore existed — [`SavedWorkspace::into_window_list`]
+    /// folds those down to a single window built from the flat fields.
+    ///
+    /// Declared last because TOML needs an array-of-tables to come after
+    /// every plain value of the same parent.
+    #[serde(default)]
+    pub(crate) windows: Vec<SavedWindow>,
+}
+
+impl SavedWorkspace {
+    /// Normalise a loaded document into a per-window list, dropping windows
+    /// that carry no tabs (nothing to rebuild).
+    ///
+    /// A document written by a build that predates multi-window restore — and
+    /// every named workspace — only has the flat fields, and becomes a
+    /// single-window list.
+    pub(crate) fn into_window_list(self) -> Vec<SavedWindow> {
+        if !self.windows.is_empty() {
+            return self
+                .windows
+                .into_iter()
+                .filter(|w| !w.tabs.is_empty())
+                .collect();
+        }
+        if self.tabs.is_empty() {
+            return Vec::new();
+        }
+        vec![SavedWindow {
+            active_tab: self.active_tab,
+            next_group_id: self.next_group_id,
+            focused: true,
+            window: self.window,
+            tabs: self.tabs,
+            tab_groups: self.tab_groups,
+        }]
+    }
 }
 
 // ── Capture: live state → SavedWorkspace ─────────────────────────────────────
@@ -295,9 +390,41 @@ pub(crate) fn capture_workspace_with_groups(
         active_tab: active_tab.min(tabs.len().saturating_sub(1)),
         tab_groups: saved_groups,
         next_group_id,
-        // Window-level state is attached by `save_last_session` for the
+        // Window-level state is attached by `capture_window` for the
         // auto-snapshot path; named workspaces don't carry it.
         window: None,
+        // Named workspaces are one window's layout; the multi-window list is
+        // only assembled for the last-session snapshot.
+        windows: Vec::new(),
+    }
+}
+
+/// Capture one live window — its tabs, active tab, groups and window-level
+/// state — into a [`SavedWindow`] for the multi-window last-session snapshot.
+pub(crate) fn capture_window(
+    tabs: &[crate::TabState],
+    active_tab: usize,
+    restore_working_dirs: bool,
+    tab_groups: &[crate::TabGroup],
+    next_group_id: u32,
+    window: SavedWindowState,
+    focused: bool,
+) -> SavedWindow {
+    let ws = capture_workspace_with_groups(
+        tabs,
+        active_tab,
+        "",
+        restore_working_dirs,
+        tab_groups,
+        next_group_id,
+    );
+    SavedWindow {
+        active_tab: ws.active_tab,
+        next_group_id: ws.next_group_id,
+        focused,
+        window: Some(window),
+        tabs: ws.tabs,
+        tab_groups: ws.tab_groups,
     }
 }
 
@@ -570,28 +697,37 @@ pub(crate) fn list_workspaces() -> Vec<(String, PathBuf)> {
     out
 }
 
-/// Save the auto last-session snapshot to disk, including window-level state
-/// (geometry / monitor / Quake) so the next launch reopens exactly as it was.
-pub(crate) fn save_last_session(
-    tabs: &[crate::TabState],
-    active_tab: usize,
-    restore_working_dirs: bool,
-    tab_groups: &[crate::TabGroup],
-    next_group_id: u32,
-    window: SavedWindowState,
-) {
+/// Assemble the on-disk last-session document from a per-window list.
+///
+/// The first window is *also* mirrored into the flat root fields so a build
+/// that predates multi-window restore still reopens the primary window rather
+/// than finding a file it cannot read.
+fn session_document(windows: Vec<SavedWindow>) -> SavedWorkspace {
+    let first = windows.first().cloned().unwrap_or_default();
+    SavedWorkspace {
+        name: String::new(),
+        tabs: first.tabs,
+        active_tab: first.active_tab,
+        tab_groups: first.tab_groups,
+        next_group_id: first.next_group_id,
+        window: first.window,
+        windows,
+    }
+}
+
+/// Save the auto last-session snapshot to disk: every window, each with its
+/// own tabs and window-level state (geometry / monitor / Quake), so the next
+/// launch reopens exactly as it was.
+///
+/// Writing an empty list would wipe a good snapshot, so it is a no-op.
+pub(crate) fn save_last_session(windows: Vec<SavedWindow>) {
+    if windows.is_empty() {
+        return;
+    }
     let Some(path) = terminale_config::paths::last_session_path() else {
         return;
     };
-    let mut ws = capture_workspace_with_groups(
-        tabs,
-        active_tab,
-        "",
-        restore_working_dirs,
-        tab_groups,
-        next_group_id,
-    );
-    ws.window = Some(window);
+    let ws = session_document(windows);
     if let Err(e) = write_workspace(&path, &ws) {
         tracing::warn!(?e, "failed to save last session");
     }
@@ -602,25 +738,14 @@ pub(crate) fn save_last_session(
 ///
 /// Used by the periodic autosave so it can diff the fresh text against what was
 /// last written and skip the disk write (and its `fsync`) when nothing changed.
-/// Returns `None` if no data directory is available or serialisation fails.
-pub(crate) fn capture_last_session_text(
-    tabs: &[crate::TabState],
-    active_tab: usize,
-    restore_working_dirs: bool,
-    tab_groups: &[crate::TabGroup],
-    next_group_id: u32,
-    window: SavedWindowState,
-) -> Option<(PathBuf, String)> {
+/// Returns `None` for an empty window list, when no data directory is available,
+/// or when serialisation fails.
+pub(crate) fn capture_last_session_text(windows: Vec<SavedWindow>) -> Option<(PathBuf, String)> {
+    if windows.is_empty() {
+        return None;
+    }
     let path = terminale_config::paths::last_session_path()?;
-    let mut ws = capture_workspace_with_groups(
-        tabs,
-        active_tab,
-        "",
-        restore_working_dirs,
-        tab_groups,
-        next_group_id,
-    );
-    ws.window = Some(window);
+    let ws = session_document(windows);
     let text = toml::to_string_pretty(&ws).ok()?;
     Some((path, text))
 }
@@ -745,6 +870,7 @@ mod tests {
             tab_groups: Vec::new(),
             next_group_id: 0,
             window: None,
+            windows: Vec::new(),
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -797,6 +923,7 @@ mod tests {
             ],
             next_group_id: 3,
             window: None,
+            windows: Vec::new(),
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -853,6 +980,7 @@ cwd = "/home"
             tab_groups: Vec::new(), // group 99 was deleted
             next_group_id: 100,
             window: None,
+            windows: Vec::new(),
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -999,6 +1127,7 @@ cwd = "/home"
                 quake_visible: true,
                 quake_monitor: Some("DELL U2720Q".into()),
             }),
+            windows: Vec::new(),
         };
         let s = toml::to_string_pretty(&ws).unwrap();
         let de: SavedWorkspace = toml::from_str(&s).unwrap();
@@ -1014,5 +1143,125 @@ cwd = "/home"
         // still load, with `window` defaulting to `None`.
         let de: SavedWorkspace = toml::from_str("tabs = []\n").unwrap();
         assert!(de.window.is_none());
+    }
+
+    // ── Multi-window sessions ─────────────────────────────────────────────────
+
+    /// One saved window holding a single-pane tab, at the given geometry.
+    fn saved_window(profile: &str, cwd: &str, rect: (i32, i32, u32, u32)) -> SavedWindow {
+        SavedWindow {
+            active_tab: 0,
+            next_group_id: 0,
+            focused: false,
+            window: Some(SavedWindowState {
+                rect: Some(rect),
+                monitor: Some("DELL U2720Q".into()),
+                quake_visible: false,
+                quake_monitor: None,
+            }),
+            tabs: vec![SavedTab {
+                title: None,
+                tree: leaf(profile, cwd),
+                group: None,
+            }],
+            tab_groups: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn multi_window_session_roundtrip() {
+        let mut second = saved_window("bash", "/home/b", (1920, 0, 900, 700));
+        second.focused = true;
+        second.active_tab = 0;
+        let doc = session_document(vec![
+            saved_window("zsh", "/home/a", (10, 20, 800, 600)),
+            second,
+        ]);
+        let text = toml::to_string_pretty(&doc).expect("multi-window session must serialise");
+        let de: SavedWorkspace = toml::from_str(&text).expect("and parse back");
+        let list = de.into_window_list();
+        assert_eq!(list.len(), 2, "both windows must survive the roundtrip");
+        assert_eq!(
+            list[0].window.as_ref().unwrap().rect,
+            Some((10, 20, 800, 600))
+        );
+        assert_eq!(
+            list[1].window.as_ref().unwrap().rect,
+            Some((1920, 0, 900, 700))
+        );
+        assert!(!list[0].focused);
+        assert!(list[1].focused, "the focused window must be marked");
+    }
+
+    #[test]
+    fn multi_window_session_mirrors_first_window_into_flat_fields() {
+        // A build that predates multi-window restore reads only the flat
+        // fields; it must still find the primary window there.
+        let doc = session_document(vec![
+            saved_window("zsh", "/home/a", (10, 20, 800, 600)),
+            saved_window("bash", "/home/b", (1920, 0, 900, 700)),
+        ]);
+        let text = toml::to_string_pretty(&doc).unwrap();
+        let de: SavedWorkspace = toml::from_str(&text).unwrap();
+        assert_eq!(de.tabs.len(), 1);
+        assert_eq!(de.window.as_ref().unwrap().rect, Some((10, 20, 800, 600)));
+        match &de.tabs[0].tree {
+            SavedPaneTree::Leaf { profile, .. } => {
+                assert_eq!(profile.as_deref(), Some("zsh"));
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn flat_session_loads_as_one_window() {
+        // A file written before `windows` existed (and every named workspace)
+        // folds down to a single window built from the flat fields.
+        let ws = SavedWorkspace {
+            name: String::new(),
+            tabs: vec![SavedTab {
+                title: Some("only".into()),
+                tree: leaf("fish", "/home/c"),
+                group: None,
+            }],
+            active_tab: 0,
+            tab_groups: Vec::new(),
+            next_group_id: 3,
+            window: Some(SavedWindowState {
+                rect: Some((5, 6, 700, 500)),
+                ..SavedWindowState::default()
+            }),
+            windows: Vec::new(),
+        };
+        let list = ws.into_window_list();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].tabs.len(), 1);
+        assert_eq!(list[0].next_group_id, 3);
+        assert_eq!(
+            list[0].window.as_ref().unwrap().rect,
+            Some((5, 6, 700, 500))
+        );
+        assert!(list[0].focused, "a lone restored window must take focus");
+    }
+
+    #[test]
+    fn empty_session_yields_no_windows() {
+        // Nothing to rebuild → no windows, so the restore path stays inert
+        // instead of opening blank windows.
+        let empty = SavedWorkspace::default();
+        assert!(empty.into_window_list().is_empty());
+        let doc = session_document(vec![SavedWindow::default()]);
+        assert!(
+            doc.into_window_list().is_empty(),
+            "a window with no tabs is not restorable"
+        );
+    }
+
+    #[test]
+    fn tabless_windows_never_reach_disk() {
+        // `save_last_session` refuses an empty list so a clean shutdown with
+        // nothing open cannot wipe a good snapshot; the same emptiness check
+        // is what `capture_last_session_text` reports as `None`.
+        assert!(capture_last_session_text(Vec::new()).is_none());
     }
 }
