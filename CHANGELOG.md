@@ -480,7 +480,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - **The captured command is the command, not the prompt plus the command.**
   Command text was recovered by reading the prompt line off the grid, which
   cannot tell `[user@host ~]$ ` apart from what was typed — so a captured command
-  came out as `[rubber@host ~]$ cargo test`, and that string is what got re-run by
+  came out as `[user@host ~]$ cargo test`, and that string is what got re-run by
   rerun-last-command, sent to the AI, and copied. The bash hook now reports the
   command line explicitly with `OSC 633;E` (read from history, so a pipeline is
   reported whole), which takes priority over grid scraping.
