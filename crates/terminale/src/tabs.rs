@@ -1268,8 +1268,8 @@ mod tests {
         // On Windows the backslash is the path separator, NOT special: a clean
         // Windows path must stay unquoted in Auto mode (raw paths are what
         // Claude Code wants), so it does NOT "need quoting".
-        assert!(!path_needs_quoting(r"C:\Users\Rubber\image.png", true));
-        assert!(!path_needs_quoting("C:/Users/Rubber/image.png", true));
+        assert!(!path_needs_quoting(r"C:\Users\dev\image.png", true));
+        assert!(!path_needs_quoting("C:/Users/dev/image.png", true));
     }
 
     #[test]

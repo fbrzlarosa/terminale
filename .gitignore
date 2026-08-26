@@ -35,6 +35,11 @@ Cargo.lock.bak
 Thumbs.db
 desktop.ini
 
+# Local agent context (project rules, skills, memories): local-only by design,
+# and this is a public repo. Excluded here rather than only in
+# .git/info/exclude so the exclusion survives a fresh clone.
+.claude/
+
 # Local config / secrets
 .env
 .env.local
