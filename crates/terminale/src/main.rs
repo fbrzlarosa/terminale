@@ -8484,7 +8484,22 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // events during a drag; applying each individually means a
                 // PTY repaint emitted at size N1 gets parsed at size N2.
                 state.pending_resize = Some(new_size);
-                state.window.request_redraw();
+                // ...but NOT while a Quake open/close animation is running.
+                // That animation resizes the window itself, once per frame, and
+                // paints each frame directly; it also drains `pending_resize`
+                // on its own. Asking for a redraw here too would paint the same
+                // frame a second time — and, worse, wake the event loop, whose
+                // idle callback re-enters the animation pump, which resizes the
+                // window again, which fires this event again. That loop ran a
+                // single 350 ms close at 114 frames (327 fps), half of them
+                // re-applying a rect identical to the previous frame's, which
+                // is what made the animation look slow: the compositor cannot
+                // keep up with a window resizing itself hundreds of times a
+                // second. The pump's frame-rate gate bounds the cadence; this
+                // stops the loop from being self-driving in the first place.
+                if state.quake_anim.is_none() {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::Moved(_) => {
                 // The window has been dragged to a new position — update the
@@ -9383,6 +9398,15 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // Apply a coalesced resize (if any) before draining PTY
                 // output — this ensures any ConPTY repaint triggered by the
                 // resize is parsed at the correct new grid size.
+                //
+                // This path must keep PAINTING even mid-Quake-animation, not
+                // just reconfigure. Reconfiguring the surface without ever
+                // presenting to it starves the swapchain of images, and the
+                // animation pump's next acquire then blocks until it times
+                // out — a measured 951 ms inside a single `render_main`, which
+                // ate an entire 350 ms close and left it snapping shut after
+                // two frames. Every `resize` here has to be followed by a
+                // present.
                 if let Some(new_size) = state.pending_resize.take() {
                     state.renderer.resize(new_size.width, new_size.height);
                     // Mid Quake-animation (or while hidden) the surface tracks
@@ -11512,6 +11536,16 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             self.reregister_quake_hotkey(&binding);
         }
         if let Some(d) = next_wake {
+            // Schedule the deadline from `now` — the instant captured at the
+            // TOP of this tick — not from a fresh `Instant::now()` here. The
+            // requested delay is a target *period*, and everything between
+            // those two points (PTY drains, and above all the synchronous
+            // repaint an in-flight Quake animation does) happens inside it.
+            // Stamping the deadline after that work makes the wait additive to
+            // it instead: with a repaint that blocks ~9 ms on the compositor,
+            // a 16 ms request became a ~26 ms period and a 60 fps animation
+            // ran at ~39. If the tick already overran the period the deadline
+            // is in the past and the loop wakes immediately, which is right.
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + d));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -14676,6 +14710,22 @@ struct QuakeAnim {
     from: terminale_config::WindowRect,
     /// Which animation variant is running.
     anim_kind: terminale_config::QuakeAnimation,
+    /// Timing curve for this animation.
+    easing: terminale_config::QuakeEasing,
+    /// Minimum wall-clock gap between two animation frames.
+    ///
+    /// The pump is driven from `about_to_wait`, which fires on every event
+    /// batch rather than on a timer, so the `ControlFlow::WaitUntil` deadline
+    /// it returns is only an upper bound on the gap. The window-resize events
+    /// the animation itself produces wake the loop immediately, and without
+    /// this floor the pump re-renders as fast as the machine allows.
+    frame_budget: std::time::Duration,
+    /// When the last frame was actually rendered, for the `frame_budget` gate.
+    last_frame: Option<std::time::Instant>,
+    /// The last rect handed to the OS. A frame whose interpolated rect rounds
+    /// to the same integers as the previous one has nothing new to show, so it
+    /// is skipped instead of costing another full repaint.
+    last_rect: Option<terminale_config::WindowRect>,
 }
 
 /// Cheap structural equality check used to decide whether the settings
@@ -17165,6 +17215,42 @@ mod tests {
         assert!(
             ssh_secret_needed(&host).is_err(),
             "key auth without key_path must be an error"
+        );
+    }
+
+    // ── anim_frame_budget ─────────────────────────────────────────────────────
+
+    #[test]
+    fn anim_frame_budget_matches_the_requested_rate() {
+        use crate::window_anim::anim_frame_budget;
+        assert_eq!(anim_frame_budget(60).as_micros(), 16_666);
+        assert_eq!(anim_frame_budget(120).as_micros(), 8_333);
+        assert_eq!(anim_frame_budget(30).as_micros(), 33_333);
+    }
+
+    #[test]
+    fn anim_frame_budget_clamps_absurd_rates() {
+        use crate::window_anim::anim_frame_budget;
+        // 0 fps would divide by zero and an unbounded rate would defeat the
+        // gate entirely — the two failure modes the clamp exists to stop.
+        assert_eq!(anim_frame_budget(0), anim_frame_budget(15));
+        assert_eq!(anim_frame_budget(1), anim_frame_budget(15));
+        assert_eq!(anim_frame_budget(100_000), anim_frame_budget(240));
+    }
+
+    #[test]
+    fn anim_frame_budget_bounds_a_toggle_to_a_sane_frame_count() {
+        use crate::window_anim::anim_frame_budget;
+        // Regression guard for the measured defect: a 350 ms close rendered
+        // 114 frames (327 fps), 55 of them re-applying a rect identical to the
+        // previous frame's. At the default rate the same close is bounded to
+        // about 21 frames.
+        let budget = anim_frame_budget(60);
+        #[allow(clippy::cast_possible_truncation)]
+        let frames = 350_000 / budget.as_micros();
+        assert!(
+            (18..=24).contains(&frames),
+            "a 350 ms toggle should be ~21 frames at 60 fps, got {frames}"
         );
     }
 

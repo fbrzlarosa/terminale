@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **The Quake open/close animation was slow on Linux, and the close barely
+  animated at all.** Two independent causes, both measured on X11/XWayland with
+  a 350 ms slide:
+  - The animation drove itself in a loop. Its pump runs from the event loop's
+    idle callback, which fires on every event batch rather than on a timer, so
+    the `WaitUntil` deadline it returned was only an upper bound. Each frame
+    resized the window, which produced a resize event, which woke the loop, which
+    re-entered the pump — so one 350 ms close rendered **114 frames (327 fps)**,
+    55 of them re-applying a rect identical to the previous frame's and each
+    costing a full repaint. A compositor cannot keep up with a window resizing
+    itself hundreds of times a second, which is what made the animation look
+    slow. The pump now honours a frame-rate budget, skips frames whose
+    interpolated rect rounds to the geometry already applied, and the resize
+    handler no longer asks for a redraw while an animation owns the painting.
+    The same close now runs in **20 frames at 58 fps with nothing redundant**.
+  - Both directions eased *out*. On a close that meant collapsing almost at once
+    and then creeping: at half of a 350 ms close the window was already down to
+    14 % of its height, and the remaining 175 ms animated something too small to
+    see. The default curve is now `mirror` — the close is the open played
+    backwards.
+- **A Quake animation kept painting into a window the compositor had stopped
+  scheduling.** Every other animation in the event loop already skipped frames
+  for an occluded or throttled window; this pump did not, so it could block
+  inside a surface acquire until it timed out. It is now gated the same way.
+
+### Added
+- **`quake.easing`** — timing curve for the open/close animation: `mirror`
+  (default), `ease_out` (the previous behaviour), `ease_in_out` or `linear`.
+- **`quake.animation_fps`** — repaint ceiling for the animation, 15–240
+  (default 60). Raise it on a high-refresh display, lower it to spend less GPU
+  per toggle.
+
+Both are in **Settings → Quake**, under the existing animation controls.
+
 
 ## [0.1.48]
 
