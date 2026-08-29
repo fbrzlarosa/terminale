@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+
+## [0.1.49]
+
 ### Fixed
 - **The Quake open/close animation was slow on Linux, and the close barely
   animated at all.** Two independent causes, both measured on X11/XWayland with
@@ -1669,7 +1672,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...HEAD
+[0.1.49]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
