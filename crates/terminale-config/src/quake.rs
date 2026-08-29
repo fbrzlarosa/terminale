@@ -45,6 +45,84 @@ pub enum QuakeAnimation {
     Fade,
 }
 
+/// Timing curve for the Quake open/close animation.
+///
+/// The curve maps linear time onto animation progress. It is what decides
+/// whether the drop-down *feels* snappy or sluggish at a given
+/// `animation_ms` — a duration alone does not, because a curve that spends
+/// most of its time near the end leaves the window crawling the last few
+/// pixels long after the eye has stopped following it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum QuakeEasing {
+    /// Mirror (default): ease-out cubic on open, ease-in cubic on close, so
+    /// the close is exactly the open played backwards. This is what keeps a
+    /// close from collapsing almost instantly and then creeping the last few
+    /// pixels for the rest of the duration.
+    #[default]
+    Mirror,
+    /// Ease-out cubic in both directions — fast off the mark, settling at the
+    /// end. This was the behaviour before the mirror default; a close spends
+    /// most of its time nearly finished.
+    EaseOut,
+    /// Ease-in-out cubic in both directions — gentle at both ends.
+    EaseInOut,
+    /// Constant speed, no easing.
+    Linear,
+}
+
+impl QuakeEasing {
+    /// All variants in display order — useful for UI dropdowns.
+    #[must_use]
+    pub fn all() -> [Self; 4] {
+        [Self::Mirror, Self::EaseOut, Self::EaseInOut, Self::Linear]
+    }
+
+    /// Human-readable label for UI rendering.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Mirror => "Mirror (open eases out, close eases in)",
+            Self::EaseOut => "Ease out",
+            Self::EaseInOut => "Ease in-out",
+            Self::Linear => "Linear",
+        }
+    }
+
+    /// Map linear progress `t` (0..=1) onto eased progress for one direction.
+    ///
+    /// `showing` selects the direction: an open interpolates from the
+    /// collapsed rect to the resting rect, a close does the reverse, so
+    /// [`Self::Mirror`] flips the curve to keep the two motions time-reverses
+    /// of each other.
+    #[must_use]
+    pub fn apply(self, t: f32, showing: bool) -> f32 {
+        let t = t.clamp(0.0, 1.0);
+        let ease_out = |t: f32| 1.0 - (1.0 - t).powi(3);
+        let ease_in = |t: f32| t.powi(3);
+        let ease_in_out = |t: f32| {
+            if t < 0.5 {
+                4.0 * t.powi(3)
+            } else {
+                1.0 - (-2.0f32).mul_add(t, 2.0).powi(3) / 2.0
+            }
+        };
+        match self {
+            Self::Mirror => {
+                if showing {
+                    ease_out(t)
+                } else {
+                    ease_in(t)
+                }
+            }
+            Self::EaseOut => ease_out(t),
+            Self::EaseInOut => ease_in_out(t),
+            Self::Linear => t,
+        }
+    }
+}
+
 impl QuakeAnimation {
     /// All variants in display order — useful for UI dropdowns.
     #[must_use]
@@ -173,6 +251,20 @@ pub struct QuakeConfig {
     pub animation: QuakeAnimation,
     /// Animation duration in milliseconds. Clamped to a sane range when used.
     pub animation_ms: u32,
+    /// Timing curve for the open/close animation. Defaults to
+    /// [`QuakeEasing::Mirror`].
+    pub easing: QuakeEasing,
+    /// Frame rate the open/close animation is driven at, in frames per second.
+    /// Clamped to `15..=240` when applied.
+    ///
+    /// This is a **ceiling, not a target**: the animation pump runs from the
+    /// event loop's idle callback, which fires on every event batch, not on a
+    /// timer. Without a cap, the window-resize events the animation itself
+    /// generates wake the loop again immediately and the pump re-renders
+    /// hundreds of times a second — measured at 327 fps for a single 350 ms
+    /// close on X11 — which saturates the compositor and makes the animation
+    /// look *slower*, not smoother. Default: `60`.
+    pub animation_fps: u32,
     /// Which edge to dock to. `Off` (default) preserves the legacy
     /// "free-floating with exact-geometry restore" behaviour.
     pub edge: QuakeEdge,
@@ -208,6 +300,8 @@ impl Default for QuakeConfig {
         Self {
             animation: QuakeAnimation::default(),
             animation_ms: 120,
+            easing: QuakeEasing::default(),
+            animation_fps: 60,
             edge: QuakeEdge::default(),
             display: QuakeDisplay::default(),
             size_percent: 0.5,
@@ -235,6 +329,12 @@ impl QuakeConfig {
             return Err(ConfigError::Invalid {
                 field: "quake.margin_px",
                 message: "must be at most 2000",
+            });
+        }
+        if !(15..=240).contains(&self.animation_fps) {
+            return Err(ConfigError::Invalid {
+                field: "quake.animation_fps",
+                message: "must be between 15 and 240",
             });
         }
         Ok(())
@@ -345,5 +445,134 @@ mod tests {
         let back: QuakeConfig = toml::from_str(&s).unwrap();
         assert!(!back.restore_visible);
         assert!(back.show_on_all_desktops);
+    }
+
+    #[test]
+    fn easing_defaults_to_mirror_and_fps_to_60() {
+        let c = QuakeConfig::default();
+        assert_eq!(c.easing, QuakeEasing::Mirror);
+        assert_eq!(c.animation_fps, 60);
+    }
+
+    #[test]
+    fn easing_all_and_labels_are_distinct() {
+        let all = QuakeEasing::all();
+        assert_eq!(all.len(), 4);
+        let mut seen = std::collections::HashSet::new();
+        for e in all {
+            assert!(seen.insert(e.label()), "duplicate label: {}", e.label());
+        }
+    }
+
+    #[test]
+    fn easing_endpoints_are_exact_in_both_directions() {
+        // Whatever the curve, an animation must start where it starts and land
+        // exactly on its target — otherwise the final frame snaps.
+        for e in QuakeEasing::all() {
+            for showing in [true, false] {
+                assert!((e.apply(0.0, showing) - 0.0).abs() < 1e-6, "{e:?} at t=0");
+                assert!((e.apply(1.0, showing) - 1.0).abs() < 1e-6, "{e:?} at t=1");
+            }
+        }
+    }
+
+    #[test]
+    fn easing_is_monotonic_and_bounded() {
+        for e in QuakeEasing::all() {
+            for showing in [true, false] {
+                let mut prev = 0.0_f32;
+                for i in 0..=100 {
+                    #[allow(clippy::cast_precision_loss)]
+                    let v = e.apply(i as f32 / 100.0, showing);
+                    assert!((0.0..=1.0).contains(&v), "{e:?} out of range: {v}");
+                    assert!(v >= prev - 1e-6, "{e:?} went backwards at t={i}");
+                    prev = v;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mirror_close_is_the_open_played_backwards() {
+        // The whole point of the default curve: progress on a close at time t
+        // is the complement of progress on an open at time 1 - t. Easing a
+        // close *out*, as the code used to, made it collapse almost at once and
+        // then creep the last pixels for the rest of the duration.
+        let e = QuakeEasing::Mirror;
+        for i in 0..=100 {
+            #[allow(clippy::cast_precision_loss)]
+            let t = i as f32 / 100.0;
+            let open = e.apply(t, true);
+            let close = e.apply(1.0 - t, false);
+            assert!(
+                (open - (1.0 - close)).abs() < 1e-5,
+                "not a mirror at t={t}: open={open} close={close}"
+            );
+        }
+    }
+
+    #[test]
+    fn mirror_close_keeps_the_window_visible_past_the_halfway_point() {
+        // Regression guard for the reported "closing animation is slow": under
+        // the old ease-out close the window was down to 14 % of its height at
+        // half the duration and spent the remaining half crawling the last few
+        // pixels. A close must still be most of the way up at the midpoint.
+        let progress = QuakeEasing::Mirror.apply(0.5, false);
+        assert!(
+            progress < 0.25,
+            "close is {progress} done at the halfway point; it should still be near full size"
+        );
+    }
+
+    #[test]
+    fn ease_out_preserves_the_previous_behaviour() {
+        // Kept as an explicit opt-in, so a user who preferred the old feel can
+        // still ask for it.
+        let e = QuakeEasing::EaseOut;
+        assert!((e.apply(0.5, true) - e.apply(0.5, false)).abs() < 1e-6);
+        assert!(e.apply(0.5, false) > 0.8);
+    }
+
+    #[test]
+    fn animation_fps_out_of_range_is_rejected() {
+        for bad in [0_u32, 14, 241, 10_000] {
+            let c = QuakeConfig {
+                animation_fps: bad,
+                ..QuakeConfig::default()
+            };
+            assert!(c.validate().is_err(), "{bad} fps should not validate");
+        }
+        for ok in [15_u32, 60, 144, 240] {
+            let c = QuakeConfig {
+                animation_fps: ok,
+                ..QuakeConfig::default()
+            };
+            assert!(c.validate().is_ok(), "{ok} fps should validate");
+        }
+    }
+
+    #[test]
+    fn easing_and_fps_round_trip_through_toml() {
+        let c = QuakeConfig {
+            easing: QuakeEasing::EaseInOut,
+            animation_fps: 144,
+            ..QuakeConfig::default()
+        };
+        let s = toml::to_string(&c).unwrap();
+        let back: QuakeConfig = toml::from_str(&s).unwrap();
+        assert_eq!(back.easing, QuakeEasing::EaseInOut);
+        assert_eq!(back.animation_fps, 144);
+    }
+
+    #[test]
+    fn a_config_without_the_new_keys_still_loads() {
+        // Existing user configs predate `easing`/`animation_fps`; they must keep
+        // loading with the defaults rather than falling back wholesale.
+        let back: QuakeConfig =
+            toml::from_str("animation = \"bounce\"\nanimation_ms = 200\n").unwrap();
+        assert_eq!(back.animation, QuakeAnimation::Bounce);
+        assert_eq!(back.animation_ms, 200);
+        assert_eq!(back.easing, QuakeEasing::Mirror);
+        assert_eq!(back.animation_fps, 60);
     }
 }
