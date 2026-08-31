@@ -139,7 +139,7 @@ keyring = { version = "3", default-features = false }
 # user passphrase feeds an XChaCha20-Poly1305 AEAD (24-byte nonce, so no
 # nonce-reuse risk) for the import/export file.
 chacha20poly1305 = "0.11"
-argon2 = "0.5"
+argon2 = "0.6"
 
 # Native file open/save dialogs for the Settings import/export. Sync API. On
 # Linux the XDG desktop portal backend avoids a GTK link; on Windows it's the
