@@ -1,0 +1,45 @@
+# CodeQL configuration for the Audit workflow.
+#
+# Passed to `github/codeql-action/init` via its `config-file` input in
+# .github/workflows/audit.yml. Everything not touched here keeps the default
+# query suite for the language.
+
+name: "terminale CodeQL config"
+
+query-filters:
+  # `rust/hard-coded-cryptographic-value` produces only false positives on this
+  # workspace, and there is no narrower lever available to silence them.
+  #
+  # Why it fires. `crates/terminale-config/src/backup.rs` is the workspace's
+  # only keyed cryptography (Argon2id + XChaCha20-Poly1305 for encrypted
+  # settings backups; the `sha2` use in the updater is an unkeyed digest and is
+  # not a sink for this query). Every alert the query has ever raised on this
+  # repository — seven of them so far — points there, and every one has been a
+  # false positive:
+  #
+  #   * The test module feeds byte literals and an `include_bytes!` fixture to
+  #     `decrypt`, which slices a "salt" out of the file header. The literals
+  #     never reach the KDF at runtime — `decrypt` rejects them for bad magic or
+  #     short length first — but the query's taint flow does not model that
+  #     guard.
+  #   * `derive_key` declares `let mut key = [0u8; KEY_LEN]` as the output
+  #     buffer Argon2's `hash_password_into` writes into. CodeQL ships no model
+  #     for `argon2`, so nothing clears the zero literal's taint (the sole
+  #     recognised barrier is `getrandom::fill`), and the buffer is reported as
+  #     a hard-coded key. No rewrite of that function removes it: the query's
+  #     own test suite shows `vec![0u8; N]` taints identically.
+  #
+  # Why the filter is repo-wide. Dismissals are anchored to an alert's source
+  # location, so any edit that shifts those lines resurrects them as brand-new
+  # alerts — that is how #6 became #7 on the chacha20poly1305 0.11 bump.
+  # Rust has no `AlertSuppression.ql`, so inline `// codeql[rule-id]` comments
+  # are silently ignored (github/codeql#21637, fix PR #21638 still open), and
+  # `query-filters` offers no path selector. `paths-ignore` would work, but it
+  # would drop *every* query on the one file that actually handles key
+  # material — strictly worse than dropping this one query everywhere.
+  #
+  # Revisit when Rust gains alert-suppression comments, or when `argon2` is
+  # modelled upstream: either lets us restore the query and silence the four
+  # known flows individually.
+  - exclude:
+      id: rust/hard-coded-cryptographic-value

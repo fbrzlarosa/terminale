@@ -52,26 +52,33 @@ jobs:
   codeql:
     name: CodeQL analysis
     runs-on: ubuntu-latest
-    # CodeQL code scanning is unavailable on private repos without GitHub
-    # Advanced Security (the action fails with "repository not found"). Keep it
-    # non-blocking so the Audit workflow stays green while the repo is private;
-    # it runs for real (and free) once the repository is public.
-    continue-on-error: true
+    # Blocking. The repository is public, so CodeQL code scanning runs for
+    # real and for free; the old `continue-on-error` was there only to keep
+    # Audit green while the repo was private and the action failed with
+    # "repository not found". Note this gate fails on a broken *analysis*
+    # (extraction or upload), never on the alerts it finds — `analyze` has no
+    # failure threshold configured.
     permissions:
       security-events: write
     steps:
       - uses: actions/checkout@v7
+      # Needed by the build scripts CodeQL's Rust extractor runs (wayland,
+      # xcb, fontconfig and friends all probe the system via pkg-config).
       - name: Install Linux deps
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcb1-dev \
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libfontconfig1-dev libssl-dev libdbus-1-dev
+      - uses: dtolnay/rust-toolchain@stable
       - uses: github/codeql-action/init@v4.37.9
         with:
           languages: rust
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --workspace --all-features
+          config-file: ./.github/codeql/codeql-config.yml
+      # No `cargo build` step: Rust is a build-mode `none` language for CodeQL
+      # (its only supported mode). Extraction goes through rust-analyzer, which
+      # compiles build scripts and macros itself, so a full workspace build fed
+      # the analysis nothing and cost ten minutes of every run.
       - uses: github/codeql-action/analyze@v4.37.9
 
   unsafe-review:
