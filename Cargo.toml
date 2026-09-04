@@ -9,12 +9,12 @@ members = [
     "crates/terminale-ai",
     "crates/terminale-ssh",
     "crates/terminale-plugin",
+    "crates/terminale-ipc",
     "crates/terminale",
     "xtask",
 ]
 # Future crates (uncomment as milestones land):
 #   "crates/terminale-tmux-cc"   # v1.5 — tmux Control Mode integration
-#   "crates/terminale-ipc"       # v1.0 — multiplexer protocol
 #   "crates/terminale-sync"      # v2.0 — settings cloud sync
 default-members = ["crates/terminale"]
 # vendor/ holds patched third-party crates (see [patch.crates-io] below);
@@ -227,6 +227,7 @@ terminale-config = { path = "crates/terminale-config", version = "0.1.48" }
 terminale-ai = { path = "crates/terminale-ai", version = "0.1.48" }
 terminale-ssh = { path = "crates/terminale-ssh", version = "0.1.48" }
 terminale-plugin = { path = "crates/terminale-plugin", version = "0.1.48" }
+terminale-ipc = { path = "crates/terminale-ipc", version = "0.1.48" }
 
 [profile.dev]
 opt-level = 0
