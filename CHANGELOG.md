@@ -8,6 +8,85 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 ## [Unreleased]
 
 
+## [0.1.49]
+
+### Fixed
+- **The Quake open/close animation was slow on Linux, and the close barely
+  animated at all.** Two independent causes, both measured on X11/XWayland with
+  a 350 ms slide:
+  - The animation drove itself in a loop. Its pump runs from the event loop's
+    idle callback, which fires on every event batch rather than on a timer, so
+    the `WaitUntil` deadline it returned was only an upper bound. Each frame
+    resized the window, which produced a resize event, which woke the loop, which
+    re-entered the pump — so one 350 ms close rendered **114 frames (327 fps)**,
+    55 of them re-applying a rect identical to the previous frame's and each
+    costing a full repaint. A compositor cannot keep up with a window resizing
+    itself hundreds of times a second, which is what made the animation look
+    slow. The pump now honours a frame-rate budget, skips frames whose
+    interpolated rect rounds to the geometry already applied, and the resize
+    handler no longer asks for a redraw while an animation owns the painting.
+    The same close now runs in **20 frames at 58 fps with nothing redundant**.
+  - Both directions eased *out*. On a close that meant collapsing almost at once
+    and then creeping: at half of a 350 ms close the window was already down to
+    14 % of its height, and the remaining 175 ms animated something too small to
+    see. The default curve is now `mirror` — the close is the open played
+    backwards.
+- **A Quake animation kept painting into a window the compositor had stopped
+  scheduling.** Every other animation in the event loop already skipped frames
+  for an occluded or throttled window; this pump did not, so it could block
+  inside a surface acquire until it timed out. It is now gated the same way.
+
+### Added
+- **`quake.easing`** — timing curve for the open/close animation: `mirror`
+  (default), `ease_out` (the previous behaviour), `ease_in_out` or `linear`.
+- **`quake.animation_fps`** — repaint ceiling for the animation, 15–240
+  (default 60). Raise it on a high-refresh display, lower it to spend less GPU
+  per toggle.
+
+Both are in **Settings → Quake**, under the existing animation controls.
+
+
+## [0.1.48]
+
+### Changed
+- **russh 0.63.** Host-key verification follows the new API, where the server's
+  identity arrives as a key *or* a certificate. A plain key behaves exactly as
+  before. A host certificate is refused: trusting one means checking the CA that
+  signed it — an `@cert-authority` line — which this known-hosts store does not
+  implement, and pinning the key inside the certificate would look like
+  verification while checking nothing the CA vouches for. Not reachable in
+  practice, since terminale never offers a certificate host-key algorithm.
+
+### Fixed
+- **Restoring the last session brought back one window, whatever you had open.**
+  With `window.restore_session = "last_session"`, everything but the primary
+  window was silently dropped: extra windows, and whichever tabs, splits and
+  directories lived in them. The saved-session format only ever described a
+  single window's tabs, and each of the three ways a window can close
+  overwrote the whole file with its own — so quitting by closing window after
+  window, which is how you quit when the windows carry no OS decorations, left
+  just the last one on disk.
+
+  The snapshot now lists every window, each with its own tabs, splits, split
+  ratios, tab groups, focused pane, geometry and monitor; the launch rebuilds
+  them all, sharing one GPU device, and gives focus back to the window that had
+  it. `window.restore_all_windows` (default on, **Settings → Workspaces**) turns
+  it off for anyone who wants only the primary window back.
+
+  Two things had to be true for the closes to add up. A window closed from the
+  in-app titlebar used to clear its own tab list as the signal to be reaped —
+  destroying exactly what the snapshot needed to record — so it now signals
+  without emptying itself, and is captured on the way out. And because each
+  close rewrites the file, a closed window stays in the snapshot for half a
+  minute: long enough for an unhurried quit, short enough that a window you
+  close and leave closed is gone from the next save.
+
+- **The last-session file was rewritten on every event-loop wake.** The reap
+  pass saved unconditionally instead of only when a window had actually gone,
+  so with session restore enabled an idle terminal re-walked every pane's shell
+  for its working directory and re-`fsync`ed the snapshot many times a second.
+  It now saves when something is actually reaped.
+
 ## [0.1.47]
 
 ### Added
@@ -451,7 +530,7 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 - **The captured command is the command, not the prompt plus the command.**
   Command text was recovered by reading the prompt line off the grid, which
   cannot tell `[user@host ~]$ ` apart from what was typed — so a captured command
-  came out as `[rubber@host ~]$ cargo test`, and that string is what got re-run by
+  came out as `[user@host ~]$ cargo test`, and that string is what got re-run by
   rerun-last-command, sent to the AI, and copied. The bash hook now reports the
   command line explicitly with `OSC 633;E` (read from history, so a pipeline is
   reported whole), which takes priority over grid scraping.
@@ -1593,7 +1672,9 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...HEAD
+[0.1.49]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...v0.1.49
+[0.1.48]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
 [0.1.46]: https://github.com/fbrzlarosa/terminale/compare/v0.1.45...v0.1.46
 [0.1.45]: https://github.com/fbrzlarosa/terminale/compare/v0.1.44...v0.1.45

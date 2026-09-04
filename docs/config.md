@@ -94,6 +94,34 @@ scrollbar        = "auto"      # interactive scrollback scrollbar: drag the
                                # always | never
 ```
 
+#### Session restore
+
+```toml
+[window]
+restore_session         = "off"  # off | last_session
+restore_working_dirs    = true   # reopen each pane in its last directory
+restore_window_geometry = true   # position, size, monitor, Quake state
+restore_all_windows     = true   # every window, not just the first
+session_autosave_secs   = 15     # 0 = save on close only; else 5–3600
+```
+
+With `restore_session = "last_session"` the next launch reopens the layout you
+left: every window, each with its tabs, splits, split ratios, tab groups,
+focused pane, geometry and monitor. Running processes are never restored — each
+pane starts a fresh shell (in its last directory, when
+`restore_working_dirs` is on).
+
+A window you close on its own and then keep working in is *not* brought back;
+one closed as part of quitting is. Since quitting means closing one window after
+another, a closed window stays in the snapshot for half a minute — long enough
+to cover the whole gesture, short enough that a window left closed is gone from
+the next save. `session_autosave_secs` is unrelated to that: it is how often the
+snapshot is rewritten while you work, so a crash or power loss loses at most
+that many seconds of layout. Set `restore_all_windows = false` to reopen only
+the window you opened first.
+
+All of it is in **Settings → Workspaces → Session restore**.
+
 ### `[cursor]`
 
 ```toml
@@ -114,9 +142,11 @@ mode = "visual"                # visual | audio | both | none
 
 ```toml
 [quake]
-animation    = "slide"   # none | slide | bounce | scale | fade
-animation_ms = 120       # show/hide animation duration, ms
-edge         = "off"     # off | top | bottom | left | right
+animation     = "slide"   # none | slide | bounce | scale | fade
+animation_ms  = 120       # show/hide animation duration, ms
+easing        = "mirror"  # mirror | ease_out | ease_in_out | linear
+animation_fps = 60        # animation repaint ceiling, 15-240
+edge          = "off"     # off | top | bottom | left | right
 display      = "current" # current | pointer | primary | { index = N }
 size_percent = 0.5       # fraction of the monitor's perpendicular extent
                           # occupied when docked (edge != "off")
@@ -137,6 +167,30 @@ size_percent = 0.5       # fraction of the monitor's perpendicular extent
   `current`.
 * `primary` — always the OS primary monitor.
 * `{ index = N }` — pinned to the N-th enumerated monitor.
+
+`easing` shapes the timing curve, which is what decides whether the drop-down
+*feels* snappy at a given `animation_ms` — a duration alone does not:
+
+* `mirror` (default) — the open eases out and the close eases in, so a close is
+  the open played backwards. The previous behaviour eased *both* directions out,
+  which meant a close collapsed almost at once and then crept the last handful
+  of pixels for the rest of the duration: at half of a 350 ms close the window
+  was already down to 14 % of its height, and the remaining 175 ms were spent
+  animating something too small to see.
+* `ease_out` — the old behaviour, kept for anyone who preferred it.
+* `ease_in_out` — gentle at both ends.
+* `linear` — constant speed.
+
+`animation_fps` caps how often the animation repaints. It is a **ceiling, not a
+target**: the animation is driven from the event loop's idle callback, which
+fires on every event batch rather than on a timer, so the window-resize events
+the animation itself generates wake the loop straight back up. Without the cap
+the animation repainted as fast as the machine allowed — a single 350 ms close
+was measured at 114 frames (327 fps), half of them re-applying a rect identical
+to the previous frame's — and a compositor that cannot keep up with a window
+resizing itself hundreds of times a second makes the animation look *slower*,
+not smoother. Raise it on a high-refresh display, lower it to spend less GPU per
+toggle.
 
 The global toggle hotkey lives in `[keybinds] quake = "Ctrl+\`"`, not here.
 `edge = "off"` (the default) is a free-floating window that restores its exact

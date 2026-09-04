@@ -392,10 +392,12 @@ pub(crate) fn ghost_window_position(
 
 /// Apply a `(x, y, w, h)` rect to the window.
 ///
-/// `resize`: when `true` also calls `request_inner_size` (needed for the
-/// `Scale` animation which changes size every frame). For `Slide`/`Bounce`
-/// (position-only interpolation) pass `false` to avoid unnecessary surface
-/// resize round-trips that can cause flicker on Windows ConPTY.
+/// `resize`: when `true` also calls `request_inner_size`. Every geometric
+/// Quake variant needs this now — `Slide` and `Bounce` are edge-pinned
+/// reveals whose perpendicular extent changes each frame, not the
+/// position-only translations they once were — so the animation pump always
+/// passes `true`. Callers that only need to move a window (and want to avoid
+/// the surface-resize round-trip) still pass `false`.
 ///
 /// `set_outer_position` is always called so the window moves each frame.
 pub(crate) fn apply_window_rect(window: &Window, rect: terminale_config::WindowRect, resize: bool) {
@@ -1146,6 +1148,21 @@ pub(crate) fn anim_rest_rect(
     }
 }
 
+/// Minimum wall-clock gap between two Quake animation frames, from the
+/// configured frame rate.
+///
+/// The pump runs from the event loop's idle callback, which fires once per
+/// event batch — not on a timer — so the `WaitUntil` deadline it returns is
+/// only an upper bound on the gap between frames. The resize events the
+/// animation itself generates wake the loop straight back up, so without a
+/// floor the pump renders as fast as the machine allows: a 350 ms close was
+/// measured at 114 frames (327 fps) on X11, half of them re-applying a rect
+/// identical to the previous frame. That flood is what makes the animation
+/// look slow — the compositor cannot keep up with it.
+pub(crate) fn anim_frame_budget(fps: u32) -> std::time::Duration {
+    std::time::Duration::from_micros(1_000_000 / u64::from(fps.clamp(15, 240)))
+}
+
 // ── set_window_alpha ─────────────────────────────────────────────────────────
 
 /// Set the whole-window opacity (0 = fully transparent, 255 = opaque) for
@@ -1549,6 +1566,10 @@ pub(crate) fn toggle_quake(
                 from,
                 to: off,
                 anim_kind: quake_cfg.animation,
+                easing: quake_cfg.easing,
+                frame_budget: anim_frame_budget(quake_cfg.animation_fps),
+                last_frame: None,
+                last_rect: None,
             });
             state.window.request_redraw();
         } else {
@@ -1569,6 +1590,12 @@ pub(crate) fn toggle_quake(
     //   edge == Off  → restore exact saved geometry (legacy behaviour);
     //   edge != Off  → compute from the selected monitor + size + margin.
     state.quake_visible = true;
+    // The window is about to be presentable again. A previous hide very likely
+    // ended with the compositor refusing frames to the collapsing window, which
+    // latches `presentation_throttled`; leaving it latched here would make the
+    // reveal skip every paint and animate stale content. Clear it and let the
+    // first successful frame confirm the window is back.
+    state.presentation_throttled = false;
     // Keep the drop-down on every virtual desktop when configured, so the
     // hotkey still finds it after switching desktop. Re-asserted on each show
     // so a live config change takes effect on the next toggle.
@@ -1705,6 +1732,10 @@ pub(crate) fn toggle_quake(
                 from,
                 to: rect,
                 anim_kind: quake_cfg.animation,
+                easing: quake_cfg.easing,
+                frame_budget: anim_frame_budget(quake_cfg.animation_fps),
+                last_frame: None,
+                last_rect: None,
             });
             state.window.request_redraw();
             return;
@@ -1998,6 +2029,23 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     use terminale_config::QuakeAnimation;
     let anim = state.quake_anim.as_ref()?;
     let elapsed = anim.start.elapsed();
+    // Frame-rate gate. `about_to_wait` fires on every event batch, so this
+    // function is re-entered far more often than once per frame — the resize
+    // events the animation itself emits wake the loop immediately. Repainting
+    // on each of those costs a full render for no new pixels and floods the
+    // compositor. Bail out early (before any geometry or paint work) until the
+    // frame budget has elapsed, and re-arm the deadline for what is left of it.
+    //
+    // The final frame is exempt: an animation must always be allowed to land
+    // on its exact resting rect, however little time is left in the budget.
+    if elapsed < anim.duration {
+        if let Some(last) = anim.last_frame {
+            let since = last.elapsed();
+            if since < anim.frame_budget {
+                return Some(anim.frame_budget - since);
+            }
+        }
+    }
     let total = anim.duration;
     let is_fade = matches!(anim.anim_kind, QuakeAnimation::Fade);
     if elapsed >= total {
@@ -2033,26 +2081,35 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     }
     #[allow(clippy::cast_precision_loss)]
     let t = elapsed.as_secs_f32() / total.as_secs_f32();
+    // Copied out of `anim` so the immutable borrow can end before the frame's
+    // own bookkeeping takes `state` mutably below.
+    let frame_budget = anim.frame_budget;
+    let mut applied_rect: Option<terminale_config::WindowRect> = None;
 
     // Showing: t goes 0→1 (collapsed/transparent → resting rect).
     // Hiding:  t goes 0→1 but from resting → collapsed/transparent.
     // Either way the same easing applies.
 
-    // Choose the easing curve per animation variant.
+    // Choose the easing curve per animation variant. The curve is
+    // direction-aware (see `QuakeEasing::apply`): under the default `Mirror`
+    // curve a close is the open played backwards, instead of both directions
+    // easing out. Easing a close *out* is what left the window collapsing
+    // almost instantly and then creeping the last handful of pixels for the
+    // rest of the duration — measured at half the configured time spent below
+    // 14 % of the window's height, which reads as "the close is slow" even
+    // though the window was visually gone long before it ended.
     let eased = match anim.anim_kind {
         QuakeAnimation::Bounce => {
-            // Springy growth: cubic-out with a sin-damped dip mid-flight.
-            // Clamped to 1.0 — the reveal interpolates SIZE, and overshooting
-            // past the target rect could poke beyond the monitor edge.
+            // Springy growth: the configured curve with a sin-damped dip
+            // mid-flight. Clamped to 1.0 — the reveal interpolates SIZE, and
+            // overshooting past the target rect could poke beyond the monitor
+            // edge.
             use std::f32::consts::PI;
-            let base = 1.0 - (1.0 - t).powi(3);
+            let base = anim.easing.apply(t, anim.showing);
             let wobble = (1.0 - (t * PI).sin().abs() * 0.18).clamp(0.9, 1.06);
             (base * wobble).clamp(0.0, 1.0)
         }
-        _ => {
-            // Ease-out cubic (Slide, Scale, Fade).
-            1.0 - (1.0 - t).powi(3)
-        }
+        _ => anim.easing.apply(t, anim.showing),
     };
 
     if is_fade {
@@ -2069,7 +2126,21 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
         // animation (see the pending_resize guard in main.rs): the surface
         // clips the full-size frame, which is what makes it read as a reveal.
         let cur = lerp_rect_full(anim.from, anim.to, eased);
+        // The rect is integer pixels, so consecutive frames routinely round to
+        // the SAME geometry — most of them near the collapsed end, where the
+        // curve is flattest. Re-applying an identical rect asks the window
+        // manager to resize a window to the size it already has and then
+        // repaints the whole surface to produce a pixel-identical frame. Skip
+        // both; the deadline below still paces the next attempt.
+        if anim.last_rect == Some(cur) {
+            let last = std::time::Instant::now();
+            if let Some(a) = state.quake_anim.as_mut() {
+                a.last_frame = Some(last);
+            }
+            return Some(frame_budget);
+        }
         apply_window_rect(&state.window, cur, true);
+        applied_rect = Some(cur);
     }
     // A pure reposition/alpha change doesn't always generate a paint on
     // Windows, so the animation can look like it "jumps". Paint the frame
@@ -2086,9 +2157,32 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     if let Some(new_size) = state.pending_resize.take() {
         state.renderer.resize(new_size.width, new_size.height);
     }
-    crate::render_main(state);
-    // ~60 Hz frame cadence.
-    Some(std::time::Duration::from_millis(16))
+    // Only paint if the compositor is actually taking frames from this window.
+    // `render_main` acquires a surface texture synchronously, and a compositor
+    // that has stopped scheduling the window — which is exactly what happens to
+    // one collapsing to a few pixels on its way out — makes that acquire block
+    // until it times out: a single close was measured spending 951 ms inside
+    // one such call, which swallowed the whole animation and left it snapping
+    // shut after two frames. Every other animation in `about_to_wait` already
+    // gates itself on these two flags; this pump was the one that did not.
+    //
+    // Skipping the paint does not stall the animation: progress is driven by
+    // wall-clock elapsed time, the geometry above was still applied, and the
+    // compositor keeps showing the last painted frame clipped to the window —
+    // which is precisely the reveal.
+    let presentable = !state.occluded && !state.presentation_throttled;
+    if presentable {
+        crate::render_main(state);
+    }
+    // Record what this frame actually did, so the gate above can pace the next
+    // one and the redundant-rect check has something to compare against.
+    if let Some(a) = state.quake_anim.as_mut() {
+        a.last_frame = Some(std::time::Instant::now());
+        if let Some(r) = applied_rect {
+            a.last_rect = Some(r);
+        }
+    }
+    Some(frame_budget)
 }
 
 // ── apply_theme / cursor_params_from_config / gpu_options_from_config ────────

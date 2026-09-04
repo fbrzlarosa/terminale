@@ -366,12 +366,47 @@ impl SettingsWindow {
                 }
             });
             self.highlight_row(ui, hr.response.rect, Section::Quake, "Duration");
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Easing");
+                egui::ComboBox::from_id_salt("quake_easing_combo")
+                    .selected_text(self.config.quake.easing.label())
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for e in terminale_config::QuakeEasing::all() {
+                            if ui
+                                .selectable_value(&mut self.config.quake.easing, e, e.label())
+                                .clicked()
+                            {
+                                dirty = true;
+                            }
+                        }
+                    });
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Quake, "Easing");
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Frame rate");
+                let r = ui.add(
+                    egui::Slider::new(&mut self.config.quake.animation_fps, 15..=240)
+                        .suffix(" fps")
+                        .text(""),
+                );
+                if r.changed() {
+                    dirty = true;
+                }
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Quake, "Frame rate");
             sublabel(
                 ui,
-                "Slide and Bounce animate the OS window geometry by moving the window in/out from \
-                 the dock edge — smooth and zero-content-flicker. Bounce adds a spring overshoot. \
-                 Scale also resizes the window each frame (may be less smooth on Windows). \
-                 None is instant.",
+                "Slide and Bounce reveal the window from the dock edge, with the docked edge \
+                 pinned. Bounce adds a spring overshoot. Scale zooms from a point at the edge. \
+                 Fade animates the window's opacity instead of its geometry. None is instant.\n\
+                 Easing shapes the curve: Mirror plays a close as the open in reverse, which is \
+                 what stops a close from collapsing at once and then creeping the last few pixels.\n\
+                 Frame rate caps how often the animation repaints. It is a ceiling, not a target — \
+                 the animation is paced by the event loop, so without a cap the resize events it \
+                 generates make it repaint hundreds of times a second and the compositor falls \
+                 behind, which looks slower rather than smoother. Raise it on a high-refresh \
+                 display; lower it to spend less GPU per toggle.",
             );
         });
 

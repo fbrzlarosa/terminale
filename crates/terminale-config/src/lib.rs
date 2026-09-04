@@ -82,7 +82,9 @@ pub use keybinds::{
 pub use logging::LoggingConfig;
 pub use plugins::PluginsConfig;
 pub use profiles_config::ProfilesConfig;
-pub use quake::{quake_dock_rect, QuakeAnimation, QuakeConfig, QuakeDisplay, QuakeEdge};
+pub use quake::{
+    quake_dock_rect, QuakeAnimation, QuakeConfig, QuakeDisplay, QuakeEasing, QuakeEdge,
+};
 pub use quick_select::{quick_select_validate_alphabet, QuickSelectConfig};
 pub use resource_indicators::ResourceIndicatorsConfig;
 pub use snippets::Snippet;

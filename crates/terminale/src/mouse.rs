@@ -549,11 +549,13 @@ pub(crate) fn handle_mouse(state: &mut RunningState, button: MouseButton, btn_st
                             Some(crate::confirm_close::CloseTarget::Window);
                         state.window.request_redraw();
                     } else {
-                        // signal to the App to close this window
+                        // Signal to the App to close this window. Hide it now
+                        // so it disappears the instant it is clicked, but keep
+                        // the tab list intact: `reap_empty_windows` captures
+                        // this window into the session snapshot before dropping
+                        // it, and cleared tabs would leave nothing to restore.
                         state.window.set_visible(false);
-                        // A visibility-false window is reaped by
-                        // `reap_empty_windows`; clear tabs so it qualifies.
-                        state.tabs.clear();
+                        state.pending_close_window = true;
                     }
                     return;
                 }

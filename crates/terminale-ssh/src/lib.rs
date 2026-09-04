@@ -23,7 +23,9 @@
 use bytes::Bytes;
 use russh::client::{self, AuthResult, Handler};
 use russh::keys::agent::client::AgentClient;
-use russh::keys::{load_secret_key, Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey};
+use russh::keys::{
+    load_secret_key, Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate,
+};
 use russh::ChannelMsg;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -415,9 +417,13 @@ impl Handler for KnownHostsHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &PublicKey,
+        server_public_key: &PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let fingerprint = server_public_key.fingerprint(Default::default());
+        // For a certificate this is the key *inside* it, which is only good
+        // enough for the log line and the `off` short-circuit — see the refusal
+        // below.
+        let server_key = server_public_key.public_key();
+        let fingerprint = server_key.fingerprint(Default::default());
 
         // `off` — accept everything without consulting the store.
         if self.policy == HostKeyPolicy::Off {
@@ -430,9 +436,31 @@ impl Handler for KnownHostsHandler {
             return Ok(true);
         }
 
+        // A host *certificate* is trusted through the CA that signed it — an
+        // `@cert-authority` line in known_hosts — which this store does not
+        // implement. Pinning the key inside the certificate as if it were the
+        // host's own would look like verification while checking nothing the
+        // CA vouches for, so refuse instead. Unreachable in practice: a server
+        // can only present one if the client offers a certificate host-key
+        // algorithm, and russh's default `Preferred::host_key_certificates` is
+        // empty.
+        if server_public_key.certificate().is_some() {
+            tracing::error!(
+                host = %self.host,
+                port = self.port,
+                %fingerprint,
+                "refusing an SSH host certificate: certificate authorities are not supported"
+            );
+            return Err(SshError::HostKeyUnknown {
+                host: self.host.clone(),
+                port: self.port,
+                known_hosts: self.known_hosts.clone(),
+            });
+        }
+
         // Consult the known-hosts file.
         let verdict =
-            check_host_key_verdict(&self.known_hosts, &self.host, self.port, server_public_key)?;
+            check_host_key_verdict(&self.known_hosts, &self.host, self.port, &server_key)?;
 
         match verdict {
             HostKeyVerdict::Known => {
@@ -452,7 +480,7 @@ impl Handler for KnownHostsHandler {
                         if let Err(e) = russh::keys::known_hosts::learn_known_hosts_path(
                             &self.host,
                             self.port,
-                            server_public_key,
+                            &server_key,
                             &self.known_hosts,
                         ) {
                             tracing::warn!(
@@ -700,7 +728,7 @@ mod tests {
         tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap()
-            .block_on(handler.check_server_key(key))
+            .block_on(handler.check_server_key(&PublicKeyOrCertificate::from(key.clone())))
     }
 
     #[test]

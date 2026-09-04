@@ -1187,6 +1187,7 @@ fn main() -> Result<()> {
         plugin_snap_key: None,
         config_save_due: None,
         session_autosave_due: None,
+        closed_window_snapshots: Vec::new(),
         last_session_text: None,
         sgr_demo_reseed_at: if std::env::var_os("TERMINALE_DEMO_PALETTE")
             .is_some_and(|v| v == "sgr")
@@ -1702,6 +1703,15 @@ struct TerminaleApp {
     /// This is what makes the saved session survive a crash / power loss
     /// instead of only a graceful close. See [`Self::autosave_last_session_if_changed`].
     session_autosave_due: Option<std::time::Instant>,
+    /// Recently-closed windows — `(when it closed, its `spawn_seq`, its
+    /// layout)` — still eligible for the session snapshot.
+    ///
+    /// Quitting means closing one window after another, and every close
+    /// rewrites the snapshot; without this the last close would leave only
+    /// itself on disk. Entries expire after [`CLOSED_WINDOW_GRACE`], so a
+    /// window closed on its own and left closed drops out of the next
+    /// snapshot instead of being resurrected on the following launch.
+    closed_window_snapshots: Vec<(std::time::Instant, u64, crate::workspace::SavedWindow)>,
     /// Serialised TOML of the last-session snapshot we most recently wrote, so
     /// an idle window isn't rewritten (with an `fsync`) every autosave interval.
     last_session_text: Option<String>,
@@ -2395,6 +2405,24 @@ fn key_table_timed_out(
     now.duration_since(entered_at) >= std::time::Duration::from_millis(u64::from(timeout_ms))
 }
 
+/// How long a closed window keeps its place in the last-session snapshot.
+///
+/// Quitting the app means closing one window after another (the windows carry
+/// no OS decorations, so that is a click on each in-app titlebar), and every
+/// close rewrites the snapshot — a closed window therefore has to stay in it
+/// long enough to cover the whole gesture, or the final close would leave only
+/// itself on disk. Long enough here for an unhurried cascade, including a
+/// confirmation dialog per window; short enough that a window closed and then
+/// left closed is gone from the next snapshot. Not user-tunable on purpose:
+/// it describes a shutdown gesture, not a preference.
+const CLOSED_WINDOW_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Hand out the next window creation ordinal. See [`TermWindow::spawn_seq`].
+fn next_window_seq() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 /// All per-window state. One [`TermWindow`] backs each native OS window:
 /// it owns that window's `winit::Window`, its own [`Renderer`] (which reuses
 /// the process-wide shared wgpu device via [`Renderer::new_shared`]), its
@@ -2407,6 +2435,11 @@ fn key_table_timed_out(
 /// is per-window rather than the single global app state.
 struct TermWindow {
     window: Arc<Window>,
+    /// Monotonic creation order across the process, assigned by `build_window`.
+    /// `WindowId`s carry no ordering, so this is what lets the session snapshot
+    /// list windows (and restore them) in the order the user opened them —
+    /// including windows already closed, which no longer have a live handle.
+    spawn_seq: u64,
     renderer: Renderer,
     tabs: Vec<TabState>,
     active_tab: usize,
@@ -2995,6 +3028,13 @@ struct TermWindow {
     /// stashed here so the App event loop can open the confirmation dialog
     /// (it needs `event_loop`, which `RunningState`-level code never has).
     pending_close_confirm: Option<crate::confirm_close::CloseTarget>,
+    /// The in-app titlebar's close button was clicked (the windows carry no OS
+    /// decorations, so this — not `WindowEvent::CloseRequested` — is the usual
+    /// way a window is closed). The window is hidden straight away and
+    /// `reap_empty_windows` drops it on the next pass, after saving the
+    /// session; its tabs stay populated until then so there is something to
+    /// save.
+    pending_close_window: bool,
 
     // ── Paste safety mirrors ──────────────────────────────────────────────────
     /// Mirror of `config.terminal.paste_confirm_multiline`. When `true`,
@@ -3491,6 +3531,7 @@ impl TerminaleApp {
 
         let mut tw = TermWindow {
             window,
+            spawn_seq: next_window_seq(),
             renderer,
             tabs,
             active_tab: 0,
@@ -3664,6 +3705,7 @@ impl TerminaleApp {
             pending_paste_clipboard_entry: None,
             pending_paste_guard: None,
             pending_close_confirm: None,
+            pending_close_window: false,
             paste_confirm_multiline: self.config.terminal.paste_confirm_multiline,
             paste_confirm_when_unbracketed: self.config.terminal.paste_confirm_when_unbracketed,
             paste_strip_control_chars: self.config.terminal.paste_strip_control_chars,
@@ -5239,6 +5281,81 @@ impl TerminaleApp {
         self.windows.push(new_win);
     }
 
+    /// Rebuild the last session's non-primary windows — one native window per
+    /// [`crate::workspace::SavedWindow`], each sharing the primary window's
+    /// wgpu device (never a second GPU backend), restored to its own tab/pane
+    /// layout and its own saved geometry / monitor.
+    ///
+    /// Called once from `resumed`, after the primary window is on screen.
+    /// Keyboard focus ends on the window that had it at save time, falling
+    /// back to the primary one — otherwise the last window mapped would
+    /// silently steal it.
+    fn restore_extra_windows(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        saved: Vec<crate::workspace::SavedWindow>,
+    ) {
+        let shared = {
+            let Some(first) = self.windows.first() else {
+                return;
+            };
+            (
+                first.renderer.instance(),
+                first.renderer.adapter(),
+                first.renderer.device(),
+                first.renderer.queue(),
+            )
+        };
+        let restore_geometry = self.config.window.restore_window_geometry;
+        let mut focus_idx: Option<usize> = None;
+        for saved_win in saved {
+            let win_state = saved_win.window.clone();
+            let was_focused = saved_win.focused;
+            // Map the window straight at its saved origin so it never flashes
+            // at the default position first; `apply_restored_window_state`
+            // refines size / monitor / Quake once the surface is revealed.
+            let position = if restore_geometry {
+                win_state
+                    .as_ref()
+                    .and_then(|w| w.rect)
+                    .map(|(x, y, _, _)| winit::dpi::PhysicalPosition::new(x, y))
+            } else {
+                None
+            };
+            let new_win = self.build_window(event_loop, Some(shared.clone()), position, Vec::new());
+            let win_size = new_win.window.inner_size();
+            self.windows.push(new_win);
+            let idx = self.windows.len() - 1;
+            self.restore_workspace(
+                event_loop,
+                idx,
+                saved_win.into_workspace(),
+                shared.0.clone(),
+                shared.1.clone(),
+                shared.2.clone(),
+                shared.3.clone(),
+                win_size,
+            );
+            let state = &mut self.windows[idx];
+            reveal_window(state);
+            if let Some(ws) = win_state.filter(|_| restore_geometry) {
+                apply_restored_window_state(state, &ws, &self.config.quake);
+            }
+            if was_focused {
+                focus_idx = Some(idx);
+            }
+        }
+        // Mapping the extra windows may have pulled focus off whichever window
+        // should have it, so settle it explicitly at the end.
+        if let Some(state) = self.windows.get(focus_idx.unwrap_or(0)) {
+            state.window.focus_window();
+        }
+        tracing::info!(
+            windows = self.windows.len(),
+            "restored the last session's windows"
+        );
+    }
+
     /// Restore a [`workspace::SavedWorkspace`] into the window at `win_idx`.
     ///
     /// Behaviour:
@@ -6344,46 +6461,99 @@ impl TerminaleApp {
         }
     }
 
-    /// Save the last-session snapshot for `state` (layout + window geometry +
-    /// Quake), if session restore is enabled and the window still has tabs.
-    /// Shared by the reap path and the explicit window-close (X button) path.
-    fn save_last_session_for(&self, state: &TermWindow) {
-        if self.config.window.restore_session != terminale_config::RestoreSession::LastSession {
-            return;
-        }
-        if state.tabs.is_empty() {
-            return;
-        }
-        crate::workspace::save_last_session(
+    /// Capture one live window into its serialisable form for the session
+    /// snapshot.
+    fn capture_session_window(&self, state: &TermWindow) -> crate::workspace::SavedWindow {
+        crate::workspace::capture_window(
             &state.tabs,
             state.active_tab,
             self.config.window.restore_working_dirs,
             &state.tab_groups,
             state.next_group_id,
             capture_window_state(state),
-        );
+            state.window_focused,
+        )
     }
 
-    /// Periodic, crash-safe autosave of the last-session snapshot for the first
+    /// Capture the whole session: every open window plus the ones closed
+    /// recently enough to still count (see [`CLOSED_WINDOW_GRACE`]), ordered
+    /// the way the user opened them.
+    ///
+    /// Windows with no tabs are skipped — there would be nothing to rebuild.
+    fn capture_session_windows(&self) -> Vec<crate::workspace::SavedWindow> {
+        let mut all: Vec<(u64, crate::workspace::SavedWindow)> = self
+            .windows
+            .iter()
+            .filter(|w| !w.tabs.is_empty())
+            .map(|w| (w.spawn_seq, self.capture_session_window(w)))
+            .collect();
+        all.extend(
+            self.closed_window_snapshots
+                .iter()
+                .filter(|(at, _, _)| at.elapsed() <= CLOSED_WINDOW_GRACE)
+                .map(|(_, seq, w)| (*seq, w.clone())),
+        );
+        all.sort_by_key(|(seq, _)| *seq);
+        all.into_iter().map(|(_, w)| w).collect()
+    }
+
+    /// Forget the closed windows whose grace period has run out.
+    fn expire_closed_windows(&mut self) {
+        self.closed_window_snapshots
+            .retain(|(at, _, _)| at.elapsed() <= CLOSED_WINDOW_GRACE);
+    }
+
+    /// Remember the window at `idx` as "closed just now" so a shutdown cascade
+    /// — clicking X on window after window, which is how the app is quit on
+    /// Linux and Windows — still persists every window instead of leaving only
+    /// the last one closed on disk.
+    ///
+    /// Entries live for [`CLOSED_WINDOW_GRACE`]: a batch of windows closed
+    /// together is kept whole, while a window closed on its own drops out of
+    /// the snapshot once the grace period passes. Call this BEFORE removing
+    /// the window.
+    fn remember_closed_window(&mut self, idx: usize) {
+        if self.config.window.restore_session != terminale_config::RestoreSession::LastSession {
+            return;
+        }
+        self.expire_closed_windows();
+        let captured = self
+            .windows
+            .get(idx)
+            .filter(|w| !w.tabs.is_empty())
+            .map(|w| (w.spawn_seq, self.capture_session_window(w)));
+        if let Some((seq, snapshot)) = captured {
+            self.closed_window_snapshots
+                .push((std::time::Instant::now(), seq, snapshot));
+        }
+    }
+
+    /// Write the last-session snapshot right now (every open window plus the
+    /// ones just closed), if session restore is enabled.
+    ///
+    /// An empty capture is a no-op inside the writer: closing the last tab of
+    /// the last window must not wipe an otherwise good snapshot.
+    fn save_last_session_now(&self) {
+        if self.config.window.restore_session != terminale_config::RestoreSession::LastSession {
+            return;
+        }
+        crate::workspace::save_last_session(self.capture_session_windows());
+    }
+
+    /// Periodic, crash-safe autosave of the last-session snapshot for *every*
     /// window. Captures the current layout, and writes it (atomically) only when
     /// it differs from what we last wrote, so an idle session doesn't churn the
     /// disk. Driven by the `session_autosave_due` timer in `about_to_wait`; the
     /// graceful-close paths still save independently on a clean exit.
     fn autosave_last_session_if_changed(&mut self) {
-        let Some(state) = self.windows.first() else {
-            return;
-        };
-        if state.tabs.is_empty() {
-            return;
-        }
-        let Some((path, text)) = crate::workspace::capture_last_session_text(
-            &state.tabs,
-            state.active_tab,
-            self.config.window.restore_working_dirs,
-            &state.tab_groups,
-            state.next_group_id,
-            capture_window_state(state),
-        ) else {
+        // Drop the closed windows that are past their grace period, so this
+        // snapshot stops carrying a window the user closed and left closed.
+        // Deliberately not a blanket clear: a tick landing in the middle of a
+        // close cascade would otherwise drop windows still being quit.
+        self.expire_closed_windows();
+        let Some((path, text)) =
+            crate::workspace::capture_last_session_text(self.capture_session_windows())
+        else {
             return;
         };
         // Unchanged since the last autosave — skip the write and its fsync.
@@ -6398,31 +6568,36 @@ impl TerminaleApp {
         }
     }
 
-    /// Drop any windows whose tab list is empty (the last tab was closed via
-    /// `close_tab`). When the very last window is reaped, save the last
-    /// session (if configured) and then exit the process.
+    /// Drop the windows that are on their way out: those asked to close from
+    /// the in-app titlebar (`pending_close_window`, tabs still intact) and
+    /// those whose tab list went empty (the last tab was closed via
+    /// `close_tab`). When a window is actually reaped, save the last session
+    /// (if configured); when none remain, exit the process.
+    ///
+    /// This runs on every `about_to_wait`, so the save is gated on something
+    /// having been reaped — capturing a session walks each pane's shell for its
+    /// cwd and fsyncs the file, which must not happen once per event-loop wake.
     fn reap_empty_windows(&mut self, event_loop: &ActiveEventLoop) {
-        // Auto-save the last session before potentially exiting.
-        if self.config.window.restore_session == terminale_config::RestoreSession::LastSession {
-            if let Some(state) = self.windows.first() {
-                if !state.tabs.is_empty() {
-                    crate::workspace::save_last_session(
-                        &state.tabs,
-                        state.active_tab,
-                        self.config.window.restore_working_dirs,
-                        &state.tab_groups,
-                        state.next_group_id,
-                        capture_window_state(state),
-                    );
-                }
-            }
+        let mut closed_any = false;
+        // Windows closed from the in-app titlebar. Their tabs are still intact,
+        // so each is captured into the snapshot before being dropped.
+        while let Some(idx) = self.windows.iter().position(|w| w.pending_close_window) {
+            self.remember_closed_window(idx);
+            self.windows.remove(idx);
+            closed_any = true;
         }
-        self.windows.retain(|w| !w.tabs.is_empty());
+        if self.windows.iter().any(|w| w.tabs.is_empty()) {
+            self.windows.retain(|w| !w.tabs.is_empty());
+            closed_any = true;
+        }
+        if closed_any {
+            // Persist what survives (plus anything closed in this cascade)
+            // before we possibly exit. A fully empty capture is skipped by the
+            // writer, so emptying the very last window keeps the previous
+            // snapshot rather than replacing it with nothing.
+            self.save_last_session_now();
+        }
         if self.windows.is_empty() {
-            // Save the last session one final time (all tabs just closed).
-            if self.config.window.restore_session == terminale_config::RestoreSession::LastSession {
-                // Already saved above if there was a window — nothing more to do.
-            }
             event_loop.exit();
         }
     }
@@ -6692,11 +6867,23 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // Window geometry / monitor / Quake state to re-apply after the window
         // is revealed (the monitor + scale factor are only stable post-reveal).
         let mut restore_window_state: Option<crate::workspace::SavedWindowState> = None;
+        // Saved windows beyond the primary one. Rebuilt at the tail of this
+        // function, once the primary window is painted, revealed and placed —
+        // they share its wgpu device, so it has to exist first.
+        let mut extra_saved_windows: Vec<crate::workspace::SavedWindow> = Vec::new();
         if do_restore {
             if let Some(saved_ws) = crate::workspace::load_last_session() {
-                if !saved_ws.tabs.is_empty() {
+                let mut saved_windows = saved_ws.into_window_list();
+                if !self.config.window.restore_all_windows {
+                    // Opted out of multi-window restore: only the window the
+                    // user opened first comes back.
+                    saved_windows.truncate(1);
+                }
+                if !saved_windows.is_empty() {
+                    extra_saved_windows = saved_windows.split_off(1);
+                    let primary = saved_windows.remove(0);
                     if self.config.window.restore_window_geometry {
-                        restore_window_state = saved_ws.window.clone();
+                        restore_window_state = primary.window.clone();
                     }
                     let win_size = self.windows[0].window.inner_size();
                     let instance = self.windows[0].renderer.instance();
@@ -6704,7 +6891,14 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     let device = self.windows[0].renderer.device();
                     let queue = self.windows[0].renderer.queue();
                     self.restore_workspace(
-                        event_loop, 0, saved_ws, instance, adapter, device, queue, win_size,
+                        event_loop,
+                        0,
+                        primary.into_workspace(),
+                        instance,
+                        adapter,
+                        device,
+                        queue,
+                        win_size,
                     );
                 }
             }
@@ -7247,6 +7441,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         tab_groups: Vec::new(),
                         next_group_id: 0,
                         window: None,
+                        windows: Vec::new(),
                     };
                     // Write to the workspaces directory for the picker to find.
                     if let Some(dir) = terminale_config::paths::workspaces_dir() {
@@ -7828,6 +8023,13 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 apply_restored_window_state(state, &ws, &self.config.quake);
             }
         }
+
+        // Bring back the rest of the last session's windows. Last, because
+        // each one shares the primary window's wgpu device and lands on its
+        // own saved geometry — which needs the primary already on screen.
+        if !extra_saved_windows.is_empty() {
+            self.restore_extra_windows(event_loop, extra_saved_windows);
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -7997,8 +8199,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     if let Some(idx) = self.window_index(parent) {
                         match target {
                             confirm_close::CloseTarget::Window => {
-                                self.save_last_session_for(&self.windows[idx]);
+                                // Remember this window, then snapshot what is
+                                // left — so closing several windows in a row
+                                // (how the app is quit) keeps them all.
+                                self.remember_closed_window(idx);
                                 self.windows.remove(idx);
+                                self.save_last_session_now();
                                 if self.windows.is_empty() {
                                     event_loop.exit();
                                 }
@@ -8149,8 +8355,12 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // Persist the session before the window goes away — the X
                 // button / Alt+F4 path never reached `reap_empty_windows`, so
                 // closing this way previously lost the last session entirely.
-                self.save_last_session_for(&self.windows[idx]);
+                // The closing window is remembered first, so quitting by
+                // clicking X on every window still saves all of them instead
+                // of only the last one.
+                self.remember_closed_window(idx);
                 self.windows.remove(idx);
+                self.save_last_session_now();
                 if self.windows.is_empty() {
                     event_loop.exit();
                 }
@@ -8274,7 +8484,22 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // events during a drag; applying each individually means a
                 // PTY repaint emitted at size N1 gets parsed at size N2.
                 state.pending_resize = Some(new_size);
-                state.window.request_redraw();
+                // ...but NOT while a Quake open/close animation is running.
+                // That animation resizes the window itself, once per frame, and
+                // paints each frame directly; it also drains `pending_resize`
+                // on its own. Asking for a redraw here too would paint the same
+                // frame a second time — and, worse, wake the event loop, whose
+                // idle callback re-enters the animation pump, which resizes the
+                // window again, which fires this event again. That loop ran a
+                // single 350 ms close at 114 frames (327 fps), half of them
+                // re-applying a rect identical to the previous frame's, which
+                // is what made the animation look slow: the compositor cannot
+                // keep up with a window resizing itself hundreds of times a
+                // second. The pump's frame-rate gate bounds the cadence; this
+                // stops the loop from being self-driving in the first place.
+                if state.quake_anim.is_none() {
+                    state.window.request_redraw();
+                }
             }
             WindowEvent::Moved(_) => {
                 // The window has been dragged to a new position — update the
@@ -9173,6 +9398,15 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // Apply a coalesced resize (if any) before draining PTY
                 // output — this ensures any ConPTY repaint triggered by the
                 // resize is parsed at the correct new grid size.
+                //
+                // This path must keep PAINTING even mid-Quake-animation, not
+                // just reconfigure. Reconfiguring the surface without ever
+                // presenting to it starves the swapchain of images, and the
+                // animation pump's next acquire then blocks until it times
+                // out — a measured 951 ms inside a single `render_main`, which
+                // ate an entire 350 ms close and left it snapping shut after
+                // two frames. Every `resize` here has to be followed by a
+                // present.
                 if let Some(new_size) = state.pending_resize.take() {
                     state.renderer.resize(new_size.width, new_size.height);
                     // Mid Quake-animation (or while hidden) the surface tracks
@@ -11302,6 +11536,16 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
             self.reregister_quake_hotkey(&binding);
         }
         if let Some(d) = next_wake {
+            // Schedule the deadline from `now` — the instant captured at the
+            // TOP of this tick — not from a fresh `Instant::now()` here. The
+            // requested delay is a target *period*, and everything between
+            // those two points (PTY drains, and above all the synchronous
+            // repaint an in-flight Quake animation does) happens inside it.
+            // Stamping the deadline after that work makes the wait additive to
+            // it instead: with a repaint that blocks ~9 ms on the compositor,
+            // a 16 ms request became a ~26 ms period and a 60 fps animation
+            // ran at ~39. If the tick already overran the period the deadline
+            // is in the past and the loop wakes immediately, which is right.
             event_loop.set_control_flow(ControlFlow::WaitUntil(std::time::Instant::now() + d));
         } else {
             event_loop.set_control_flow(ControlFlow::Wait);
@@ -14466,6 +14710,22 @@ struct QuakeAnim {
     from: terminale_config::WindowRect,
     /// Which animation variant is running.
     anim_kind: terminale_config::QuakeAnimation,
+    /// Timing curve for this animation.
+    easing: terminale_config::QuakeEasing,
+    /// Minimum wall-clock gap between two animation frames.
+    ///
+    /// The pump is driven from `about_to_wait`, which fires on every event
+    /// batch rather than on a timer, so the `ControlFlow::WaitUntil` deadline
+    /// it returns is only an upper bound on the gap. The window-resize events
+    /// the animation itself produces wake the loop immediately, and without
+    /// this floor the pump re-renders as fast as the machine allows.
+    frame_budget: std::time::Duration,
+    /// When the last frame was actually rendered, for the `frame_budget` gate.
+    last_frame: Option<std::time::Instant>,
+    /// The last rect handed to the OS. A frame whose interpolated rect rounds
+    /// to the same integers as the previous one has nothing new to show, so it
+    /// is skipped instead of costing another full repaint.
+    last_rect: Option<terminale_config::WindowRect>,
 }
 
 /// Cheap structural equality check used to decide whether the settings
@@ -16955,6 +17215,42 @@ mod tests {
         assert!(
             ssh_secret_needed(&host).is_err(),
             "key auth without key_path must be an error"
+        );
+    }
+
+    // ── anim_frame_budget ─────────────────────────────────────────────────────
+
+    #[test]
+    fn anim_frame_budget_matches_the_requested_rate() {
+        use crate::window_anim::anim_frame_budget;
+        assert_eq!(anim_frame_budget(60).as_micros(), 16_666);
+        assert_eq!(anim_frame_budget(120).as_micros(), 8_333);
+        assert_eq!(anim_frame_budget(30).as_micros(), 33_333);
+    }
+
+    #[test]
+    fn anim_frame_budget_clamps_absurd_rates() {
+        use crate::window_anim::anim_frame_budget;
+        // 0 fps would divide by zero and an unbounded rate would defeat the
+        // gate entirely — the two failure modes the clamp exists to stop.
+        assert_eq!(anim_frame_budget(0), anim_frame_budget(15));
+        assert_eq!(anim_frame_budget(1), anim_frame_budget(15));
+        assert_eq!(anim_frame_budget(100_000), anim_frame_budget(240));
+    }
+
+    #[test]
+    fn anim_frame_budget_bounds_a_toggle_to_a_sane_frame_count() {
+        use crate::window_anim::anim_frame_budget;
+        // Regression guard for the measured defect: a 350 ms close rendered
+        // 114 frames (327 fps), 55 of them re-applying a rect identical to the
+        // previous frame's. At the default rate the same close is bounded to
+        // about 21 frames.
+        let budget = anim_frame_budget(60);
+        #[allow(clippy::cast_possible_truncation)]
+        let frames = 350_000 / budget.as_micros();
+        assert!(
+            (18..=24).contains(&frames),
+            "a 350 ms toggle should be ~21 frames at 60 fps, got {frames}"
         );
     }
 

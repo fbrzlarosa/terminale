@@ -4915,7 +4915,7 @@ mod tests {
         emu.set_command_blocks(true, 100);
 
         // A realistic shell: prompt drawn and echoed into the grid, then E, C, D.
-        emu.advance(b"\x1b]133;A\x07[rubber@host ~]$ \x1b]133;B\x07echo hi");
+        emu.advance(b"\x1b]133;A\x07[user@host ~]$ \x1b]133;B\x07echo hi");
         emu.advance(b"\x1b]633;E;echo hi\x07\x1b]133;C\x07");
         emu.advance(b"hi\r\n\x1b]133;D;0\x07");
 
