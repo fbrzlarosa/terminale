@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+- **Replaced two yanked crates: `chacha20` 0.10.0 → 0.10.2 and `wnaf`
+  0.14.0 → 0.14.1.** crates.io yanked both (chacha20 is reached through
+  `chacha20poly1305`, behind the encrypted config backups, and through the SSH
+  stack; wnaf through the P-256/P-384 curves in the SSH stack). Both the
+  RustSec audit and the cargo-deny gate refuse a yanked crate, which is what
+  turned the Audit workflow red on v0.1.49. Lockfile-only — no behaviour or
+  API change.
 
 ## [0.1.49]
 
