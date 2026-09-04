@@ -74,6 +74,7 @@ jobs:
       - uses: github/codeql-action/init@v4.37.9
         with:
           languages: rust
+          config-file: ./.github/codeql/codeql-config.yml
       # No `cargo build` step: Rust is a build-mode `none` language for CodeQL
       # (its only supported mode). Extraction goes through rust-analyzer, which
       # compiles build scripts and macros itself, so a full workspace build fed
