@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Stay on top did nothing on Linux (X11 and XWayland).** The main window is
+  created hidden, and the Quake drop-down hides it again on every close; the
+  window manager ignores a stacking request for a hidden window and clears the
+  window's state when it is hidden, so `window.always_on_top` was lost before
+  the window ever appeared. The "above" state is now recorded on the window
+  itself while it is hidden, which is how a window asks for it before being
+  shown — it now holds from launch, from `--start-hidden`, and across every
+  Quake show/hide.
+
 ### Security
 - **Replaced two yanked crates: `chacha20` 0.10.0 → 0.10.2 and `wnaf`
   0.14.0 → 0.14.1.** crates.io yanked both (chacha20 is reached through
