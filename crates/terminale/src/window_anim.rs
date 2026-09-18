@@ -21,6 +21,9 @@ pub(crate) fn apply_window_level(window: &Window, always_on_top: bool) {
         winit::window::WindowLevel::Normal
     };
     window.set_window_level(level);
+    // A hidden X11 window drops the request above; see the helper.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    crate::linux_window::set_above_before_map(window, always_on_top);
 }
 
 /// Flip the runtime "stay on top" state, apply it to the OS window level,

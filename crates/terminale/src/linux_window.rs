@@ -667,6 +667,56 @@ pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
     let _ = x.conn.flush();
 }
 
+/// Record "stay on top" in `_NET_WM_STATE` while `window` is unmapped.
+///
+/// winit's `set_window_level` sends a `_NET_WM_STATE` ClientMessage, which a
+/// window manager only honours for a window it already manages. The main
+/// window is created hidden and Quake hides it by unmapping, and on an unmap
+/// the window manager also strips `_NET_WM_STATE` (EWMH §_NET_WM_STATE) — so
+/// every level request made while hidden was dropped, and the window mapped
+/// as an ordinary one: `window.always_on_top` did nothing on X11.
+///
+/// Before a map the property *is* the request, so for an unmapped window the
+/// `ABOVE` atom is added to or removed from it directly, preserving any other
+/// state. A mapped window is left alone: the property belongs to the window
+/// manager then, and winit's ClientMessage is the correct channel.
+pub(crate) fn set_above_before_map(window: &Window, above: bool) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, MapState, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win)) = (x11(), x11_window_id(window)) else {
+        return;
+    };
+    let mapped = x
+        .conn
+        .get_window_attributes(win)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .is_none_or(|a| a.map_state != MapState::UNMAPPED);
+    if mapped {
+        return;
+    }
+    let mut atoms: Vec<u32> = x
+        .conn
+        .get_property(false, win, x.wm_state, AtomEnum::ATOM, 0, 64)
+        .ok()
+        .and_then(|c| c.reply().ok())
+        .and_then(|r| r.value32().map(Iterator::collect))
+        .unwrap_or_default();
+    atoms.retain(|&a| a != x.wm_state_above);
+    if above {
+        atoms.push(x.wm_state_above);
+    }
+    if let Err(e) =
+        x.conn
+            .change_property32(PropMode::REPLACE, win, x.wm_state, AtomEnum::ATOM, &atoms)
+    {
+        tracing::debug!(?e, "could not write _NET_WM_STATE");
+    }
+    let _ = x.conn.flush();
+}
+
 /// What kind of child window is being announced to the window manager.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ChildKind {
