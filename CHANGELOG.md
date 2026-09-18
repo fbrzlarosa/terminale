@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.50]
+
 ### Fixed
 - **Stay on top did nothing on Linux (X11 and XWayland).** The main window is
   created hidden, and the Quake drop-down hides it again on every close; the
@@ -1690,7 +1692,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...HEAD
+[0.1.50]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...v0.1.48
 [0.1.47]: https://github.com/fbrzlarosa/terminale/compare/v0.1.46...v0.1.47
