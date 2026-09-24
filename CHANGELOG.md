@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.51]
+
 ### Fixed
 - **Text drifted off the grid, so selection and copy grabbed the wrong
   characters.** Bold and italic text left the configured font for a
@@ -18,6 +20,13 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
   that is still not exactly as wide as its cells is centred or scaled into
   them, so the text stays on the cells that selection, links and the cursor
   use. Wide characters (CJK, emoji) now span their two cells too.
+
+### Changed
+- Minor dependency bumps: `regex` 1.13, `russh` 0.63.3, `mlua` 0.12.1, `clap`,
+  `serde`, `toml`, `open`, `futures-util`; CI bump of `github/codeql-action` to
+  4.38.1. CodeQL no longer runs `rust/hard-coded-cryptographic-value`, whose
+  alerts on the backup module were all false positives, and its job is now a
+  blocking check.
 
 ## [0.1.50]
 
@@ -1704,7 +1713,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...HEAD
+[0.1.51]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...v0.1.49
 [0.1.48]: https://github.com/fbrzlarosa/terminale/compare/v0.1.47...v0.1.48
