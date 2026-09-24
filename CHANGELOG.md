@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.52]
+
 ### Security
 - **`rustls` 0.23.40 → 0.23.45 ([RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285)):
   TLS 1.3 handshake messages were accepted across encryption level
@@ -1721,7 +1723,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...HEAD
+[0.1.52]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...v0.1.50
 [0.1.49]: https://github.com/fbrzlarosa/terminale/compare/v0.1.48...v0.1.49
