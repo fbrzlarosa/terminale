@@ -1453,6 +1453,9 @@ pub struct CellSnapshot {
     /// SGR 8 (concealed/hidden): the glyph is invisible — the cell background
     /// still draws but the text character should not be rendered.
     pub hidden: bool,
+    /// Right half of a double-width character (CJK, wide emoji). It holds a
+    /// blank; the glyph in the cell to its left already covers it.
+    pub wide_spacer: bool,
 }
 
 fn snapshot_cell_with_palette(
@@ -1506,6 +1509,7 @@ fn snapshot_cell_with_palette(
         dim: flags.contains(Flags::DIM),
         inverse: flags.contains(Flags::INVERSE),
         hidden: flags.contains(Flags::HIDDEN),
+        wide_spacer: flags.contains(Flags::WIDE_CHAR_SPACER),
     }
 }
 
@@ -4545,6 +4549,19 @@ mod tests {
             }
         });
         found.unwrap_or_else(|| panic!("cell ({col},{row}) not found"))
+    }
+
+    /// A double-width char marks the cell to its right as its spacer; a
+    /// narrow char does not.
+    #[test]
+    fn wide_char_marks_its_spacer_cell() {
+        let mut emu = Emulator::new(80, 24);
+        emu.advance("中a".as_bytes());
+        assert_eq!(cell_at(&emu, 0, 0).ch, '中');
+        assert!(!cell_at(&emu, 0, 0).wide_spacer);
+        assert!(cell_at(&emu, 1, 0).wide_spacer);
+        assert_eq!(cell_at(&emu, 2, 0).ch, 'a');
+        assert!(!cell_at(&emu, 2, 0).wide_spacer);
     }
 
     /// SGR 2 sets `dim = true`; SGR 0 resets it.

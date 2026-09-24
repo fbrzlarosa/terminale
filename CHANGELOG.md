@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Text drifted off the grid, so selection and copy grabbed the wrong
+  characters.** Bold and italic text left the configured font for a
+  proportional system font whenever the family had no exact 700-weight or
+  italic face — the bundled JetBrains Mono has neither — and every glyph after
+  it on the row landed further left than its cell; symbols and emoji from
+  fallback fonts did the same. Bold and italic now use the family's own
+  nearest faces (italic is slanted when the family ships none), and any glyph
+  that is still not exactly as wide as its cells is centred or scaled into
+  them, so the text stays on the cells that selection, links and the cursor
+  use. Wide characters (CJK, emoji) now span their two cells too.
+
 ## [0.1.50]
 
 ### Fixed

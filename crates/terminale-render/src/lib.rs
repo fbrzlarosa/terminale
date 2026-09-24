@@ -661,6 +661,9 @@ pub struct Renderer {
     /// Falls back to `font_bold_family`, then `font_italic_family`, then
     /// the synthesized path on `font_family`.
     font_bold_italic_family: Option<String>,
+    /// [`GridFonts`] for the families above; `None` until the next row
+    /// rebuild after a font change.
+    grid_fonts: Option<GridFonts>,
     /// Whether ligatures / contextual alternates are enabled for the
     /// terminal grid text.
     ligatures: bool,
@@ -2107,6 +2110,7 @@ impl Renderer {
             font_bold_family: None,
             font_italic_family: None,
             font_bold_italic_family: None,
+            grid_fonts: None,
             ligatures: true,
             underline_thickness_px: 1.0,
             cell_width,
@@ -2321,6 +2325,7 @@ impl Renderer {
             font_bold_family: None,
             font_italic_family: None,
             font_bold_italic_family: None,
+            grid_fonts: None,
             ligatures: true,
             underline_thickness_px: 1.0,
             cell_width,
@@ -2544,6 +2549,7 @@ impl Renderer {
             font_bold_family: None,
             font_italic_family: None,
             font_bold_italic_family: None,
+            grid_fonts: None,
             ligatures: true,
             underline_thickness_px: 1.0,
             cell_width,
@@ -5546,6 +5552,7 @@ impl Renderer {
             );
             self.font_family.clear();
         }
+        self.grid_fonts = None;
         self.remeasure_cell();
     }
 
@@ -5587,6 +5594,7 @@ impl Renderer {
             resolve_override_family(&self.font_system, italic, "font.italic_family");
         self.font_bold_italic_family =
             resolve_override_family(&self.font_system, bold_italic, "font.bold_italic_family");
+        self.grid_fonts = None;
     }
 
     /// Set the line-height multiplier (clamped to `0.8..=3.0`) and
@@ -5620,6 +5628,36 @@ impl Renderer {
         let (w, h) = cell_size_for(&mut self.font_system, self.font_size, family.as_deref());
         self.cell_width = w * self.cell_width_multiplier.clamp(0.8, 2.0);
         self.cell_height = h * self.line_height;
+    }
+
+    /// Row-shaping inputs for a pane `cols` wide. Resolves the grid faces
+    /// against the font database on the first rebuild after a font change.
+    fn grid_text(&mut self, cols: u16) -> GridText {
+        let fonts = self
+            .grid_fonts
+            .get_or_insert_with(|| {
+                GridFonts::new(
+                    &mut self.font_system,
+                    &self.font_family,
+                    self.font_bold_family.as_deref(),
+                    self.font_italic_family.as_deref(),
+                    self.font_bold_italic_family.as_deref(),
+                )
+            })
+            .clone();
+        GridText {
+            fonts,
+            metrics: Metrics::new(self.font_size, self.font_size * self.line_height),
+            shaping: if self.ligatures {
+                Shaping::Advanced
+            } else {
+                Shaping::Basic
+            },
+            cell_width: self.cell_width,
+            width: f32::from(cols) * self.cell_width,
+            height: self.cell_height,
+            builtin_box_drawing: self.builtin_box_drawing,
+        }
     }
 
     /// Replace (or clear) the current text selection rectangle.
@@ -6377,6 +6415,7 @@ impl Renderer {
                     snap.fg.hash(&mut h);
                     snap.bold.hash(&mut h);
                     snap.italic.hash(&mut h);
+                    snap.wide_spacer.hash(&mut h);
                 }
             }
             h.finish()
@@ -6389,95 +6428,12 @@ impl Renderer {
             return;
         }
 
-        let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
-        let family_name = self.font_family.clone();
-        let bold_family_name = self.font_bold_family.clone();
-        let italic_family_name = self.font_italic_family.clone();
-        let bold_italic_family_name = self.font_bold_italic_family.clone();
-        let shaping = if self.ligatures {
-            Shaping::Advanced
-        } else {
-            Shaping::Basic
-        };
+        let text = self.grid_text(cols);
         let mut pane_text: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
         for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-            let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
-            let mut last_attr: Option<([u8; 3], bool, bool)> = None;
-            let mut current = String::new();
-            for snap in row_cells {
-                // Box-drawing cells get their geometry from the quad pass
-                // above; substitute a space so no font glyph paints over it.
-                let suppress_for_box = builtin_box_drawing_pane
-                    && !snap.hidden
-                    && box_drawing::is_in_range(snap.ch)
-                    && box_drawing::box_rects(snap.ch).is_some();
-                let effective_ch = if suppress_for_box || snap.ch == '\0' {
-                    ' '
-                } else {
-                    snap.ch
-                };
-                let attr = (snap.fg, snap.bold, snap.italic);
-                if last_attr.is_none_or(|a| a == attr) {
-                    current.push(effective_ch);
-                    last_attr = Some(attr);
-                } else {
-                    if let Some((fg, bold, italic)) = last_attr {
-                        owned.push((
-                            current,
-                            attr_for(
-                                fg,
-                                bold,
-                                italic,
-                                &family_name,
-                                bold_family_name.as_deref(),
-                                italic_family_name.as_deref(),
-                                bold_italic_family_name.as_deref(),
-                            ),
-                        ));
-                    }
-                    current = String::new();
-                    current.push(effective_ch);
-                    last_attr = Some(attr);
-                }
-            }
-            if let Some((fg, bold, italic)) = last_attr {
-                if !current.is_empty() {
-                    owned.push((
-                        current,
-                        attr_for(
-                            fg,
-                            bold,
-                            italic,
-                            &family_name,
-                            bold_family_name.as_deref(),
-                            italic_family_name.as_deref(),
-                            bold_italic_family_name.as_deref(),
-                        ),
-                    ));
-                }
-            }
-            if owned.is_empty() {
+            let Some(buf) = shape_grid_row(&mut self.font_system, &text, row_cells) else {
                 continue;
-            }
-            let mut buf = Buffer::new(&mut self.font_system, metrics);
-            buf.set_size(
-                &mut self.font_system,
-                Some(f32::from(cols) * self.cell_width),
-                Some(self.cell_height),
-            );
-            let spans: Vec<(&str, Attrs<'_>)> =
-                owned.iter().map(|(s, a)| (s.as_str(), *a)).collect();
-            let default_fam = if family_name.is_empty() {
-                Family::Monospace
-            } else {
-                Family::Name(&family_name)
             };
-            buf.set_rich_text(
-                &mut self.font_system,
-                spans,
-                Attrs::new().family(default_fam),
-                shaping,
-            );
             let y = pane_y + row_idx as f32 * ch_px;
             pane_text.push((buf, [pane_x + pad_px, y]));
         }
@@ -8183,6 +8139,7 @@ impl Renderer {
                     snap.fg.hash(&mut h);
                     snap.bold.hash(&mut h);
                     snap.italic.hash(&mut h);
+                    snap.wide_spacer.hash(&mut h);
                 }
             }
             h.finish()
@@ -8195,110 +8152,12 @@ impl Renderer {
             focused_hash != self.focused_text_hash || self.cached_focused_text.is_empty();
 
         if rebuild_focused_text {
-            let metrics = Metrics::new(self.font_size, self.font_size * self.line_height);
+            let text = self.grid_text(cols);
             let mut text_buffers: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
-            // Clone the family name(s) once per frame so the per-span Attrs can
-            // borrow locals (avoids a self borrow conflict with font_system).
-            let family_name = self.font_family.clone();
-            let bold_family_name = self.font_bold_family.clone();
-            let italic_family_name = self.font_italic_family.clone();
-            let bold_italic_family_name = self.font_bold_italic_family.clone();
-            // Ligatures ⇒ HarfBuzz-quality Advanced shaping; off ⇒ Basic
-            // per-glyph shaping that performs no ligature substitution.
-            let shaping = if self.ligatures {
-                Shaping::Advanced
-            } else {
-                Shaping::Basic
-            };
-
-            // Snapshot the builtin_box_drawing flag for this frame so the hot-path
-            // borrow checker is happy (avoids a `self` borrow inside the loop).
-            let builtin_box_drawing = self.builtin_box_drawing;
-
             for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-                let mut owned: Vec<(String, Attrs<'_>)> = Vec::with_capacity(row_cells.len());
-                let mut last_attr: Option<([u8; 3], bool, bool)> = None;
-                let mut current = String::new();
-                for snap in row_cells {
-                    // ── Procedural box-drawing / block-element path ───────────────
-                    // The geometry for these cells is emitted as quads in the main
-                    // layer above (before the bg-quad upload). Here we only
-                    // substitute a space so the font glyph does not paint over
-                    // those quads. Unmapped in-range chars fall through to the font.
-                    let suppress_for_box = builtin_box_drawing
-                        && !snap.hidden
-                        && box_drawing::is_in_range(snap.ch)
-                        && box_drawing::box_rects(snap.ch).is_some();
-                    let effective_ch = if suppress_for_box || snap.ch == '\0' {
-                        ' '
-                    } else {
-                        snap.ch
-                    };
-
-                    let attr = (snap.fg, snap.bold, snap.italic);
-                    if last_attr.is_none_or(|a| a == attr) {
-                        current.push(effective_ch);
-                        last_attr = Some(attr);
-                    } else {
-                        if let Some((fg, bold, italic)) = last_attr {
-                            owned.push((
-                                current,
-                                attr_for(
-                                    fg,
-                                    bold,
-                                    italic,
-                                    &family_name,
-                                    bold_family_name.as_deref(),
-                                    italic_family_name.as_deref(),
-                                    bold_italic_family_name.as_deref(),
-                                ),
-                            ));
-                        }
-                        current = String::new();
-                        current.push(effective_ch);
-                        last_attr = Some(attr);
-                    }
-                }
-                if let Some((fg, bold, italic)) = last_attr {
-                    if !current.is_empty() {
-                        owned.push((
-                            current,
-                            attr_for(
-                                fg,
-                                bold,
-                                italic,
-                                &family_name,
-                                bold_family_name.as_deref(),
-                                italic_family_name.as_deref(),
-                                bold_italic_family_name.as_deref(),
-                            ),
-                        ));
-                    }
-                }
-
-                if owned.is_empty() {
+                let Some(buf) = shape_grid_row(&mut self.font_system, &text, row_cells) else {
                     continue;
-                }
-
-                let mut buf = Buffer::new(&mut self.font_system, metrics);
-                buf.set_size(
-                    &mut self.font_system,
-                    Some(f32::from(cols) * self.cell_width),
-                    Some(self.cell_height),
-                );
-                let spans: Vec<(&str, Attrs<'_>)> =
-                    owned.iter().map(|(s, a)| (s.as_str(), *a)).collect();
-                let default_fam = if family_name.is_empty() {
-                    Family::Monospace
-                } else {
-                    Family::Name(&family_name)
                 };
-                buf.set_rich_text(
-                    &mut self.font_system,
-                    spans,
-                    Attrs::new().family(default_fam),
-                    shaping,
-                );
                 // Glyphon TextArea origins are PHYSICAL pixels. Background
                 // cells + cursor are placed at `pad_px + col*cw_px` (physical),
                 // so the text must use the same physical frame — otherwise on
@@ -8891,38 +8750,412 @@ pub(crate) fn select_font_family<'a>(
     }
 }
 
-fn attr_for<'a>(
-    fg: [u8; 3],
+/// The face one SGR style (regular / bold / italic / bold-italic) of the
+/// grid font is drawn with, pinned to a face its family actually ships.
+///
+/// cosmic-text keeps the requested family only when one of its faces matches
+/// the style and stretch exactly *and* the weight exactly; otherwise it drops
+/// the family and falls back through the system fonts, usually to a
+/// proportional one (Noto Sans, DejaVu Sans). Asking for `Weight::BOLD` from
+/// a family whose bold face is 558 (the bundled JetBrains Mono), or for
+/// italic from a family with no italic face, rendered that text
+/// proportionally.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct GridFace {
+    weight: glyphon::Weight,
+    style: glyphon::Style,
+    stretch: glyphon::Stretch,
+    /// The family has no italic or oblique face: slant the upright one.
+    fake_italic: bool,
+}
+
+impl GridFace {
+    /// The unresolved request, used when the family is not installed.
+    fn requested(bold: bool, italic: bool) -> Self {
+        Self {
+            weight: if bold {
+                glyphon::Weight::BOLD
+            } else {
+                glyphon::Weight::NORMAL
+            },
+            style: if italic {
+                glyphon::Style::Italic
+            } else {
+                glyphon::Style::Normal
+            },
+            stretch: glyphon::Stretch::Normal,
+            fake_italic: false,
+        }
+    }
+}
+
+/// Pick the face of `family` closest to a regular/bold, upright/italic
+/// request: a true italic, then an oblique, then the upright face slanted;
+/// the normal width when the family has it; the weight nearest 400 (regular)
+/// or 700 (bold).
+fn resolve_grid_face(
+    db: &glyphon::fontdb::Database,
+    family: &str,
     bold: bool,
     italic: bool,
-    main_family: &'a str,
-    bold_family: Option<&'a str>,
-    italic_family: Option<&'a str>,
-    bold_italic_family: Option<&'a str>,
-) -> Attrs<'a> {
-    let (family, apply_bold, apply_italic) = select_font_family(
-        main_family,
-        bold_family,
-        italic_family,
-        bold_italic_family,
-        bold,
-        italic,
-    );
-    let fam = if family.is_empty() {
+) -> GridFace {
+    use glyphon::{Stretch, Style};
+    let faces: Vec<_> = db
+        .faces()
+        .filter(|f| f.families.iter().any(|(name, _)| name == family))
+        .collect();
+    let Some(first) = faces.first() else {
+        return GridFace::requested(bold, italic);
+    };
+    let has_style = |style| faces.iter().any(|f| f.style == style);
+    let (style, fake_italic) = if !italic {
+        let style = if has_style(Style::Normal) {
+            Style::Normal
+        } else {
+            first.style
+        };
+        (style, false)
+    } else if has_style(Style::Italic) {
+        (Style::Italic, false)
+    } else if has_style(Style::Oblique) {
+        (Style::Oblique, false)
+    } else {
+        (first.style, true)
+    };
+    let styled: Vec<_> = faces.iter().filter(|f| f.style == style).collect();
+    let stretch = if styled.iter().any(|f| f.stretch == Stretch::Normal) {
+        Stretch::Normal
+    } else {
+        styled
+            .iter()
+            .map(|f| f.stretch)
+            .min_by_key(|s| s.to_number().abs_diff(Stretch::Normal.to_number()))
+            .unwrap_or(first.stretch)
+    };
+    let target: u16 = if bold { 700 } else { 400 };
+    let weight = styled
+        .iter()
+        .filter(|f| f.stretch == stretch)
+        .map(|f| f.weight.0)
+        // On a tie, bold takes the heavier face and regular the lighter one.
+        .min_by_key(|&w| (w.abs_diff(target), if bold { u16::MAX - w } else { w }))
+        .map_or(GridFace::requested(bold, italic).weight, glyphon::Weight);
+    GridFace {
+        weight,
+        style,
+        stretch,
+        fake_italic,
+    }
+}
+
+/// The grid font families with each SGR style resolved to a face (see
+/// [`GridFace`]). Cached on the renderer until the fonts change and cloned
+/// into each row rebuild, so the row loop can borrow it while `font_system`
+/// is borrowed mutably.
+#[derive(Clone, Debug)]
+struct GridFonts {
+    main: String,
+    bold: Option<String>,
+    italic: Option<String>,
+    bold_italic: Option<String>,
+    /// Indexed by `usize::from(bold) | usize::from(italic) << 1`.
+    faces: [GridFace; 4],
+    /// Advance of a space in the regular face, in ems: the unit the
+    /// invisible padding of [`shape_grid_row`] is sized in.
+    space_em: f32,
+}
+
+impl GridFonts {
+    fn new(
+        font_system: &mut FontSystem,
+        main: &str,
+        bold: Option<&str>,
+        italic: Option<&str>,
+        bold_italic: Option<&str>,
+    ) -> Self {
+        let db = font_system.db();
+        let faces = std::array::from_fn(|i| {
+            let (family, apply_bold, apply_italic) =
+                select_font_family(main, bold, italic, bold_italic, i & 1 != 0, i & 2 != 0);
+            let family = if family.is_empty() {
+                db.family_name(&Family::Monospace)
+            } else {
+                family
+            };
+            resolve_grid_face(db, family, apply_bold, apply_italic)
+        });
+        let mut fonts = Self {
+            main: main.to_owned(),
+            bold: bold.map(str::to_owned),
+            italic: italic.map(str::to_owned),
+            bold_italic: bold_italic.map(str::to_owned),
+            faces,
+            space_em: 0.0,
+        };
+        const PROBE_SIZE: f32 = 16.0;
+        let mut probe = Buffer::new(font_system, Metrics::new(PROBE_SIZE, PROBE_SIZE));
+        probe.set_text(
+            font_system,
+            " ",
+            fonts.attrs([0; 3], false, false),
+            Shaping::Advanced,
+        );
+        fonts.space_em = probe
+            .layout_runs()
+            .find_map(|run| run.glyphs.first().map(|g| g.w / PROBE_SIZE))
+            .unwrap_or(0.0);
+        fonts
+    }
+
+    /// Attributes for a cell with the given foreground and SGR style.
+    fn attrs(&self, fg: [u8; 3], bold: bool, italic: bool) -> Attrs<'_> {
+        let (family, _, _) = select_font_family(
+            &self.main,
+            self.bold.as_deref(),
+            self.italic.as_deref(),
+            self.bold_italic.as_deref(),
+            bold,
+            italic,
+        );
+        let face = self.faces[usize::from(bold) | usize::from(italic) << 1];
+        let flags = if face.fake_italic {
+            cosmic_text::CacheKeyFlags::FAKE_ITALIC
+        } else {
+            cosmic_text::CacheKeyFlags::empty()
+        };
+        Attrs::new()
+            .family(grid_family(family))
+            .color(GlyphonColor::rgb(fg[0], fg[1], fg[2]))
+            .weight(face.weight)
+            .style(face.style)
+            .stretch(face.stretch)
+            .cache_key_flags(flags)
+    }
+
+    fn default_attrs(&self) -> Attrs<'_> {
+        Attrs::new().family(grid_family(&self.main))
+    }
+
+    /// An invisible space `width` logical px wide, or `None` when the regular
+    /// face reports no usable space advance.
+    fn pad_attrs(&self, width: f32, line_height: f32) -> Option<Attrs<'_>> {
+        (self.space_em > 0.0).then(|| {
+            self.attrs([0; 3], false, false)
+                .metrics(Metrics::new(width / self.space_em, line_height))
+        })
+    }
+}
+
+fn grid_family(name: &str) -> Family<'_> {
+    if name.is_empty() {
         Family::Monospace
     } else {
-        Family::Name(family)
+        Family::Name(name)
+    }
+}
+
+/// Everything [`shape_grid_row`] needs besides the cells, snapshotted once
+/// per rebuild.
+struct GridText {
+    fonts: GridFonts,
+    metrics: Metrics,
+    shaping: Shaping,
+    cell_width: f32,
+    /// Buffer size in logical px: the pane's columns × one cell height.
+    width: f32,
+    height: f32,
+    builtin_box_drawing: bool,
+}
+
+/// Glyphs within this distance (logical px) of their cell count as on the
+/// grid; float error across a full row stays orders of magnitude below it.
+const GRID_SNAP_EPS: f32 = 0.05;
+
+/// How [`shape_grid_row`] fits a glyph cluster whose advance is not exactly
+/// the width of its cells.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CellFit {
+    /// Narrower: centre it between two invisible spaces this wide.
+    Pad(f32),
+    /// Wider: draw it at this fraction of the font size.
+    Scale(f32),
+}
+
+/// One drawn character of a grid row: the char, how many cells it covers
+/// (2 for a wide char, whose spacer cell gets no char of its own), attrs.
+type GridChar<'a> = (char, u16, Attrs<'a>);
+
+/// Shape one grid row into a buffer whose glyphs each start on their cell.
+///
+/// cosmic-text places glyphs by font advance, so a single glyph that is not
+/// exactly as wide as its cells — a symbol or emoji from a fallback font, a
+/// CJK glyph, any glyph under a cell-width multiplier — shifts every glyph
+/// after it, and the text on screen stops matching the cells that selection,
+/// links and the cursor use. The row is shaped once; if every glyph already
+/// sits on its cell (the common case) that buffer is kept. Otherwise it is
+/// re-shaped with each misfit cluster fitted to its cells: centred between
+/// invisible spaces when narrower, scaled down when wider.
+fn shape_grid_row(
+    font_system: &mut FontSystem,
+    text: &GridText,
+    row_cells: &[CellSnapshot],
+) -> Option<Buffer> {
+    let mut chars: Vec<GridChar<'_>> = Vec::with_capacity(row_cells.len());
+    for snap in row_cells {
+        if snap.wide_spacer {
+            if let Some(wide) = chars.last_mut() {
+                wide.1 += 1;
+                continue;
+            }
+        }
+        // Box-drawing cells get their geometry from the quad pass; a space
+        // keeps a font glyph from painting over it.
+        let suppress_for_box = text.builtin_box_drawing
+            && !snap.hidden
+            && box_drawing::is_in_range(snap.ch)
+            && box_drawing::box_rects(snap.ch).is_some();
+        let ch = if suppress_for_box || snap.ch == '\0' {
+            ' '
+        } else {
+            snap.ch
+        };
+        chars.push((ch, 1, text.fonts.attrs(snap.fg, snap.bold, snap.italic)));
+    }
+    if chars.is_empty() {
+        return None;
+    }
+    let mut buf = Buffer::new(font_system, text.metrics);
+    buf.set_wrap(font_system, Wrap::None);
+    buf.set_size(font_system, Some(text.width), Some(text.height));
+    set_grid_row_text(font_system, &mut buf, text, &chars, &[]);
+    // Basic shaping (ligatures off) reports glyph offsets relative to each
+    // word in cosmic-text 0.12, so its layout cannot be mapped back to cells.
+    if text.shaping == Shaping::Advanced {
+        let misfits = grid_row_misfits(&buf, &chars, text.cell_width);
+        if !misfits.is_empty() {
+            set_grid_row_text(font_system, &mut buf, text, &chars, &misfits);
+        }
+    }
+    Some(buf)
+}
+
+/// The clusters of a shaped row that are not exactly as wide as their cells,
+/// as `(first char, end char, fit)`; empty when every glyph already starts on
+/// its cell.
+fn grid_row_misfits(
+    buf: &Buffer,
+    chars: &[GridChar<'_>],
+    cell_width: f32,
+) -> Vec<(usize, usize, CellFit)> {
+    // Byte offset and first column of every char, plus an end sentinel.
+    let mut starts = Vec::with_capacity(chars.len() + 1);
+    let (mut byte, mut col) = (0usize, 0u16);
+    for &(ch, cells, _) in chars {
+        starts.push((byte, col));
+        byte += ch.len_utf8();
+        col += cells;
+    }
+    starts.push((byte, col));
+    let char_at = |offset: usize| starts.partition_point(|&(b, _)| b < offset);
+    let col_x = |i: usize| f32::from(starts[i].1) * cell_width;
+
+    // Per cluster, keyed by its first char: summed advance and end char.
+    let mut clusters: Vec<Option<(f32, usize)>> = vec![None; chars.len()];
+    let mut drifted = false;
+    for run in buf.layout_runs() {
+        for g in run.glyphs {
+            let i = char_at(g.start);
+            if i >= chars.len() {
+                continue;
+            }
+            let end = char_at(g.end).max(i + 1);
+            match &mut clusters[i] {
+                Some((advance, _)) => *advance += g.w,
+                slot @ None => {
+                    drifted |= (g.x - col_x(i)).abs() > GRID_SNAP_EPS;
+                    *slot = Some((g.w, end));
+                }
+            }
+        }
+    }
+    if !drifted {
+        return Vec::new();
+    }
+    let mut misfits = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        // A char the shaper emitted no glyph for counts as zero-width.
+        let (advance, end) = clusters[i].unwrap_or((0.0, i + 1));
+        let expected = col_x(end) - col_x(i);
+        if advance + GRID_SNAP_EPS < expected {
+            misfits.push((i, end, CellFit::Pad((expected - advance) / 2.0)));
+        } else if advance > expected + GRID_SNAP_EPS {
+            misfits.push((i, end, CellFit::Scale(expected / advance)));
+        }
+        i = end;
+    }
+    misfits
+}
+
+/// Fill `buf` with the row's chars, applying `misfits` (sorted by first
+/// char) as padding spaces or scaled metrics.
+fn set_grid_row_text<'a>(
+    font_system: &mut FontSystem,
+    buf: &mut Buffer,
+    text: &'a GridText,
+    chars: &[GridChar<'a>],
+    misfits: &[(usize, usize, CellFit)],
+) {
+    let mut line = String::with_capacity(chars.len() + 2 * misfits.len());
+    let mut spans: Vec<(std::ops::Range<usize>, Attrs<'a>)> = Vec::new();
+    let mut push = |ch: char, attrs: Attrs<'a>| {
+        let start = line.len();
+        line.push(ch);
+        match spans.last_mut() {
+            Some((range, last)) if *last == attrs => range.end = line.len(),
+            _ => spans.push((start..line.len(), attrs)),
+        }
     };
-    let mut a = Attrs::new()
-        .family(fam)
-        .color(GlyphonColor::rgb(fg[0], fg[1], fg[2]));
-    if apply_bold {
-        a = a.weight(glyphon::Weight::BOLD);
+    let mut next = misfits.iter().peekable();
+    let mut i = 0;
+    while i < chars.len() {
+        let Some(&&(start, end, fit)) = next.peek().filter(|m| m.0 == i) else {
+            push(chars[i].0, chars[i].2);
+            i += 1;
+            continue;
+        };
+        next.next();
+        match fit {
+            CellFit::Pad(width) => {
+                let pad = text.fonts.pad_attrs(width, text.metrics.line_height);
+                if let Some(pad) = pad {
+                    push(' ', pad);
+                }
+                for &(ch, _, attrs) in &chars[start..end] {
+                    push(ch, attrs);
+                }
+                if let Some(pad) = pad {
+                    push(' ', pad);
+                }
+            }
+            CellFit::Scale(factor) => {
+                let metrics =
+                    Metrics::new(text.metrics.font_size * factor, text.metrics.line_height);
+                for &(ch, _, attrs) in &chars[start..end] {
+                    push(ch, attrs.metrics(metrics));
+                }
+            }
+        }
+        i = end;
     }
-    if apply_italic {
-        a = a.style(glyphon::Style::Italic);
-    }
-    a
+    buf.set_rich_text(
+        font_system,
+        spans
+            .iter()
+            .map(|(range, attrs)| (&line[range.clone()], *attrs)),
+        text.fonts.default_attrs(),
+        text.shaping,
+    );
 }
 
 /// Resolve an optional per-style font family override against the font
@@ -10518,6 +10751,7 @@ mod tests {
             dim,
             inverse,
             hidden,
+            wide_spacer: false,
         }
     }
 
@@ -10824,6 +11058,193 @@ mod tests {
         assert_eq!(fam, "Main");
         assert!(bold_w);
         assert!(!italic_s);
+    }
+
+    // ── Grid faces and cell-aligned row shaping ───────────────────────────
+
+    /// Bundled fonts only, so the result doesn't depend on the host's fonts.
+    fn grid_test_font_system() -> FontSystem {
+        let db = glyphon::fontdb::Database::new();
+        let mut fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        load_symbol_fonts(&mut fs);
+        bundled_fonts::load_bundled_fonts(&mut fs);
+        fs
+    }
+
+    /// Row-shaping inputs for the bundled JetBrains Mono at 13 px, with the
+    /// cell `multiplier` times the font's natural advance.
+    fn grid_test_text(fs: &mut FontSystem, multiplier: f32) -> GridText {
+        let fonts = GridFonts::new(fs, "JetBrains Mono", None, None, None);
+        let (natural, _) = cell_size_for(fs, 13.0, Some("JetBrains Mono"));
+        let cell_width = natural * multiplier;
+        GridText {
+            fonts,
+            metrics: Metrics::new(13.0, 13.0 * 1.3),
+            shaping: Shaping::Advanced,
+            cell_width,
+            width: 80.0 * cell_width,
+            height: 13.0 * 1.3,
+            builtin_box_drawing: false,
+        }
+    }
+
+    fn grid_cell(ch: char, bold: bool, italic: bool) -> CellSnapshot {
+        CellSnapshot {
+            ch,
+            bold,
+            italic,
+            ..test_snap([0xff; 3], [0; 3], false, false, false)
+        }
+    }
+
+    fn wide_spacer() -> CellSnapshot {
+        CellSnapshot {
+            ch: ' ',
+            wide_spacer: true,
+            ..grid_cell(' ', false, false)
+        }
+    }
+
+    /// `(char, x, font size)` of every glyph drawn for a non-space char.
+    fn drawn_glyphs(buf: &Buffer) -> Vec<(char, f32, f32)> {
+        let line = buf.lines[0].text();
+        buf.layout_runs()
+            .flat_map(|run| run.glyphs.iter())
+            .filter_map(|g| {
+                let ch = line[g.start..].chars().next()?;
+                (ch != ' ').then_some((ch, g.x, g.font_size))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grid_face_resolves_to_faces_the_family_ships() {
+        let fs = grid_test_font_system();
+        let db = fs.db();
+        let family_has = |face: GridFace| {
+            db.faces().any(|f| {
+                f.families.iter().any(|(n, _)| n == "JetBrains Mono")
+                    && f.weight == face.weight
+                    && f.style == face.style
+                    && f.stretch == face.stretch
+            })
+        };
+        let regular = resolve_grid_face(db, "JetBrains Mono", false, false);
+        assert_eq!(regular.weight, glyphon::Weight::NORMAL);
+        assert!(family_has(regular));
+        // The bundled bold face is not weight 700; asking for 700 exactly
+        // made cosmic-text drop the family for a proportional fallback.
+        let bold = resolve_grid_face(db, "JetBrains Mono", true, false);
+        assert!(bold.weight.0 > 400, "bold picked {:?}", bold.weight);
+        assert!(family_has(bold));
+        // No italic face is bundled: slant the upright one.
+        let italic = resolve_grid_face(db, "JetBrains Mono", false, true);
+        assert!(italic.fake_italic);
+        assert!(family_has(italic));
+        let bold_italic = resolve_grid_face(db, "JetBrains Mono", true, true);
+        assert!(bold_italic.fake_italic);
+        assert_eq!(bold_italic.weight, bold.weight);
+        assert_eq!(
+            resolve_grid_face(db, "No Such Family", true, true),
+            GridFace::requested(true, true)
+        );
+    }
+
+    #[test]
+    fn styled_cells_stay_in_the_grid_family_and_on_their_cells() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.0);
+        let row: Vec<_> = "regular bold italic both"
+            .chars()
+            .enumerate()
+            .map(|(i, ch)| grid_cell(ch, (8..12).contains(&i) || i >= 20, i >= 13))
+            .collect();
+        let buf = shape_grid_row(&mut fs, &text, &row).expect("non-empty row");
+        let mut glyphs = 0;
+        for g in buf.layout_runs().flat_map(|run| run.glyphs.iter()) {
+            let family = fs.db().face(g.font_id).map(|f| f.families[0].0.clone());
+            assert_eq!(
+                family.as_deref(),
+                Some("JetBrains Mono"),
+                "glyph at {}",
+                g.start
+            );
+            assert!((g.x - g.start as f32 * text.cell_width).abs() <= GRID_SNAP_EPS);
+            glyphs += 1;
+        }
+        assert_eq!(glyphs, row.len());
+    }
+
+    #[test]
+    fn glyphs_are_centred_in_cells_wider_than_the_font() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.5);
+        let natural = text.cell_width / 1.5;
+        let row: Vec<_> = "a-b=c"
+            .chars()
+            .map(|ch| grid_cell(ch, false, false))
+            .collect();
+        let buf = shape_grid_row(&mut fs, &text, &row).expect("non-empty row");
+        let glyphs = drawn_glyphs(&buf);
+        assert_eq!(glyphs.len(), row.len());
+        for (col, (_, x, _)) in glyphs.iter().enumerate() {
+            let expected = col as f32 * text.cell_width + (text.cell_width - natural) / 2.0;
+            assert!(
+                (x - expected).abs() <= GRID_SNAP_EPS,
+                "col {col}: {x} vs {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn glyphs_are_shrunk_into_cells_narrower_than_the_font() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 0.8);
+        let row: Vec<_> = "abcde"
+            .chars()
+            .map(|ch| grid_cell(ch, false, false))
+            .collect();
+        let buf = shape_grid_row(&mut fs, &text, &row).expect("non-empty row");
+        let glyphs = drawn_glyphs(&buf);
+        assert_eq!(glyphs.len(), row.len());
+        for (col, (_, x, size)) in glyphs.iter().enumerate() {
+            assert!((x - col as f32 * text.cell_width).abs() <= GRID_SNAP_EPS);
+            assert!(*size < 13.0, "col {col} drawn at {size}px");
+        }
+    }
+
+    #[test]
+    fn wide_chars_span_their_spacer_and_keep_later_glyphs_on_their_cells() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.0);
+        let row = vec![
+            grid_cell('a', false, false),
+            grid_cell('中', false, false),
+            wide_spacer(),
+            grid_cell('b', false, false),
+            grid_cell('😀', false, false),
+            wide_spacer(),
+            grid_cell('c', false, false),
+        ];
+        let buf = shape_grid_row(&mut fs, &text, &row).expect("non-empty row");
+        let x_of = |wanted: char| {
+            drawn_glyphs(&buf)
+                .into_iter()
+                .find(|&(ch, _, _)| ch == wanted)
+                .map_or_else(|| panic!("no glyph for {wanted:?}"), |(_, x, _)| x)
+        };
+        for (ch, col) in [('a', 0.0), ('b', 3.0), ('c', 6.0)] {
+            let expected = col * text.cell_width;
+            assert!((x_of(ch) - expected).abs() <= GRID_SNAP_EPS, "{ch:?}");
+        }
+        for (ch, col) in [('中', 1.0), ('😀', 4.0)] {
+            let x = x_of(ch);
+            let cell = col * text.cell_width;
+            assert!(
+                x >= cell - GRID_SNAP_EPS && x < cell + 2.0 * text.cell_width,
+                "{ch:?} at {x}"
+            );
+        }
     }
 
     // ── Inactive-pane dim overlay unit tests ──────────────────────────────
