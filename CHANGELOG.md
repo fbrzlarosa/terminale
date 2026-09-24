@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Security
+- **`rustls` 0.23.40 → 0.23.45 ([RUSTSEC-2026-0285](https://rustsec.org/advisories/RUSTSEC-2026-0285)):
+  TLS 1.3 handshake messages were accepted across encryption level
+  boundaries.** rustls carries the HTTPS connections of the AI providers and
+  of the self-updater. The fix also moves `aws-lc-rs`, `aws-lc-sys` and
+  `rustls-webpki` forward, and replaces the yanked `der` 0.8.0 (SSH stack)
+  with 0.8.2. Lockfile-only — no behaviour or API change.
+
 ## [0.1.51]
 
 ### Fixed
