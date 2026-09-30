@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Linux (GNOME, X11 backend): a window sized to fill a whole monitor got
+  stuck full-screen.** Mutter treats an undecorated X11 window that asks for
+  exactly a monitor's geometry as a legacy full-screen game, so restoring a
+  session saved at monitor size (or docking the Quake drop-down at 100% on a
+  monitor with no panel) turned it full-screen behind terminale's back: the
+  title bar could no longer drag it, and neither the title-bar buttons nor F11
+  could take it out. Terminal windows now declare their client-side
+  decorations to the window manager, as GTK windows do, which keeps them out
+  of that heuristic.
+
 ## [0.1.52]
 
 ### Security

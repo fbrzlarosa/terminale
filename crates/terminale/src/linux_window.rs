@@ -304,6 +304,9 @@ struct X11Conn {
     /// request (EWMH §_NET_WM_STATE).
     wm_state: u32,
     wm_state_above: u32,
+    /// `_GTK_FRAME_EXTENTS` — the de-facto "this window draws its own
+    /// decorations" marker; see [`declare_client_decorated`].
+    gtk_frame_extents: u32,
 }
 
 /// Lazily-opened shared X11 connection. `None` once an attempt has failed, so
@@ -366,6 +369,10 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         .intern_atom(false, b"_NET_WM_STATE_ABOVE")?
         .reply()?
         .atom;
+    let gtk_frame_extents = conn
+        .intern_atom(false, b"_GTK_FRAME_EXTENTS")?
+        .reply()?
+        .atom;
     Ok(X11Conn {
         conn,
         root,
@@ -380,6 +387,7 @@ fn open_x11() -> Result<X11Conn, Box<dyn std::error::Error>> {
         window_type_dialog,
         wm_state,
         wm_state_above,
+        gtk_frame_extents,
     })
 }
 
@@ -715,6 +723,48 @@ pub(crate) fn set_above_before_map(window: &Window, above: bool) {
         tracing::debug!(?e, "could not write _NET_WM_STATE");
     }
     let _ = x.conn.flush();
+}
+
+/// Tell the window manager that `window` draws its own decorations, by setting
+/// `_GTK_FRAME_EXTENTS` to zero on every side — the value GTK writes for a
+/// client-side-decorated window without an invisible shadow border.
+///
+/// Without it mutter mistakes an undecorated window for a "legacy" game: any
+/// move/resize request that lands exactly on a monitor rect is silently turned
+/// into `_NET_WM_STATE_FULLSCREEN` (`meta_window_move_resize_request`, guarded
+/// by `window->decorated || !has_custom_frame_extents`). A terminal restored or
+/// Quake-docked onto a monitor with no panel on it is exactly that request, and
+/// the result was a window stuck full-screen: mutter withdrew the move and
+/// resize actions, so the title bar could not drag it, and since winit never
+/// asked for full-screen it could not take the window out of it either.
+///
+/// Zero extents leave mutter's frame/client rect conversion unchanged, so this
+/// changes nothing else about placement. Written before the window is mapped;
+/// mutter reads the property at manage time and on every later change. No-op
+/// on a native Wayland surface, which has no such heuristic.
+pub(crate) fn declare_client_decorated(window: &Window) {
+    use x11rb::protocol::xproto::{AtomEnum, PropMode};
+    use x11rb::wrapper::ConnectionExt as _;
+
+    let (Some(x), Some(win)) = (x11(), x11_window_id(window)) else {
+        return;
+    };
+    // `check` is a round trip, so the property is in place before winit's own
+    // connection sends the map or the first geometry request.
+    let written = x
+        .conn
+        .change_property32(
+            PropMode::REPLACE,
+            win,
+            x.gtk_frame_extents,
+            AtomEnum::CARDINAL,
+            &[0, 0, 0, 0],
+        )
+        .map_err(x11rb::errors::ReplyError::from)
+        .and_then(x11rb::cookie::VoidCookie::check);
+    if let Err(e) = written {
+        tracing::debug!(?e, "could not write _GTK_FRAME_EXTENTS");
+    }
 }
 
 /// What kind of child window is being announced to the window manager.

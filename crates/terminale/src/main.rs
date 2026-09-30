@@ -3468,6 +3468,11 @@ impl TerminaleApp {
                 .expect("failed to create window"),
         );
 
+        // Before any geometry request: otherwise mutter turns a monitor-sized
+        // restore or Quake dock into a full-screen the window cannot leave.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        crate::linux_window::declare_client_decorated(&window);
+
         // Apply the configured window level up front so "stay on top"
         // takes effect on the very first frame. Quake mode manages its own
         // visibility (show/hide) independently of this level.
