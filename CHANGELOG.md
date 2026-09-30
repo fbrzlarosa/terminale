@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.53]
+
 ### Fixed
 - **Linux (GNOME, X11 backend): a window sized to fill a whole monitor got
   stuck full-screen.** Mutter treats an undecorated X11 window that asks for
@@ -1734,7 +1736,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.53...HEAD
+[0.1.53]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...v0.1.51
 [0.1.50]: https://github.com/fbrzlarosa/terminale/compare/v0.1.49...v0.1.50
