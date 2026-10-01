@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.54]
+
 ### Fixed
 - **A restored window opened on the pointer's monitor, then jumped to its
   saved one.** With `restore_window_geometry` on, the main window was created
@@ -1744,7 +1746,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.53...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.54...HEAD
+[0.1.54]: https://github.com/fbrzlarosa/terminale/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...v0.1.52
 [0.1.51]: https://github.com/fbrzlarosa/terminale/compare/v0.1.50...v0.1.51
