@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **A restored window opened on the pointer's monitor, then jumped to its
+  saved one.** With `restore_window_geometry` on, the main window was created
+  without a position and only moved to its saved geometry once it was already
+  on screen, so the window manager first placed it on whichever monitor the
+  mouse was on. The window is now created at its saved position from the
+  start, as the other restored windows already were.
+
 ## [0.1.53]
 
 ### Fixed
