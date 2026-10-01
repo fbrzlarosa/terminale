@@ -5312,6 +5312,7 @@ impl TerminaleApp {
             )
         };
         let restore_geometry = self.config.window.restore_window_geometry;
+        let monitors: Vec<_> = event_loop.available_monitors().collect();
         let mut focus_idx: Option<usize> = None;
         for saved_win in saved {
             let win_state = saved_win.window.clone();
@@ -5319,14 +5320,10 @@ impl TerminaleApp {
             // Map the window straight at its saved origin so it never flashes
             // at the default position first; `apply_restored_window_state`
             // refines size / monitor / Quake once the surface is revealed.
-            let position = if restore_geometry {
-                win_state
-                    .as_ref()
-                    .and_then(|w| w.rect)
-                    .map(|(x, y, _, _)| winit::dpi::PhysicalPosition::new(x, y))
-            } else {
-                None
-            };
+            let position = win_state
+                .as_ref()
+                .filter(|_| restore_geometry)
+                .and_then(|w| restored_window_origin(w, &monitors));
             let new_win = self.build_window(event_loop, Some(shared.clone()), position, Vec::new());
             let win_size = new_win.window.inner_size();
             self.windows.push(new_win);
@@ -6638,47 +6635,56 @@ fn capture_window_state(state: &TermWindow) -> crate::workspace::SavedWindowStat
     }
 }
 
+/// Where a restored window should be placed: the saved origin if it still
+/// lands on a connected display, otherwise the saved monitor's origin (found
+/// by friendly name — the display moved, or was reconnected elsewhere).
+/// `None` when nothing about the geometry was saved.
+fn restored_window_origin(
+    ws: &crate::workspace::SavedWindowState,
+    monitors: &[winit::monitor::MonitorHandle],
+) -> Option<winit::dpi::PhysicalPosition<i32>> {
+    let (x, y, _, _) = ws.rect?;
+    let origin_on_screen = monitors.iter().any(|m| {
+        let p = m.position();
+        crate::monitor_names::monitor_size(m).is_some_and(|s| {
+            x >= p.x
+                && y >= p.y
+                && x < p.x + i32::try_from(s.width).unwrap_or(i32::MAX)
+                && y < p.y + i32::try_from(s.height).unwrap_or(i32::MAX)
+        })
+    });
+    let (fx, fy) = if origin_on_screen {
+        (x, y)
+    } else if let Some(name) = &ws.monitor {
+        monitors
+            .iter()
+            .find(|m| {
+                crate::monitor_names::friendly_monitor_name(m).as_deref() == Some(name.as_str())
+            })
+            .map_or((x, y), |m| {
+                let p = m.position();
+                (p.x, p.y)
+            })
+    } else {
+        (x, y)
+    };
+    Some(winit::dpi::PhysicalPosition::new(fx, fy))
+}
+
 /// Re-apply a restored [`crate::workspace::SavedWindowState`] after the window
-/// has been revealed: place it at the saved geometry (recentred on the saved
-/// monitor by friendly name if the absolute origin no longer lands on any
-/// display), then reopen Quake mode if it was closed showing.
+/// has been revealed: place it at the saved geometry (see
+/// [`restored_window_origin`]), then reopen Quake mode if it was closed
+/// showing.
 fn apply_restored_window_state(
     state: &mut TermWindow,
     ws: &crate::workspace::SavedWindowState,
     quake_cfg: &terminale_config::QuakeConfig,
 ) {
-    if let Some((x, y, w, h)) = ws.rect {
+    if let Some((_, _, w, h)) = ws.rect {
         let monitors: Vec<_> = state.window.available_monitors().collect();
-        let origin_on_screen = monitors.iter().any(|m| {
-            let p = m.position();
-            crate::monitor_names::monitor_size(m).is_some_and(|s| {
-                x >= p.x
-                    && y >= p.y
-                    && x < p.x + i32::try_from(s.width).unwrap_or(i32::MAX)
-                    && y < p.y + i32::try_from(s.height).unwrap_or(i32::MAX)
-            })
-        });
-        // If the saved origin still lands on a connected display, trust it;
-        // otherwise re-anchor to the saved monitor's origin (display moved /
-        // was disconnected and reconnected elsewhere).
-        let (fx, fy) = if origin_on_screen {
-            (x, y)
-        } else if let Some(name) = &ws.monitor {
-            monitors
-                .iter()
-                .find(|m| {
-                    crate::monitor_names::friendly_monitor_name(m).as_deref() == Some(name.as_str())
-                })
-                .map_or((x, y), |m| {
-                    let p = m.position();
-                    (p.x, p.y)
-                })
-        } else {
-            (x, y)
-        };
-        state
-            .window
-            .set_outer_position(winit::dpi::PhysicalPosition::new(fx, fy));
+        if let Some(origin) = restored_window_origin(ws, &monitors) {
+            state.window.set_outer_position(origin);
+        }
         let _ = state
             .window
             .request_inner_size(winit::dpi::PhysicalSize::new(w, h));
@@ -6798,9 +6804,37 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         let initial_cols = terminale_term::DEFAULT_COLS;
         let initial_rows = terminale_term::DEFAULT_ROWS;
 
+        // Read the last session up front: the primary window has to be created
+        // at its saved origin. Created without one, the window manager maps it
+        // on the pointer's monitor and the post-reveal restore then visibly
+        // drags it across to the saved one.
+        let do_restore = self.config.window.restore_session
+            == terminale_config::RestoreSession::LastSession
+            && std::env::var_os("TERMINALE_DEMO_PALETTE").is_none();
+        let mut saved_windows = if do_restore {
+            crate::workspace::load_last_session()
+                .map(crate::workspace::SavedWorkspace::into_window_list)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if !self.config.window.restore_all_windows {
+            // Opted out of multi-window restore: only the window the user
+            // opened first comes back.
+            saved_windows.truncate(1);
+        }
+        let initial_position = saved_windows
+            .first()
+            .and_then(|w| w.window.as_ref())
+            .filter(|_| self.config.window.restore_window_geometry)
+            .and_then(|ws| {
+                let monitors: Vec<_> = event_loop.available_monitors().collect();
+                restored_window_origin(ws, &monitors)
+            });
+
         // First window boots a fresh wgpu device (shared = None). Spawn its
         // initial tab against the renderer once it exists.
-        let mut state = self.build_window(event_loop, None, None, Vec::new());
+        let mut state = self.build_window(event_loop, None, initial_position, Vec::new());
         let size = state.window.inner_size();
         let first_tab = spawn_tab(
             self.profile.as_ref(),
@@ -6863,12 +6897,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         }
 
         // ── Session restore on launch ─────────────────────────────────────────
-        // Before showing the window, check if the user wants the last session
-        // restored. If so, replace the just-spawned default tab with the saved
-        // layout. This runs before the demo-palette block so demos still work.
-        let do_restore = self.config.window.restore_session
-            == terminale_config::RestoreSession::LastSession
-            && std::env::var_os("TERMINALE_DEMO_PALETTE").is_none();
+        // Before showing the window, replace the just-spawned default tab with
+        // the saved layout (loaded above). This runs before the demo-palette
+        // block so demos still work.
         // Window geometry / monitor / Quake state to re-apply after the window
         // is revealed (the monitor + scale factor are only stable post-reveal).
         let mut restore_window_state: Option<crate::workspace::SavedWindowState> = None;
@@ -6876,37 +6907,27 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         // function, once the primary window is painted, revealed and placed —
         // they share its wgpu device, so it has to exist first.
         let mut extra_saved_windows: Vec<crate::workspace::SavedWindow> = Vec::new();
-        if do_restore {
-            if let Some(saved_ws) = crate::workspace::load_last_session() {
-                let mut saved_windows = saved_ws.into_window_list();
-                if !self.config.window.restore_all_windows {
-                    // Opted out of multi-window restore: only the window the
-                    // user opened first comes back.
-                    saved_windows.truncate(1);
-                }
-                if !saved_windows.is_empty() {
-                    extra_saved_windows = saved_windows.split_off(1);
-                    let primary = saved_windows.remove(0);
-                    if self.config.window.restore_window_geometry {
-                        restore_window_state = primary.window.clone();
-                    }
-                    let win_size = self.windows[0].window.inner_size();
-                    let instance = self.windows[0].renderer.instance();
-                    let adapter = self.windows[0].renderer.adapter();
-                    let device = self.windows[0].renderer.device();
-                    let queue = self.windows[0].renderer.queue();
-                    self.restore_workspace(
-                        event_loop,
-                        0,
-                        primary.into_workspace(),
-                        instance,
-                        adapter,
-                        device,
-                        queue,
-                        win_size,
-                    );
-                }
+        if !saved_windows.is_empty() {
+            extra_saved_windows = saved_windows.split_off(1);
+            let primary = saved_windows.remove(0);
+            if self.config.window.restore_window_geometry {
+                restore_window_state = primary.window.clone();
             }
+            let win_size = self.windows[0].window.inner_size();
+            let instance = self.windows[0].renderer.instance();
+            let adapter = self.windows[0].renderer.adapter();
+            let device = self.windows[0].renderer.device();
+            let queue = self.windows[0].renderer.queue();
+            self.restore_workspace(
+                event_loop,
+                0,
+                primary.into_workspace(),
+                instance,
+                adapter,
+                device,
+                queue,
+                win_size,
+            );
         }
 
         {
