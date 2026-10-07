@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.55]
+
 ### Added
 - **`gpu.present_mode` (Settings → GPU → Presentation).** `auto` (default)
   never makes a window wait for the display; `vsync` always waits. Applies
@@ -1772,7 +1774,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.54...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.55...HEAD
+[0.1.55]: https://github.com/fbrzlarosa/terminale/compare/v0.1.54...v0.1.55
 [0.1.54]: https://github.com/fbrzlarosa/terminale/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...v0.1.53
 [0.1.52]: https://github.com/fbrzlarosa/terminale/compare/v0.1.51...v0.1.52
