@@ -1229,6 +1229,7 @@ fn main() -> Result<()> {
         runtime,
         tab_drag: None,
         ghost_window: None,
+        drag_geometry: Vec::new(),
         config_watcher,
     };
     event_loop.run_app(&mut app)?;
@@ -1763,6 +1764,9 @@ struct TerminaleApp {
     /// [`Self::spawn_ghost_window`], moved by [`Self::move_ghost_window`],
     /// destroyed by [`Self::destroy_ghost_window`].
     ghost_window: Option<GhostWindow>,
+    /// Where every terminal window sat on screen when the live drag began —
+    /// see [`DragWindowGeom`]. Empty when no drag is running.
+    drag_geometry: Vec<DragWindowGeom>,
     /// Filesystem watcher for `config.toml`. `Some(_)` while
     /// `config.window.auto_reload_config` is on; `None` when disabled or
     /// when the watcher could not be started. Kept alive here so the RAII
@@ -1790,6 +1794,42 @@ struct GhostWindow {
     /// the cursor was inside the tab bar so half-pill-height is the right
     /// approximation).
     pill_height_logical: f32,
+    /// The ghost window's inner size in physical px, as created. Cached so
+    /// following the cursor costs no X server round trip per motion event.
+    size_px: (u32, u32),
+}
+
+/// One terminal window's on-screen geometry, snapshotted when a tab / pane /
+/// group drag starts and used for every hit-test of that drag.
+///
+/// Asking the window system instead is a synchronous round trip per query on
+/// X11 (`outer_position`, `inner_position` and `inner_size` each wait for the
+/// server), and a drag asked several per window on EVERY motion event — with
+/// three windows open, ~17 blocking round trips per mouse event, which a
+/// high-rate mouse outruns and the drag falls behind the cursor. Windows do
+/// not move while a tab is being dragged, so one snapshot serves the drag.
+#[derive(Debug, Clone, Copy)]
+struct DragWindowGeom {
+    id: WindowId,
+    /// Outer (frame) origin, physical screen px.
+    outer: (i32, i32),
+    /// Client-area origin, physical screen px — `None` where the window
+    /// system will not say (a native Wayland surface).
+    inner: Option<(i32, i32)>,
+    /// Client-area size, physical px.
+    size: winit::dpi::PhysicalSize<u32>,
+}
+
+impl DragWindowGeom {
+    fn of(window: &Window) -> Self {
+        let outer = window.outer_position().unwrap_or_default();
+        Self {
+            id: window.id(),
+            outer: (outer.x, outer.y),
+            inner: window.inner_position().ok().map(|p| (p.x, p.y)),
+            size: window.inner_size(),
+        }
+    }
 }
 
 /// Stable identifier for a [`Pane`] inside a tab — survives tree
@@ -3874,6 +3914,7 @@ impl TerminaleApp {
         let Some(any) = self.windows.first() else {
             return;
         };
+        let started = std::time::Instant::now();
         let shared = (
             any.renderer.instance(),
             any.renderer.adapter(),
@@ -3882,6 +3923,7 @@ impl TerminaleApp {
         );
         let pos = winit::dpi::PhysicalPosition::new(cursor_screen.0 - 60, cursor_screen.1 - 18);
         let mut new_win = self.build_window(event_loop, Some(shared), Some(pos), vec![tab]);
+        let built = started.elapsed();
         new_win.active_tab = 0;
         if let Some(t) = new_win.tabs.last() {
             t.emulator.lock().set_palette(new_win.palette);
@@ -3904,6 +3946,13 @@ impl TerminaleApp {
         reveal_window(&mut new_win);
         new_win.window.focus_window();
         self.windows.push(new_win);
+        // A tear-out happens under the user's hand, so what it costs is felt:
+        // keep it measurable without a profiler.
+        tracing::debug!(
+            build_ms = built.as_secs_f64() * 1e3,
+            total_ms = started.elapsed().as_secs_f64() * 1e3,
+            "torn-out window ready"
+        );
     }
 
     /// Promote a pending tab-press on window `win_idx` into a live,
@@ -4130,6 +4179,31 @@ impl TerminaleApp {
         self.update_tab_drag(cursor_screen);
     }
 
+    /// Snapshot every terminal window's on-screen geometry for the drag that
+    /// is about to start (see [`DragWindowGeom`]).
+    fn snapshot_drag_geometry(&mut self) {
+        self.drag_geometry = self
+            .windows
+            .iter()
+            .map(|w| DragWindowGeom::of(&w.window))
+            .collect();
+    }
+
+    /// Window `id`'s on-screen geometry — from the live drag's snapshot, or
+    /// asked of the window system when no drag holds one.
+    fn window_geom(&self, id: WindowId) -> Option<DragWindowGeom> {
+        self.drag_geometry
+            .iter()
+            .find(|g| g.id == id)
+            .copied()
+            .or_else(|| {
+                self.windows
+                    .iter()
+                    .find(|w| w.window.id() == id)
+                    .map(|w| DragWindowGeom::of(&w.window))
+            })
+    }
+
     /// Refresh an in-flight tab drag for a new cursor screen position:
     /// recompute the drop target by hit-testing every window's tab bar, do a
     /// live in-window reorder when over the origin bar, and repaint the
@@ -4155,9 +4229,10 @@ impl TerminaleApp {
                     .filter(|w| w.window.id() != drag.origin_window),
             )
         {
-            let pos = w.window.outer_position().unwrap_or_default();
+            let Some(geom) = self.window_geom(w.window.id()) else {
+                continue;
+            };
             let scale = w.window.scale_factor() as f32;
-            let inner = w.window.inner_size();
             let (is_vertical, vert_strip_x_logical, vert_strip_w_logical, vert_inner_edge_logical) =
                 if let Some((sx, sw, ie)) = w.renderer.vertical_strip_inner_edge() {
                     (true, sx, sw, ie)
@@ -4166,10 +4241,10 @@ impl TerminaleApp {
                 };
             bars.push(BarRect {
                 id: w.window.id(),
-                x: pos.x,
-                y: pos.y,
-                width: inner.width,
-                height: inner.height,
+                x: geom.outer.0,
+                y: geom.outer.1,
+                width: geom.size.width,
+                height: geom.size.height,
                 scale,
                 is_vertical,
                 vert_strip_x_logical,
@@ -4283,12 +4358,12 @@ impl TerminaleApp {
         let Some(w) = self.windows.iter().find(|w| w.window.id() == id) else {
             return 0;
         };
-        let pos = w.window.outer_position().unwrap_or_default();
+        let pos = self.window_geom(id).map_or((0, 0), |g| g.outer);
         if w.renderer.tab_placement().is_vertical() {
-            let local_y = (cursor_screen.1 - pos.y) as f32;
+            let local_y = (cursor_screen.1 - pos.1) as f32;
             w.renderer.drop_slot_at_y(local_y)
         } else {
-            let local_x = (cursor_screen.0 - pos.x) as f32;
+            let local_x = (cursor_screen.0 - pos.0) as f32;
             w.renderer.drop_slot_at(local_x)
         }
     }
@@ -4308,12 +4383,15 @@ impl TerminaleApp {
         }
         for w in &self.windows {
             let id = w.window.id();
-            let Ok(pos) = w.window.inner_position() else {
+            let Some(geom) = self.window_geom(id) else {
                 continue;
             };
-            let size = w.window.inner_size();
-            let lx = cursor_screen.0 - pos.x;
-            let ly = cursor_screen.1 - pos.y;
+            let Some(inner) = geom.inner else {
+                continue;
+            };
+            let size = geom.size;
+            let lx = cursor_screen.0 - inner.0;
+            let ly = cursor_screen.1 - inner.1;
             if lx < 0 || ly < 0 || lx >= size.width as i32 || ly >= size.height as i32 {
                 continue;
             }
@@ -4423,31 +4501,40 @@ impl TerminaleApp {
             DropTarget::Reorder(_) | DropTarget::AttachTo(..)
         );
         let ghost_win = indicator_win.unwrap_or(drag.origin_window);
+        let ghost_win_pos = if floating_ghost_alive {
+            (0, 0)
+        } else {
+            self.window_geom(ghost_win).map_or((0, 0), |g| g.outer)
+        };
         // Refresh the floating ghost window's renderer with the (cached)
         // label so the pill stays correct if config or theme changed
-        // mid-drag.
+        // mid-drag — and repaint it only then. The pill is drawn centred in
+        // its own surface, so following the cursor is purely an OS-level
+        // window move; repainting it on every motion event cost a full frame
+        // per event, each one parked on the compositor's vsync.
         if let Some(gw) = self.ghost_window.as_mut() {
-            gw.renderer
-                .set_tab_drag_ghost(Some(terminale_render::TabGhost {
-                    label: drag.label.clone(),
-                    // The renderer centres the pill in the surface in
-                    // `render_ghost_only`, so the in-pill coordinates are
-                    // unused — pass any consistent values for completeness.
-                    center_x: 0.0,
-                    center_y: 0.0,
-                    width: drag.slot_width,
-                }));
-            gw.window.request_redraw();
+            let ghost = terminale_render::TabGhost {
+                label: drag.label.clone(),
+                // The renderer centres the pill in the surface in
+                // `render_ghost_only`, so the in-pill coordinates are
+                // unused — pass any consistent values for completeness.
+                center_x: 0.0,
+                center_y: 0.0,
+                width: drag.slot_width,
+            };
+            if gw.renderer.tab_drag_ghost() != Some(&ghost) {
+                gw.renderer.set_tab_drag_ghost(Some(ghost));
+                gw.window.request_redraw();
+            }
         }
         for w in &mut self.windows {
             let id = w.window.id();
             let new_ghost: Option<terminale_render::TabGhost> =
                 if !floating_ghost_alive && id == ghost_win {
-                    let pos = w.window.outer_position().unwrap_or_default();
                     let scale = w.window.scale_factor() as f32;
                     // Cursor in this window's logical coords.
-                    let cursor_lx = (drag.cursor_screen.0 - pos.x) as f32 / scale;
-                    let cursor_ly = (drag.cursor_screen.1 - pos.y) as f32 / scale;
+                    let cursor_lx = (drag.cursor_screen.0 - ghost_win_pos.0) as f32 / scale;
+                    let cursor_ly = (drag.cursor_screen.1 - ghost_win_pos.1) as f32 / scale;
                     let center_x = cursor_lx - drag.grab_offset_x;
                     // Sit in the bar band; lift toward the cursor when detaching.
                     let center_y = if detaching {
@@ -4538,6 +4625,7 @@ impl TerminaleApp {
         grab_offset_x: f32,
         cursor_screen: (i32, i32),
     ) {
+        let started = std::time::Instant::now();
         // Pull the shared wgpu device from the origin window so the ghost
         // surface lives on the same device as the rest of the app.
         let Some(origin_idx) = self
@@ -4647,7 +4735,14 @@ impl TerminaleApp {
             renderer,
             grab_offset_x,
             pill_height_logical: pill_h_logical,
+            size_px: (inner_w_px.max(1), inner_h_px.max(1)),
         });
+        // Paid at the very start of every tab drag, so it is what makes a drag
+        // feel sticky when it grows: keep it measurable.
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_secs_f64() * 1e3,
+            "drag ghost window ready"
+        );
     }
 
     /// Reposition the floating ghost window so its pill stays under the
@@ -4658,13 +4753,12 @@ impl TerminaleApp {
             return;
         };
         let scale = gw.window.scale_factor() as f32;
-        let inner = gw.window.inner_size();
         let pos = ghost_window_position(
             cursor_screen,
             scale,
             gw.grab_offset_x,
-            inner.width,
-            inner.height,
+            gw.size_px.0,
+            gw.size_px.1,
         );
         gw.window.set_outer_position(pos);
         // The renderer's pill geometry doesn't depend on cursor position
@@ -4737,6 +4831,9 @@ impl TerminaleApp {
         let Some(drag) = self.tab_drag.take() else {
             return;
         };
+        // The drag is over; its geometry snapshot must not outlive it (the
+        // drop below may well create or move windows).
+        self.drag_geometry.clear();
         match drag.payload.clone() {
             DragPayload::Tab { tab_index } => {
                 // A Chrome-lifted tab was already removed from its source —
@@ -8422,20 +8519,25 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 let w = &mut self.windows[idx];
                 let scale = w.window.scale_factor() as f32;
                 w.pointer_logical = (position.x as f32 / scale, position.y as f32 / scale);
-                // Refresh the Quake current-monitor snapshot on every cursor
-                // move (covers tab-drag across monitors and general pointer
-                // travel while the Quake window is visible). Short-circuits
-                // immediately when the window is hidden.
-                refresh_quake_last_monitor(w);
+                // No Quake monitor refresh here: pointer travel cannot move a
+                // window onto another monitor — only `Moved` / `Resized` /
+                // `ScaleFactorChanged` can, and those refresh it. Doing it on
+                // every motion cost two blocking X round trips per event, on
+                // every window, for every mouse move.
             }
-            let win_pos = self.windows[idx]
-                .window
-                .outer_position()
-                .unwrap_or_default();
-            let cursor_screen = (win_pos.x + position.x as i32, win_pos.y + position.y as i32);
+            // The cursor in screen space. Only a drag needs it, so the window
+            // position (a blocking round trip on X11) is fetched only when one
+            // is running or about to start — and a running drag reads it from
+            // its geometry snapshot rather than asking again per event.
+            let cursor_screen = |app: &Self| {
+                let win_pos = app
+                    .window_geom(app.windows[idx].window.id())
+                    .map_or((0, 0), |g| g.outer);
+                (win_pos.0 + position.x as i32, win_pos.1 + position.y as i32)
+            };
 
             if self.tab_drag.is_some() {
-                self.update_tab_drag(cursor_screen);
+                self.update_tab_drag(cursor_screen(self));
                 return;
             }
             // Promote a pending press into a real drag once it moves enough,
@@ -8450,7 +8552,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     })
             };
             if promote {
-                self.promote_tab_drag(event_loop, idx, cursor_screen);
+                self.snapshot_drag_geometry();
+                self.promote_tab_drag(event_loop, idx, cursor_screen(self));
                 return;
             }
             // Promote a pending pane-header press into a pane drag once the
@@ -8467,7 +8570,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     })
             };
             if promote_pane {
-                self.promote_pane_drag(event_loop, idx, cursor_screen);
+                self.snapshot_drag_geometry();
+                self.promote_pane_drag(event_loop, idx, cursor_screen(self));
                 return;
             }
             // Promote a pending group-pill press into a group drag once the
@@ -8482,7 +8586,8 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     })
             };
             if promote_group {
-                self.promote_group_drag(event_loop, idx, cursor_screen);
+                self.snapshot_drag_geometry();
+                self.promote_group_drag(event_loop, idx, cursor_screen(self));
                 return;
             }
         }

@@ -1269,8 +1269,10 @@ pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 /// Refresh the cached `quake_last_monitor` while the window is visible.
 ///
 /// This must be called on every event that can indicate the window has
-/// changed monitors (cursor movement during a tab drag, `WindowEvent::Moved`,
-/// `Focused(true)`, `Resized`, `ScaleFactorChanged`, `MouseInput::Pressed`).
+/// changed monitors (`WindowEvent::Moved`, `Focused(true)`, `Resized`,
+/// `ScaleFactorChanged`, `MouseInput::Pressed`). Not on pointer motion: the
+/// pointer travelling cannot move the window, and on X11 each probe is two
+/// blocking round trips to the server.
 ///
 /// # Why skip hidden windows
 ///
@@ -1282,9 +1284,9 @@ pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 ///
 /// # Cost
 ///
-/// One `Window::current_monitor()` call (winit caches monitor handles) plus
-/// one `Option<String>` comparison.  On the hot `CursorMoved` path we skip
-/// immediately when the window is not visible.
+/// A geometry probe (`outer_position` + `inner_size`, each a server round
+/// trip on X11) plus one `Option<String>` comparison. Skips immediately when
+/// the window is not visible.
 pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
     // Skip when the window is hidden — the OS-parked rect may be stale.
     if !state.quake_visible {
