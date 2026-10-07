@@ -632,6 +632,13 @@ pub(crate) fn set_window_opacity(window: &Window, alpha: u8) {
 /// that is what we send; the property is also written directly so the value
 /// survives on window managers that only read it at map time. Disabling moves
 /// the window to the *current* desktop, which is what the user sees anyway.
+///
+/// "Current" has to be read from the root window on every call. This used to
+/// write desktop 0 instead, and since the Quake show re-asserts this before
+/// every reveal, a drop-down on a desktop's primary monitor was dragged back to
+/// the first workspace each time it opened — wherever the user had switched
+/// to. (GNOME keeps the other monitors on every workspace by default, which is
+/// why only the primary one showed it.)
 pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::{
@@ -642,10 +649,13 @@ pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
     let (Some(x), Some(win)) = (x11(), x11_window_id(window)) else {
         return;
     };
-    // 0xFFFF_FFFF is EWMH's "all desktops"; otherwise fall back to desktop 0
-    // (the only value we can name without querying the current desktop, and the
-    // one an un-pinned window sensibly returns to).
-    let target: u32 = if enable { u32::MAX } else { 0 };
+    let current = root_cardinals(x, x.current_desktop, 1).and_then(|v| v.first().copied());
+    let Some(target) = desktop_target(enable, current) else {
+        // No `_NET_CURRENT_DESKTOP` to aim at: leave the property alone, so the
+        // window manager maps the window where it would on its own (the
+        // active workspace) rather than on a guessed one.
+        return;
+    };
 
     if let Err(e) = x.conn.change_property32(
         PropMode::REPLACE,
@@ -673,6 +683,19 @@ pub(crate) fn set_on_all_desktops(window: &Window, enable: bool) {
         }
     }
     let _ = x.conn.flush();
+}
+
+/// The `_NET_WM_DESKTOP` value [`set_on_all_desktops`] writes: EWMH's "every
+/// desktop" (`0xFFFF_FFFF`) when pinning, otherwise the desktop currently on
+/// screen. `None` when unpinning with no current desktop to name.
+///
+/// Pure, so the choice is unit-tested without an X server.
+fn desktop_target(all_desktops: bool, current: Option<u32>) -> Option<u32> {
+    if all_desktops {
+        Some(u32::MAX)
+    } else {
+        current
+    }
 }
 
 /// Record "stay on top" in `_NET_WM_STATE` while `window` is unmapped.
@@ -1032,5 +1055,21 @@ mod tests {
         assert_eq!(intersect_rect((0, 0, 100, 100), (500, 500, 100, 100)), None);
         // Edge-touching rects share no area either.
         assert_eq!(intersect_rect((0, 0, 100, 100), (100, 0, 100, 100)), None);
+    }
+
+    /// Unpinning lands the window on the workspace the user is looking at, never
+    /// on a fixed one: a Quake show re-asserts this before every reveal, so a
+    /// hard-coded desktop dragged the window back to the first workspace.
+    #[test]
+    fn desktop_target_follows_the_current_workspace() {
+        assert_eq!(desktop_target(false, Some(2)), Some(2));
+        assert_eq!(desktop_target(false, Some(0)), Some(0));
+        assert_eq!(desktop_target(false, None), None);
+    }
+
+    #[test]
+    fn desktop_target_pins_to_every_workspace() {
+        assert_eq!(desktop_target(true, Some(2)), Some(u32::MAX));
+        assert_eq!(desktop_target(true, None), Some(u32::MAX));
     }
 }

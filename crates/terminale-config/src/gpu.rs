@@ -90,6 +90,43 @@ impl GpuPowerPreference {
     }
 }
 
+/// How a terminal window hands its finished frames to the display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum GpuPresentMode {
+    /// Never wait on the display (default). Uses mailbox presentation where
+    /// the driver offers it; on Linux, where it often does not (NVIDIA under
+    /// XWayland, for one), presents immediately instead — the compositor
+    /// still shows whole frames, while a vsync wait parks the one thread
+    /// every terminale window shares, so each window waited behind the
+    /// others, and behind any the compositor had stopped taking frames from
+    /// (covered, or hidden by Quake) for up to a second. Redraws are paced to
+    /// the monitor's refresh rate, so no frame is drawn that cannot be shown.
+    #[default]
+    Auto,
+    /// Always wait for the display's vertical blank. Never tears, even on an
+    /// X11 desktop without a compositor, at the cost of the stalls above.
+    Vsync,
+}
+
+impl GpuPresentMode {
+    /// All variants in display order — useful for UI dropdowns.
+    #[must_use]
+    pub fn all() -> [Self; 2] {
+        [Self::Auto, Self::Vsync]
+    }
+
+    /// Human-readable label for UI rendering.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto (never wait on the display)",
+            Self::Vsync => "Vsync (always wait)",
+        }
+    }
+}
+
 /// GPU backend selection. Lets users force a specific graphics API or
 /// disable hardware acceleration outright (`backend = "software"`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -101,4 +138,7 @@ pub struct GpuConfig {
     pub backend: GpuBackend,
     /// Adapter power preference: `auto`, `low`, or `high`. Defaults to `auto`.
     pub power_preference: GpuPowerPreference,
+    /// Frame presentation: `auto` (never wait on the display) or `vsync`.
+    /// Applies live. Defaults to `auto`.
+    pub present_mode: GpuPresentMode,
 }

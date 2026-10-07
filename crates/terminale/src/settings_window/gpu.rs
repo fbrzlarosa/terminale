@@ -9,7 +9,8 @@ impl SettingsWindow {
             ui,
             "GPU",
             "Pick the graphics backend or disable hardware acceleration. \
-             All settings on this page require a restart to take effect.",
+             Backend and power preference require a restart; presentation \
+             applies immediately.",
         );
 
         let mut dirty = false;
@@ -71,6 +72,36 @@ impl SettingsWindow {
                 "Auto leaves the choice to the driver. Low power favours an integrated GPU; high \
                  performance favours a discrete GPU. Ignored when Backend is Software. \
                  (requires restart)",
+            );
+        });
+
+        ui.add_space(6.0);
+
+        // Presentation (vsync) picker — applied live to every window.
+        card(ui, |ui| {
+            let hr = ui.horizontal(|ui| {
+                field_label(ui, "Presentation");
+                egui::ComboBox::from_id_salt("gpu_present_mode_combo")
+                    .selected_text(self.config.gpu.present_mode.label())
+                    .width(260.0)
+                    .show_ui(ui, |ui| {
+                        for m in terminale_config::GpuPresentMode::all() {
+                            if ui
+                                .selectable_value(&mut self.config.gpu.present_mode, m, m.label())
+                                .clicked()
+                            {
+                                dirty = true;
+                            }
+                        }
+                    });
+            });
+            self.highlight_row(ui, hr.response.rect, Section::Gpu, "Presentation");
+            sublabel(
+                ui,
+                "Auto never makes a window wait for the display, and paces redraws to the \
+                 monitor's refresh rate: with several windows open, one waiting on vsync would \
+                 hold up all the others. Vsync always waits — choose it only if you see tearing \
+                 (an X11 desktop without a compositor).",
             );
         });
 

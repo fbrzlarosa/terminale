@@ -182,6 +182,21 @@ pub(crate) fn reveal_window(state: &mut RunningState) {
     state.window.request_redraw();
 }
 
+/// Size the surface and every pane's grid to `width × height` physical px,
+/// skipping the surface reconfigure when it already has that size (the grid
+/// resize has its own same-size guard).
+///
+/// For geometry terminale changes itself — a Quake show, the end of its
+/// animation — where waiting for the window manager's `Resized` is not an
+/// option: that event can arrive while an animation consumes it, or never
+/// (a show at an unchanged size), and the grid would keep a stale size.
+pub(crate) fn settle_window_size(state: &mut RunningState, width: u32, height: u32) {
+    if state.renderer.surface_size() != (width.max(1), height.max(1)) {
+        state.renderer.resize(width, height);
+    }
+    crate::resize_all_tabs(state, width, height);
+}
+
 /// Toggle the DWM "cloak" on a window. A cloaked window stays mapped (so the
 /// GPU surface keeps presenting) but is invisible to the compositor — letting
 /// us flip `set_visible(true)` without the OS ever showing an unpainted
@@ -1254,8 +1269,10 @@ pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 /// Refresh the cached `quake_last_monitor` while the window is visible.
 ///
 /// This must be called on every event that can indicate the window has
-/// changed monitors (cursor movement during a tab drag, `WindowEvent::Moved`,
-/// `Focused(true)`, `Resized`, `ScaleFactorChanged`, `MouseInput::Pressed`).
+/// changed monitors (`WindowEvent::Moved`, `Focused(true)`, `Resized`,
+/// `ScaleFactorChanged`, `MouseInput::Pressed`). Not on pointer motion: the
+/// pointer travelling cannot move the window, and on X11 each probe is two
+/// blocking round trips to the server.
 ///
 /// # Why skip hidden windows
 ///
@@ -1267,9 +1284,9 @@ pub(crate) fn set_window_alpha(_window: &Window, _alpha: u8) {}
 ///
 /// # Cost
 ///
-/// One `Window::current_monitor()` call (winit caches monitor handles) plus
-/// one `Option<String>` comparison.  On the hot `CursorMoved` path we skip
-/// immediately when the window is not visible.
+/// A geometry probe (`outer_position` + `inner_size`, each a server round
+/// trip on X11) plus one `Option<String>` comparison. Skips immediately when
+/// the window is not visible.
 pub(crate) fn refresh_quake_last_monitor(state: &mut RunningState) {
     // Skip when the window is hidden — the OS-parked rect may be stale.
     if !state.quake_visible {
@@ -1719,6 +1736,15 @@ pub(crate) fn toggle_quake(
                 apply_window_rect(&state.window, off, true);
                 off
             };
+            // The grid rests at the target size for the whole reveal (the
+            // animated surface only clips it), so size it to the target NOW.
+            // The target is often not the size the window hid at — the first
+            // show of a torn-off window docks it, `display = current` can land
+            // it on a monitor of another size — and nothing else would resize
+            // the grid: the Resized events of this show all arrive while the
+            // animation runs, which only reconfigures the surface. That left
+            // the shell laid out for the old size inside the new window.
+            crate::resize_all_tabs(state, rect.2, rect.3);
             if is_fade {
                 // Start fully transparent; pump ramps the alpha up.
                 set_window_alpha(&state.window, 0);
@@ -1743,8 +1769,12 @@ pub(crate) fn toggle_quake(
             state.window.request_redraw();
             return;
         }
-        // Instant: position exactly, then reveal.
+        // Instant: position exactly, then reveal. Size the surface and grid
+        // with it: a resize that landed while the window was hidden only
+        // reconfigured the surface, and a show at an unchanged size brings no
+        // Resized event that would catch the grid up.
         apply_window_rect(&state.window, rect, true);
+        settle_window_size(state, rect.2, rect.3);
     }
     state.quake_anim = None;
     // Defensive mirror of the instant-hide path: if an earlier Fade was
@@ -2064,12 +2094,25 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
             // Paint the final frame immediately — on a window that doesn't
             // hold foreground focus (with several Quake windows only ONE
             // ends up focused) the Resized→request_redraw round-trip can be
-            // suppressed, leaving stale content. We know the final size, so
-            // size the surface directly instead of waiting for the event;
-            // the grid kept its resting size all along (== `to`), and the
-            // eventual Resized lands as a same-size no-op.
+            // suppressed, leaving stale content. Size the surface AND the
+            // grid directly instead of waiting for the event.
+            //
+            // A geometric reveal has just requested `to`, and the window
+            // manager has not answered yet, so `to` is the best size there
+            // is; should it grant another, that Resized lands after the
+            // animation and goes through the normal path. A fade never moved
+            // the window: its geometry was applied before the reveal and
+            // settled long ago, so ask the server what it actually granted —
+            // `to` is only what was asked for, and the window manager may
+            // have trimmed it (a panel, a smaller monitor).
             state.pending_resize = None;
-            state.renderer.resize(to.2, to.3);
+            let (w, h) = if is_fade {
+                let s = state.window.inner_size();
+                (s.width, s.height)
+            } else {
+                (to.2, to.3)
+            };
+            settle_window_size(state, w, h);
             crate::render_main(state);
         } else {
             state.window.set_visible(false);
@@ -2087,6 +2130,7 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     // Copied out of `anim` so the immutable borrow can end before the frame's
     // own bookkeeping takes `state` mutably below.
     let frame_budget = anim.frame_budget;
+    let showing = anim.showing;
     let mut applied_rect: Option<terminale_config::WindowRect> = None;
 
     // Showing: t goes 0→1 (collapsed/transparent → resting rect).
@@ -2159,6 +2203,13 @@ pub(crate) fn pump_quake_anim(state: &mut RunningState) -> Option<std::time::Dur
     // pending_resize guard in main.rs.
     if let Some(new_size) = state.pending_resize.take() {
         state.renderer.resize(new_size.width, new_size.height);
+        // A fade is the exception: its geometry never animates, so a Resized
+        // mid-reveal is the window manager settling the window where it will
+        // stay (constraining it to the work area, say) — the grid follows it,
+        // or the reveal paints a layout cut for a size the window isn't.
+        if is_fade && showing {
+            crate::resize_all_tabs(state, new_size.width, new_size.height);
+        }
     }
     // Only paint if the compositor is actually taking frames from this window.
     // `render_main` acquires a surface texture synchronously, and a compositor
