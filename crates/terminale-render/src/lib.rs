@@ -5402,6 +5402,12 @@ impl Renderer {
         }
     }
 
+    /// The size the surface is currently configured to, in physical pixels.
+    #[must_use]
+    pub fn surface_size(&self) -> (u32, u32) {
+        (self.config.width, self.config.height)
+    }
+
     /// Resize the surface and the internal text buffer.
     pub fn resize(&mut self, physical_width: u32, physical_height: u32) {
         self.config.width = physical_width.max(1);

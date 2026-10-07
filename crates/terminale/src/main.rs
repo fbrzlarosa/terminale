@@ -9439,9 +9439,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     // the animated window but the PTY grid keeps its resting
                     // size: the shrinking surface clips the full-size frame
                     // (that's the reveal), instead of reflowing the shell ~7
-                    // times per toggle. The final animation frame snaps to the
-                    // resting rect, whose Resized event lands with quake_anim
-                    // == None and resizes the grid once (a same-size no-op).
+                    // times per toggle. The Quake show sizes the grid to the
+                    // resting rect itself (`toggle_quake`, and the pump's
+                    // final frame), so it never depends on this event.
                     if state.quake_anim.is_none() && state.quake_visible {
                         resize_all_tabs(state, new_size.width, new_size.height);
                     }
