@@ -2049,13 +2049,7 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let mut font_system = FontSystem::new();
-        // Make the bundled symbol/emoji fonts available for per-glyph
-        // fallback so tab-bar and overlay icons never render as tofu.
-        load_symbol_fonts(&mut font_system);
-        // Register the curated set of embedded monospace typefaces so they
-        // are always selectable in the font picker on any machine.
-        bundled_fonts::load_bundled_fonts(&mut font_system);
+        let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
@@ -2266,11 +2260,7 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let mut font_system = FontSystem::new();
-        // new_shared windows also need symbol icons and bundled monospace
-        // typefaces — torn-off / shared windows are first-class, not stripped.
-        load_symbol_fonts(&mut font_system);
-        bundled_fonts::load_bundled_fonts(&mut font_system);
+        let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
@@ -2492,9 +2482,7 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
-        let mut font_system = FontSystem::new();
-        load_symbol_fonts(&mut font_system);
-        bundled_fonts::load_bundled_fonts(&mut font_system);
+        let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
         let glyphon_cache = GlyphonCache::new(&device);
         let viewport = GlyphonViewport::new(&device, &glyphon_cache);
@@ -9355,6 +9343,28 @@ pub const TABLER_CODEPOINTS: &[char] = &[
     '\u{EAE1}', // lock-open
     '\u{EAE9}', // map (duplicate; dedup is fine)
 ];
+
+/// A font system for one renderer: the system fonts plus the bundled symbol
+/// and monospace faces every window needs (tab-bar and overlay icons must
+/// never render as tofu, and the embedded typefaces must be selectable in the
+/// font picker on any machine).
+///
+/// The system font directories are scanned ONCE per process, not once per
+/// window: a scan parses every installed face, which on a desktop with a few
+/// thousand fonts costs ~50 ms — paid by every torn-off window and by the
+/// floating ghost every tab drag spawns, right as it starts. The scanned
+/// database is cloned instead (shared font data, ~1 ms). Each renderer keeps
+/// its own `FontSystem` on top of it, so the bundled faces are added exactly as
+/// before and the result is the same database a fresh scan would produce.
+fn new_font_system() -> FontSystem {
+    static SYSTEM_FONTS: std::sync::OnceLock<(String, glyphon::fontdb::Database)> =
+        std::sync::OnceLock::new();
+    let (locale, db) = SYSTEM_FONTS.get_or_init(|| FontSystem::new().into_locale_and_db());
+    let mut font_system = FontSystem::new_with_locale_and_db(locale.clone(), db.clone());
+    load_symbol_fonts(&mut font_system);
+    bundled_fonts::load_bundled_fonts(&mut font_system);
+    font_system
+}
 
 /// Register the same symbol / emoji fonts that egui bundles into the glyphon
 /// font database.
