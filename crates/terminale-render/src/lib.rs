@@ -798,7 +798,9 @@ pub struct Renderer {
     /// the buffers are identical to what a rebuild would produce. Without
     /// this, every non-focused pane re-shaped every visible row on every
     /// frame — the dominant steady-state cost in split layouts.
-    extra_pane_text_cache: std::collections::HashMap<u32, (u64, Vec<(Buffer, [f32; 2])>)>,
+    /// The third element holds each row's [`grid_row_key`], index for index,
+    /// so a miss re-shapes only the rows that actually changed.
+    extra_pane_text_cache: std::collections::HashMap<u32, (u64, Vec<(Buffer, [f32; 2])>, Vec<u64>)>,
     /// Pane ids queued by the current `render_panes` call, in draw order.
     /// The text `prepare` pass draws exactly these entries from the cache;
     /// afterwards entries not in this list are evicted (closed panes,
@@ -856,6 +858,11 @@ pub struct Renderer {
     /// matches, the cached buffers are provably identical to what a
     /// rebuild would produce.
     focused_text_hash: u64,
+    /// The [`grid_row_key`] of each entry of [`Self::cached_focused_text`],
+    /// index for index. When the frame hash misses, a row whose key is still
+    /// on screen — unchanged, or merely scrolled to another line — reuses its
+    /// shaped buffer instead of being shaped again; see [`shape_grid_rows`].
+    focused_row_keys: Vec<u64>,
     /// Cached `"GPU <name> (<backend>)"` label for the resource strip. The
     /// adapter is fixed for the renderer's lifetime; filled lazily on the
     /// first `build_resource_bar` call.
@@ -2162,6 +2169,7 @@ impl Renderer {
             pane_header_text_buffers: Vec::new(),
             cached_focused_text: Vec::new(),
             focused_text_hash: 0,
+            focused_row_keys: Vec::new(),
             gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
@@ -2373,6 +2381,7 @@ impl Renderer {
             pane_header_text_buffers: Vec::new(),
             cached_focused_text: Vec::new(),
             focused_text_hash: 0,
+            focused_row_keys: Vec::new(),
             gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
@@ -2597,6 +2606,7 @@ impl Renderer {
             pane_header_text_buffers: Vec::new(),
             cached_focused_text: Vec::new(),
             focused_text_hash: 0,
+            focused_row_keys: Vec::new(),
             gpu_label: None,
             show_pane_headers: true,
             pane_header_close_hovered: None,
@@ -5624,6 +5634,27 @@ impl Renderer {
         self.cell_height = h * self.line_height;
     }
 
+    /// Hash of every input that shapes a grid row the same way regardless of
+    /// its content or where it is drawn: font, size, metrics, ligatures,
+    /// box drawing and the row width. Combined with a row's cells by
+    /// [`grid_row_key`].
+    fn grid_shape_key(&self, cols: u16, builtin_box_drawing: bool) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.font_size.to_bits().hash(&mut h);
+        self.line_height.to_bits().hash(&mut h);
+        self.font_family.hash(&mut h);
+        self.font_bold_family.hash(&mut h);
+        self.font_italic_family.hash(&mut h);
+        self.font_bold_italic_family.hash(&mut h);
+        self.ligatures.hash(&mut h);
+        builtin_box_drawing.hash(&mut h);
+        cols.hash(&mut h);
+        self.cell_width.to_bits().hash(&mut h);
+        self.cell_height.to_bits().hash(&mut h);
+        h.finish()
+    }
+
     /// Row-shaping inputs for a pane `cols` wide. Resolves the grid faces
     /// against the font database on the first rebuild after a font change.
     fn grid_text(&mut self, cols: u16) -> GridText {
@@ -6417,22 +6448,30 @@ impl Renderer {
         if self
             .extra_pane_text_cache
             .get(&spec.pane_id)
-            .is_some_and(|(h, bufs)| *h == pane_hash && !bufs.is_empty())
+            .is_some_and(|(h, bufs, _)| *h == pane_hash && !bufs.is_empty())
         {
             return;
         }
 
         let text = self.grid_text(cols);
-        let mut pane_text: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
-        for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-            let Some(buf) = shape_grid_row(&mut self.font_system, &text, row_cells) else {
-                continue;
-            };
-            let y = pane_y + row_idx as f32 * ch_px;
-            pane_text.push((buf, [pane_x + pad_px, y]));
-        }
+        let shape_key = self.grid_shape_key(cols, builtin_box_drawing_pane);
+        let (previous, previous_keys) = self
+            .extra_pane_text_cache
+            .remove(&spec.pane_id)
+            .map(|(_, bufs, keys)| (bufs, keys))
+            .unwrap_or_default();
+        let (pane_text, row_keys) = shape_grid_rows(
+            &mut self.font_system,
+            &text,
+            &grid_cells,
+            shape_key,
+            [pane_x + pad_px, pane_y],
+            ch_px,
+            previous,
+            previous_keys,
+        );
         self.extra_pane_text_cache
-            .insert(spec.pane_id, (pane_hash, pane_text));
+            .insert(spec.pane_id, (pane_hash, pane_text, row_keys));
     }
 
     /// Acquire the next swapchain frame, recovering from a lost/outdated
@@ -8147,20 +8186,24 @@ impl Renderer {
 
         if rebuild_focused_text {
             let text = self.grid_text(cols);
-            let mut text_buffers: Vec<(Buffer, [f32; 2])> = Vec::with_capacity(rows.into());
-            for (row_idx, row_cells) in grid_cells.iter().enumerate() {
-                let Some(buf) = shape_grid_row(&mut self.font_system, &text, row_cells) else {
-                    continue;
-                };
-                // Glyphon TextArea origins are PHYSICAL pixels. Background
-                // cells + cursor are placed at `pad_px + col*cw_px` (physical),
-                // so the text must use the same physical frame — otherwise on
-                // HiDPI the glyphs drift left of the cells by padding*(scale-1)
-                // and the cursor looks shifted to the right.
-                let y = body_y_origin + row_idx as f32 * ch_px;
-                text_buffers.push((buf, [body_x_origin + pad_px, y]));
-            }
+            let shape_key = self.grid_shape_key(cols, self.builtin_box_drawing);
+            // Glyphon TextArea origins are PHYSICAL pixels. Background
+            // cells + cursor are placed at `pad_px + col*cw_px` (physical),
+            // so the text must use the same physical frame — otherwise on
+            // HiDPI the glyphs drift left of the cells by padding*(scale-1)
+            // and the cursor looks shifted to the right.
+            let (text_buffers, row_keys) = shape_grid_rows(
+                &mut self.font_system,
+                &text,
+                &grid_cells,
+                shape_key,
+                [body_x_origin + pad_px, body_y_origin],
+                ch_px,
+                std::mem::take(&mut self.cached_focused_text),
+                std::mem::take(&mut self.focused_row_keys),
+            );
             self.cached_focused_text = text_buffers;
+            self.focused_row_keys = row_keys;
             self.focused_text_hash = focused_hash;
         }
 
@@ -8177,7 +8220,7 @@ impl Renderer {
                 self.extra_pane_cache_seen
                     .iter()
                     .filter_map(|id| self.extra_pane_text_cache.get(id))
-                    .flat_map(|(_hash, bufs)| bufs.iter()),
+                    .flat_map(|(_hash, bufs, _keys)| bufs.iter()),
             )
             .chain(self.pane_header_text_buffers.iter())
             .map(|(buf, pos)| TextArea {
@@ -8978,6 +9021,69 @@ enum CellFit {
 /// One drawn character of a grid row: the char, how many cells it covers
 /// (2 for a wide char, whose spacer cell gets no char of its own), attrs.
 type GridChar<'a> = (char, u16, Attrs<'a>);
+
+/// Hash of everything [`shape_grid_row`] reads from one row, under the shaping
+/// inputs `shape_key` (see `Renderer::grid_shape_key`). Equal keys shape to
+/// identical buffers, wherever the row is drawn.
+fn grid_row_key(shape_key: u64, row_cells: &[CellSnapshot]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    shape_key.hash(&mut h);
+    row_cells.len().hash(&mut h);
+    for snap in row_cells {
+        snap.hidden.hash(&mut h);
+        snap.ch.hash(&mut h);
+        snap.fg.hash(&mut h);
+        snap.bold.hash(&mut h);
+        snap.italic.hash(&mut h);
+        snap.wide_spacer.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Shape a grid into one buffer per row, row `i` placed at
+/// `origin + (0, i × row_height)`, reusing every buffer of `previous` (with
+/// its row keys `previous_keys`, index for index) whose row is still there.
+///
+/// Shaping is the expensive part of a frame and it does not depend on where a
+/// row is drawn, only on its content. Output that scrolls moves every row up
+/// one line, and a spinner or a clock changes one cell — either way nearly
+/// every row of the new frame was already shaped for the last one, so only
+/// the rows that really changed are shaped again. Returns the buffers and
+/// their keys, to pass back in as `previous` next time.
+#[allow(clippy::too_many_arguments)]
+fn shape_grid_rows(
+    font_system: &mut FontSystem,
+    text: &GridText,
+    grid_cells: &[Vec<CellSnapshot>],
+    shape_key: u64,
+    origin: [f32; 2],
+    row_height: f32,
+    previous: Vec<(Buffer, [f32; 2])>,
+    previous_keys: Vec<u64>,
+) -> (Vec<(Buffer, [f32; 2])>, Vec<u64>) {
+    // Keyed stacks, not a plain map: identical rows (blank lines, repeated
+    // output) each need a buffer of their own.
+    let mut reusable: std::collections::HashMap<u64, Vec<Buffer>> =
+        std::collections::HashMap::with_capacity(previous_keys.len());
+    for ((buf, _), key) in previous.into_iter().zip(previous_keys) {
+        reusable.entry(key).or_default().push(buf);
+    }
+    let mut rows = Vec::with_capacity(grid_cells.len());
+    let mut keys = Vec::with_capacity(grid_cells.len());
+    for (row_idx, row_cells) in grid_cells.iter().enumerate() {
+        let key = grid_row_key(shape_key, row_cells);
+        let reused = reusable.get_mut(&key).and_then(Vec::pop);
+        let Some(buf) = reused.or_else(|| shape_grid_row(font_system, text, row_cells)) else {
+            continue;
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let y = origin[1] + row_idx as f32 * row_height;
+        rows.push((buf, [origin[0], y]));
+        keys.push(key);
+    }
+    (rows, keys)
+}
 
 /// Shape one grid row into a buffer whose glyphs each start on their cell.
 ///
@@ -11131,6 +11237,131 @@ mod tests {
                 (ch != ' ').then_some((ch, g.x, g.font_size))
             })
             .collect()
+    }
+
+    fn grid_rows(lines: &[&str]) -> Vec<Vec<CellSnapshot>> {
+        lines
+            .iter()
+            .map(|l| l.chars().map(|ch| grid_cell(ch, false, false)).collect())
+            .collect()
+    }
+
+    fn row_texts(rows: &[(Buffer, [f32; 2])]) -> Vec<String> {
+        rows.iter()
+            .map(|(b, _)| b.lines[0].text().to_string())
+            .collect()
+    }
+
+    fn origins_are(rows: &[(Buffer, [f32; 2])], want: &[[f32; 2]]) -> bool {
+        rows.len() == want.len()
+            && rows
+                .iter()
+                .zip(want)
+                .all(|((_, o), w)| (o[0] - w[0]).abs() < 1e-4 && (o[1] - w[1]).abs() < 1e-4)
+    }
+
+    #[test]
+    fn shape_grid_rows_places_every_row_on_its_line() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.0);
+        let grid = grid_rows(&["one", "two", "three"]);
+        let (rows, keys) = shape_grid_rows(
+            &mut fs,
+            &text,
+            &grid,
+            7,
+            [5.0, 100.0],
+            20.0,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert_eq!(row_texts(&rows), ["one", "two", "three"]);
+        assert!(origins_are(
+            &rows,
+            &[[5.0, 100.0], [5.0, 120.0], [5.0, 140.0]]
+        ));
+        assert_eq!(keys.len(), 3);
+        assert_eq!(keys[1], grid_row_key(7, &grid[1]));
+    }
+
+    /// Output that scrolls moves every row up a line: the rows still on
+    /// screen must come from the previous frame's buffers (only the new line
+    /// is shaped), each at its new position.
+    #[test]
+    fn shape_grid_rows_reuses_rows_by_content_not_position() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.0);
+        let before = grid_rows(&["a", "b", "c"]);
+        let (prev, prev_keys) = shape_grid_rows(
+            &mut fs,
+            &text,
+            &before,
+            7,
+            [0.0, 50.0],
+            10.0,
+            Vec::new(),
+            Vec::new(),
+        );
+        // Swap in a sentinel buffer under row "b"'s key: if the next frame
+        // re-shapes "b" instead of reusing it, the sentinel never shows up.
+        let mut prev = prev;
+        let sentinel = grid_rows(&["SENTINEL"]);
+        prev[1].0 = shape_grid_row(&mut fs, &text, &sentinel[0]).expect("non-empty row");
+
+        let after = grid_rows(&["b", "c", "d"]);
+        let (rows, keys) = shape_grid_rows(
+            &mut fs,
+            &text,
+            &after,
+            7,
+            [0.0, 50.0],
+            10.0,
+            prev,
+            prev_keys,
+        );
+        assert_eq!(row_texts(&rows), ["SENTINEL", "c", "d"]);
+        // "b" was drawn on line 1 (y 60) and moves up to line 0 (y 50).
+        assert!(origins_are(&rows, &[[0.0, 50.0], [0.0, 60.0], [0.0, 70.0]]));
+        assert_eq!(keys[2], grid_row_key(7, &after[2]));
+    }
+
+    /// Identical rows each need a buffer of their own, and a changed shaping
+    /// key (font, size, ...) must never hand back a buffer shaped under the
+    /// old one.
+    #[test]
+    fn shape_grid_rows_keeps_duplicates_and_respects_the_shape_key() {
+        let mut fs = grid_test_font_system();
+        let text = grid_test_text(&mut fs, 1.0);
+        let grid = grid_rows(&["same", "same", "same"]);
+        let (prev, prev_keys) = shape_grid_rows(
+            &mut fs,
+            &text,
+            &grid,
+            7,
+            [0.0, 0.0],
+            10.0,
+            Vec::new(),
+            Vec::new(),
+        );
+        let (rows, _) =
+            shape_grid_rows(&mut fs, &text, &grid, 7, [0.0, 0.0], 10.0, prev, prev_keys);
+        assert_eq!(row_texts(&rows), ["same", "same", "same"]);
+
+        let (mut prev, prev_keys) = shape_grid_rows(
+            &mut fs,
+            &text,
+            &grid,
+            7,
+            [0.0, 0.0],
+            10.0,
+            Vec::new(),
+            Vec::new(),
+        );
+        let sentinel = grid_rows(&["SENTINEL"]);
+        prev[0].0 = shape_grid_row(&mut fs, &text, &sentinel[0]).expect("non-empty row");
+        let (rows, _) =
+            shape_grid_rows(&mut fs, &text, &grid, 8, [0.0, 0.0], 10.0, prev, prev_keys);
+        assert_eq!(row_texts(&rows), ["same", "same", "same"]);
     }
 
     #[test]
