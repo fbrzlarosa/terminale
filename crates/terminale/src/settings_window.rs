@@ -2584,6 +2584,10 @@ fn search_index() -> &'static [SearchEntry] {
             section: Section::Gpu,
             label: "Power",
         },
+        SearchEntry {
+            section: Section::Gpu,
+            label: "Presentation",
+        },
         // section_bell
         SearchEntry {
             section: Section::Bell,

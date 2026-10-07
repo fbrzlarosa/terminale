@@ -73,7 +73,7 @@ pub use context_rules::{evaluate_context_rules, ContextRule};
 pub use cursor::{CursorConfig, CursorStyle};
 pub use directory_jump::DirectoryJumpConfig;
 pub use font::FontConfig;
-pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference};
+pub use gpu::{GpuBackend, GpuConfig, GpuPowerPreference, GpuPresentMode};
 pub use integration::{ControlApiConfig, IntegrationConfig, LinuxBackend, McpConfig};
 pub use keybinds::{
     decode_send_string, CustomKeybind, KeyActionSpec, KeyTable, KeyTableEntry, KeybindsConfig,
@@ -755,7 +755,22 @@ key_path = "/home/me/.ssh/id_ed25519"
         let cfg = Config::default();
         assert_eq!(cfg.gpu.backend, GpuBackend::Auto);
         assert_eq!(cfg.gpu.power_preference, GpuPowerPreference::Auto);
+        assert_eq!(cfg.gpu.present_mode, GpuPresentMode::Auto);
         cfg.validate().expect("default gpu config must validate");
+    }
+
+    #[test]
+    fn gpu_present_mode_parses_and_rejects_unknown() {
+        for (s, want) in [
+            ("auto", GpuPresentMode::Auto),
+            ("vsync", GpuPresentMode::Vsync),
+        ] {
+            let cfg: Config = toml::from_str(&format!("[gpu]\npresent_mode = \"{s}\"\n"))
+                .expect("valid present mode must parse");
+            assert_eq!(cfg.gpu.present_mode, want);
+        }
+        let bad: Result<Config, _> = toml::from_str("[gpu]\npresent_mode = \"fast\"\n");
+        assert!(bad.is_err(), "unknown present mode must be rejected");
     }
 
     #[test]

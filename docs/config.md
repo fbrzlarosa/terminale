@@ -204,12 +204,21 @@ last geometry on show/hide; picking an edge instead docks it there, sized by
 [gpu]
 backend          = "auto" # auto | vulkan | dx12 | metal | gl | software
 power_preference = "auto" # auto | low | high
+present_mode     = "auto" # auto | vsync
 ```
 
 `software` requests a CPU fallback adapter, effectively disabling hardware GPU
 acceleration — useful when a driver misbehaves or a remote/VM display only
 exposes a software adapter. The explicit API variants force one backend
 (e.g. `vulkan` on a Linux box that otherwise picks Wayland's default).
+
+`present_mode = "auto"` never makes a window wait on the display: mailbox
+presentation where the driver offers it, and on Linux, where it often does not
+(NVIDIA under XWayland), immediate presentation — the compositor still shows
+whole frames, and redraws are paced to the monitor's refresh rate. A vsync wait
+would park the thread every terminale window shares, so with several windows
+open each waited behind the others. `vsync` always waits for the vertical blank
+(never tears, even on an X11 desktop without a compositor). Applies live.
 
 ### `[profiles]`
 

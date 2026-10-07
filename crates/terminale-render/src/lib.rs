@@ -600,6 +600,9 @@ pub struct Renderer {
     queue: Arc<Queue>,
     surface: Surface<'static>,
     config: SurfaceConfiguration,
+    /// Present modes this surface supports, kept to re-choose one when the
+    /// vsync preference changes (see [`Self::set_vsync`]).
+    present_modes: Vec<PresentMode>,
     surface_format: wgpu::TextureFormat,
     /// Whether this surface's [`wgpu::SurfaceCapabilities`] advertised
     /// `COPY_SRC`, i.e. whether [`Self::request_capture`] can ever actually
@@ -2025,12 +2028,14 @@ impl Renderer {
             .find(|m| *m == CompositeAlphaMode::Opaque)
             .or_else(|| surface_caps.alpha_modes.first().copied())
             .ok_or(RenderError::EmptySurfaceCaps)?;
-        let present_mode = surface_caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|m| *m == PresentMode::Mailbox)
-            .unwrap_or(PresentMode::AutoVsync);
+        // Never-wait by default; the host switches a window to vsync with
+        // `set_vsync` when configured to.
+        let present_mode = choose_present_mode(&surface_caps.present_modes, false);
+        tracing::debug!(
+            ?present_mode,
+            available = ?surface_caps.present_modes,
+            "surface present mode"
+        );
         // `COPY_SRC` on the swapchain texture is what makes
         // `Renderer::request_capture` possible at all. Some backends/
         // adapters (GL fallbacks in particular) never advertise it, and
@@ -2087,6 +2092,7 @@ impl Renderer {
             queue: Arc::new(queue),
             surface,
             config,
+            present_modes: surface_caps.present_modes.clone(),
             surface_format: format,
             capture_supported,
             pending_capture: None,
@@ -2237,12 +2243,14 @@ impl Renderer {
             .find(|m| *m == CompositeAlphaMode::Opaque)
             .or_else(|| surface_caps.alpha_modes.first().copied())
             .ok_or(RenderError::EmptySurfaceCaps)?;
-        let present_mode = surface_caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|m| *m == PresentMode::Mailbox)
-            .unwrap_or(PresentMode::AutoVsync);
+        // Never-wait by default; the host switches a window to vsync with
+        // `set_vsync` when configured to.
+        let present_mode = choose_present_mode(&surface_caps.present_modes, false);
+        tracing::debug!(
+            ?present_mode,
+            available = ?surface_caps.present_modes,
+            "surface present mode"
+        );
         // `COPY_SRC` on the swapchain texture is what makes
         // `Renderer::request_capture` possible at all. Some backends/
         // adapters (GL fallbacks in particular) never advertise it, and
@@ -2299,6 +2307,7 @@ impl Renderer {
             queue,
             surface,
             config,
+            present_modes: surface_caps.present_modes.clone(),
             surface_format: format,
             capture_supported,
             pending_capture: None,
@@ -2460,12 +2469,14 @@ impl Renderer {
             })
             .or_else(|| surface_caps.alpha_modes.first().copied())
             .ok_or(RenderError::EmptySurfaceCaps)?;
-        let present_mode = surface_caps
-            .present_modes
-            .iter()
-            .copied()
-            .find(|m| *m == PresentMode::Mailbox)
-            .unwrap_or(PresentMode::AutoVsync);
+        // Never-wait by default; the host switches a window to vsync with
+        // `set_vsync` when configured to.
+        let present_mode = choose_present_mode(&surface_caps.present_modes, false);
+        tracing::debug!(
+            ?present_mode,
+            available = ?surface_caps.present_modes,
+            "surface present mode"
+        );
         // `COPY_SRC` on the swapchain texture is what makes
         // `Renderer::request_capture` possible at all. Some backends/
         // adapters (GL fallbacks in particular) never advertise it, and
@@ -2522,6 +2533,7 @@ impl Renderer {
             queue,
             surface,
             config,
+            present_modes: surface_caps.present_modes.clone(),
             surface_format: format,
             capture_supported,
             pending_capture: None,
@@ -5398,6 +5410,28 @@ impl Renderer {
             close_btn,
             group_pills,
         }
+    }
+
+    /// Wait (or not) for the display's vertical blank on every present, and
+    /// reconfigure the surface when that changes the present mode. `false` is
+    /// what every renderer starts with — see [`choose_present_mode`].
+    pub fn set_vsync(&mut self, vsync: bool) {
+        let mode = choose_present_mode(&self.present_modes, vsync);
+        if mode != self.config.present_mode {
+            tracing::debug!(?mode, "surface present mode changed");
+            self.config.present_mode = mode;
+            self.surface.configure(&self.device, &self.config);
+        }
+    }
+
+    /// Whether presenting a frame waits for the display — in which case the
+    /// display already paces this window's redraws and the host need not.
+    #[must_use]
+    pub fn present_waits_for_display(&self) -> bool {
+        !matches!(
+            self.config.present_mode,
+            PresentMode::Mailbox | PresentMode::Immediate | PresentMode::AutoNoVsync
+        )
     }
 
     /// The size the surface is currently configured to, in physical pixels.
@@ -9450,6 +9484,32 @@ pub const TABLER_CODEPOINTS: &[char] = &[
     '\u{EAE9}', // map (duplicate; dedup is fine)
 ];
 
+/// The present mode for a window surface offering `available`.
+///
+/// With `vsync`, always FIFO. Otherwise never wait on the display: mailbox
+/// where offered, and on Linux / BSD immediate where it is not (NVIDIA under
+/// XWayland offers only FIFO and immediate). Every terminale window renders on
+/// one thread, so a FIFO present parks all of them behind each window's vsync
+/// — and behind a full second's acquire timeout for a window the compositor
+/// stopped taking frames from (covered, hidden by Quake). A compositor shows
+/// whole frames either way, so immediate does not tear on a modern desktop;
+/// the host paces redraws to the refresh rate so it never draws frames that
+/// cannot be shown. macOS keeps FIFO: Metal offers no mailbox, and there
+/// immediate gives up the display sync its window server expects.
+#[must_use]
+pub fn choose_present_mode(available: &[PresentMode], vsync: bool) -> PresentMode {
+    if vsync {
+        return PresentMode::AutoVsync;
+    }
+    if available.contains(&PresentMode::Mailbox) {
+        return PresentMode::Mailbox;
+    }
+    if cfg!(all(unix, not(target_os = "macos"))) && available.contains(&PresentMode::Immediate) {
+        return PresentMode::Immediate;
+    }
+    PresentMode::AutoVsync
+}
+
 /// A font system for one renderer: the system fonts plus the bundled symbol
 /// and monospace faces every window needs (tab-bar and overlay icons must
 /// never render as tofu, and the embedded typefaces must be selectable in the
@@ -11362,6 +11422,42 @@ mod tests {
         let (rows, _) =
             shape_grid_rows(&mut fs, &text, &grid, 8, [0.0, 0.0], 10.0, prev, prev_keys);
         assert_eq!(row_texts(&rows), ["same", "same", "same"]);
+    }
+
+    #[test]
+    fn present_mode_vsync_always_waits() {
+        let all = [
+            PresentMode::Fifo,
+            PresentMode::Immediate,
+            PresentMode::Mailbox,
+        ];
+        assert_eq!(choose_present_mode(&all, true), PresentMode::AutoVsync);
+    }
+
+    #[test]
+    fn present_mode_prefers_mailbox() {
+        let all = [
+            PresentMode::Fifo,
+            PresentMode::Immediate,
+            PresentMode::Mailbox,
+        ];
+        assert_eq!(choose_present_mode(&all, false), PresentMode::Mailbox);
+    }
+
+    /// NVIDIA under XWayland offers FIFO and immediate only.
+    #[test]
+    fn present_mode_without_mailbox() {
+        let modes = [PresentMode::Fifo, PresentMode::Immediate];
+        let want = if cfg!(all(unix, not(target_os = "macos"))) {
+            PresentMode::Immediate
+        } else {
+            PresentMode::AutoVsync
+        };
+        assert_eq!(choose_present_mode(&modes, false), want);
+        assert_eq!(
+            choose_present_mode(&[PresentMode::Fifo], false),
+            PresentMode::AutoVsync
+        );
     }
 
     #[test]

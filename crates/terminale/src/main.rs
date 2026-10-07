@@ -2829,6 +2829,14 @@ struct TermWindow {
     /// successful frame. Gates only *animation* redraws: PTY output still drains
     /// and still repaints, so nothing goes stale.
     presentation_throttled: bool,
+    /// When this window last painted a frame — see [`frame_pacing_delay`].
+    last_frame_at: Option<std::time::Instant>,
+    /// A redraw that frame pacing postponed, due at this instant;
+    /// `about_to_wait` re-requests it then.
+    redraw_deferred_until: Option<std::time::Instant>,
+    /// The display's refresh interval and when it was last read — see
+    /// [`display_frame_interval`].
+    frame_interval: Option<(std::time::Duration, std::time::Instant)>,
     /// Mirror of `config.terminal.os_notifications`. When `true`, OSC 9 /
     /// OSC 777 notifications are forwarded to the OS notification centre
     /// (but only while the window is not focused).
@@ -3506,6 +3514,7 @@ impl TerminaleApp {
             .expect("failed to init renderer"),
         };
         renderer.set_cursor(cursor_params_from_config(&self.config));
+        renderer.set_vsync(self.config.gpu.present_mode == terminale_config::GpuPresentMode::Vsync);
         renderer.set_padding(self.config.window.padding as f32);
         renderer.set_background_alpha(self.config.window.opacity);
         renderer.set_bg_fx_params(translate_bg_fx_params(&self.config.background_fx));
@@ -3648,6 +3657,9 @@ impl TerminaleApp {
             window_focused: true,
             occluded: false,
             presentation_throttled: false,
+            last_frame_at: None,
+            redraw_deferred_until: None,
+            frame_interval: None,
             os_notifications: self.config.terminal.os_notifications,
             os_notification_rate_limit: self.config.terminal.os_notification_rate_limit,
             tab_bar_fingerprint: 0,
@@ -6119,6 +6131,9 @@ impl TerminaleApp {
                     }
                     state.copy_on_select = cfg.window.copy_on_select;
                     state.animated_tab_drag = cfg.appearance.animated_tab_drag;
+                    state
+                        .renderer
+                        .set_vsync(cfg.gpu.present_mode == terminale_config::GpuPresentMode::Vsync);
                     if state.always_on_top != cfg.window.always_on_top {
                         state.always_on_top = cfg.window.always_on_top;
                         apply_window_level(&state.window, state.always_on_top);
@@ -9433,6 +9448,7 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                 // ate an entire 350 ms close and left it snapping shut after
                 // two frames. Every `resize` here has to be followed by a
                 // present.
+                let resized = state.pending_resize.is_some();
                 if let Some(new_size) = state.pending_resize.take() {
                     state.renderer.resize(new_size.width, new_size.height);
                     // Mid Quake-animation (or while hidden) the surface tracks
@@ -9451,7 +9467,18 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                     drain_pty_output(state, drain_budget);
                 }
                 drain_pty_output(state, drain_budget);
-                render_main(state);
+                // A frame right after the last one waits for the next refresh
+                // instead (see `frame_pacing_delay`) — unless the surface was
+                // just reconfigured, which must always be followed by a
+                // present (above).
+                match frame_pacing_delay(state) {
+                    Some(delay) if !resized => {
+                        let due = std::time::Instant::now() + delay;
+                        state.redraw_deferred_until =
+                            Some(state.redraw_deferred_until.map_or(due, |d| d.min(due)));
+                    }
+                    _ => render_main(state),
+                }
             }
             // A file (or several) was dropped onto the window. winit gives no
             // cursor position and one event per file, so each path is routed
@@ -10745,6 +10772,9 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
                         }
                         state.copy_on_select = cfg.window.copy_on_select;
                         state.animated_tab_drag = cfg.appearance.animated_tab_drag;
+                        state.renderer.set_vsync(
+                            cfg.gpu.present_mode == terminale_config::GpuPresentMode::Vsync,
+                        );
                         // Quake-managed windows drive their own visibility; we only
                         // touch the persistent window level here, never show/hide.
                         if state.always_on_top != cfg.window.always_on_top {
@@ -11161,6 +11191,17 @@ impl ApplicationHandler<UserEvent> for TerminaleApp {
         for state in &mut self.windows {
             if drain_pty_output(state, drain_budget) {
                 state.window.request_redraw();
+            }
+            // A redraw that frame pacing postponed: re-request it once due.
+            if let Some(due) = state.redraw_deferred_until {
+                let now = std::time::Instant::now();
+                if now >= due {
+                    state.redraw_deferred_until = None;
+                    state.window.request_redraw();
+                } else {
+                    let d = due - now;
+                    next_wake = Some(next_wake.map_or(d, |w| w.min(d)));
+                }
             }
             // While the window is fully covered or minimized, skip scheduling
             // animation redraws below — the compositor would discard them, so
@@ -12026,6 +12067,51 @@ fn render_scrollbar_mode(m: terminale_config::ScrollbarMode) -> terminale_render
     }
 }
 
+/// How long a redraw of `state` should wait to stay at the display's refresh
+/// rate, or `None` to paint now.
+///
+/// A present that waits for the display paces the window by itself. One that
+/// does not (see [`terminale_render::choose_present_mode`]) would paint every
+/// redraw request — under streaming output hundreds a second per window, all
+/// on the one thread every window shares — while the display shows one frame
+/// per refresh. Only a frame that follows another within one refresh waits,
+/// so a keystroke after a quiet moment still paints at once.
+fn frame_pacing_delay(state: &mut RunningState) -> Option<std::time::Duration> {
+    if state.renderer.present_waits_for_display() {
+        return None;
+    }
+    let since = state.last_frame_at?.elapsed();
+    let interval = display_frame_interval(state);
+    interval.checked_sub(since).filter(|d| !d.is_zero())
+}
+
+/// The refresh interval of the display `state`'s window is on, re-read at most
+/// once a second (the window can move to another monitor; reading it on every
+/// frame would be a system call per frame on some platforms).
+fn display_frame_interval(state: &mut RunningState) -> std::time::Duration {
+    const RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
+    if let Some((interval, read_at)) = state.frame_interval {
+        if read_at.elapsed() < RECHECK {
+            return interval;
+        }
+    }
+    let interval = frame_interval_for_millihertz(
+        state
+            .window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz()),
+    );
+    state.frame_interval = Some((interval, std::time::Instant::now()));
+    interval
+}
+
+/// One refresh period of a display running at `millihertz`, assuming 60 Hz
+/// when the rate is unknown and clamping implausible reports to 30–500 Hz.
+fn frame_interval_for_millihertz(millihertz: Option<u32>) -> std::time::Duration {
+    let mhz = millihertz.unwrap_or(60_000).clamp(30_000, 500_000);
+    std::time::Duration::from_nanos(1_000_000_000_000 / u64::from(mhz))
+}
+
 /// Paint one frame of the main terminal window immediately. Used by the
 /// `RedrawRequested` handler and, crucially, by the live-apply path —
 /// because `window.request_redraw()` is a no-op for the main window
@@ -12209,6 +12295,9 @@ fn render_main(state: &mut RunningState) {
     // blocking call landing on the UI thread) that recovers on its own still
     // leaves a timestamped trace in the log. Disabled when the threshold is 0.
     let frame_started = std::time::Instant::now();
+    // A paint satisfies any redraw that pacing had postponed.
+    state.last_frame_at = Some(frame_started);
+    state.redraw_deferred_until = None;
     let render_result = state
         .renderer
         .render_panes_with_dividers(&render_specs, &divider_strokes);
@@ -17525,6 +17614,35 @@ mod tests {
         assert!(!d.contains("wgpu_core=warn"));
         // Crates the user did NOT mention still get capped.
         assert!(d.contains("wgpu_hal=warn"));
+    }
+
+    /// Frame pacing follows the monitor's refresh rate, falls back to 60 Hz
+    /// when the platform will not say, and ignores nonsense reports.
+    #[test]
+    fn frame_interval_follows_the_refresh_rate() {
+        use std::time::Duration;
+        assert_eq!(
+            frame_interval_for_millihertz(Some(60_000)),
+            Duration::from_nanos(16_666_666)
+        );
+        assert_eq!(
+            frame_interval_for_millihertz(Some(144_000)),
+            Duration::from_nanos(6_944_444)
+        );
+        assert_eq!(
+            frame_interval_for_millihertz(None),
+            frame_interval_for_millihertz(Some(60_000))
+        );
+        // A 0 Hz / absurd report clamps instead of dividing by zero or pacing
+        // at an interval no display has.
+        assert_eq!(
+            frame_interval_for_millihertz(Some(0)),
+            Duration::from_nanos(33_333_333)
+        );
+        assert_eq!(
+            frame_interval_for_millihertz(Some(10_000_000)),
+            Duration::from_nanos(2_000_000)
+        );
     }
 
     #[test]
