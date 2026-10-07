@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+- **`gpu.present_mode` (Settings → GPU → Presentation).** `auto` (default)
+  never makes a window wait for the display; `vsync` always waits. Applies
+  live.
+
+### Fixed
+- **Linux (GNOME, X11 backend): the Quake drop-down reopened on the first
+  workspace.** Every show sent the window to workspace 0 instead of the one on
+  screen, so on the primary monitor — the only one GNOME gives workspaces by
+  default — switching workspace and pressing the hotkey brought the window
+  back on the old one. It now opens on the current workspace.
+- **A torn-out window kept its old layout after the Quake drop-down
+  reopened it.** When the reveal changed the window's size (a torn-out window
+  docks to its monitor's edge on its first show), the terminal grid kept the
+  previous size, leaving the shell drawn in a corner of the window. The grid
+  now always follows the size the drop-down shows the window at.
+- **Several windows slowed each other down.** All windows render on one
+  thread, and on drivers without mailbox presentation (NVIDIA under XWayland)
+  each frame waited for the display's vsync — and up to a full second for a
+  window the compositor stopped taking frames from (covered, or hidden by
+  Quake), stalling every other window with it. Frames are now presented
+  without waiting and paced to the monitor's refresh rate instead; a redraw
+  re-shapes only the rows that changed instead of the whole screen; a new
+  window no longer rescans every installed font; and dragging a tab no longer
+  queries the window system several times per window on every mouse move.
+
 ## [0.1.54]
 
 ### Fixed
