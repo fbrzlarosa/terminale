@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+## [0.1.56]
+
 ### Fixed
 - **Every window could freeze for good while the shells kept running.**
   Resizing a window — or any change of its size or presentation — first
@@ -1784,7 +1786,8 @@ Sections in each release (only include those with entries):
 - Tests       — significant test infra changes
 -->
 
-[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.55...HEAD
+[Unreleased]: https://github.com/fbrzlarosa/terminale/compare/v0.1.56...HEAD
+[0.1.56]: https://github.com/fbrzlarosa/terminale/compare/v0.1.55...v0.1.56
 [0.1.55]: https://github.com/fbrzlarosa/terminale/compare/v0.1.54...v0.1.55
 [0.1.54]: https://github.com/fbrzlarosa/terminale/compare/v0.1.53...v0.1.54
 [0.1.53]: https://github.com/fbrzlarosa/terminale/compare/v0.1.52...v0.1.53
