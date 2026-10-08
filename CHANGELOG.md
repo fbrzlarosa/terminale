@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning 2.0](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Fixed
+- **Every window could freeze for good while the shells kept running.**
+  Resizing a window — or any change of its size or presentation — first
+  waited, with no timeout, for the GPU to finish every frame in flight in
+  every window. A frame drawn for a window the compositor was not taking
+  frames from (hidden by Quake, minimized, covered) can stay unfinished
+  indefinitely under NVIDIA + XWayland, and the UI then never came back. Such a
+  change now waits at most 100 ms and is otherwise applied on a later frame,
+  so a busy GPU costs a postponed resize instead of the whole UI.
+
 ## [0.1.55]
 
 ### Added
