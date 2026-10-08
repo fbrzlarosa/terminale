@@ -618,6 +618,12 @@ pub struct Renderer {
     /// keep this cheap to check, it's read once per frame regardless of
     /// whether a capture was ever requested.
     pending_capture: Option<PathBuf>,
+    /// Set while `config` has not reached the surface yet because the GPU was
+    /// still busy when it changed (see [`configure_surface_when_idle`]): since
+    /// when, so the log can say how long the window went without a frame.
+    /// [`Self::acquire_frame`] retries the configure and draws nothing until it
+    /// lands.
+    surface_config_pending_since: Option<std::time::Instant>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -2059,7 +2065,9 @@ impl Renderer {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        let surface_config_pending_since =
+            (!configure_surface_when_idle(&device, &surface, &config))
+                .then(std::time::Instant::now);
 
         let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
@@ -2096,6 +2104,7 @@ impl Renderer {
             surface_format: format,
             capture_supported,
             pending_capture: None,
+            surface_config_pending_since,
             font_system,
             swash_cache,
             viewport,
@@ -2274,7 +2283,9 @@ impl Renderer {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        let surface_config_pending_since =
+            (!configure_surface_when_idle(&device, &surface, &config))
+                .then(std::time::Instant::now);
 
         let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
@@ -2311,6 +2322,7 @@ impl Renderer {
             surface_format: format,
             capture_supported,
             pending_capture: None,
+            surface_config_pending_since,
             font_system,
             swash_cache,
             viewport,
@@ -2500,7 +2512,9 @@ impl Renderer {
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
         };
-        surface.configure(&device, &config);
+        let surface_config_pending_since =
+            (!configure_surface_when_idle(&device, &surface, &config))
+                .then(std::time::Instant::now);
 
         let mut font_system = new_font_system();
         let swash_cache = SwashCache::new();
@@ -2537,6 +2551,7 @@ impl Renderer {
             surface_format: format,
             capture_supported,
             pending_capture: None,
+            surface_config_pending_since,
             font_system,
             swash_cache,
             viewport,
@@ -5420,7 +5435,32 @@ impl Renderer {
         if mode != self.config.present_mode {
             tracing::debug!(?mode, "surface present mode changed");
             self.config.present_mode = mode;
-            self.surface.configure(&self.device, &self.config);
+            self.reconfigure_surface();
+        }
+    }
+
+    /// Hands `config` to the surface, or — when the GPU is still busy with
+    /// frames already in flight — leaves that to a later
+    /// [`Self::acquire_frame`] instead of blocking the UI thread on it. Returns
+    /// whether the surface now matches `config`.
+    fn reconfigure_surface(&mut self) -> bool {
+        if configure_surface_when_idle(&self.device, &self.surface, &self.config) {
+            if let Some(since) = self.surface_config_pending_since.take() {
+                tracing::info!(
+                    waited_ms = since.elapsed().as_millis() as u64,
+                    "GPU caught up; postponed surface configure applied"
+                );
+            }
+            true
+        } else {
+            if self.surface_config_pending_since.is_none() {
+                tracing::warn!(
+                    "GPU still busy with earlier frames; postponing the surface \
+                     configure instead of blocking until it is idle"
+                );
+                self.surface_config_pending_since = Some(std::time::Instant::now());
+            }
+            false
         }
     }
 
@@ -5444,7 +5484,7 @@ impl Renderer {
     pub fn resize(&mut self, physical_width: u32, physical_height: u32) {
         self.config.width = physical_width.max(1);
         self.config.height = physical_height.max(1);
-        self.surface.configure(&self.device, &self.config);
+        self.reconfigure_surface();
     }
 
     /// Update the scale factor reported by winit (HiDPI changes, monitor move).
@@ -6530,7 +6570,24 @@ impl Renderer {
 
     fn acquire_frame(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
         let acquire_start = std::time::Instant::now();
-        let result = match self.surface.get_current_texture() {
+        let result = self.acquire_frame_inner();
+        FRAME_ACQUIRE_NS.store(
+            phase_ns(acquire_start.elapsed()),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        result
+    }
+
+    fn acquire_frame_inner(&mut self) -> Result<wgpu::SurfaceTexture, RenderError> {
+        // A configure the GPU was too busy for: the surface still has its old
+        // size / present mode, so there is nothing valid to draw into until it
+        // lands. Report it as `Timeout` — like the compositor declining an
+        // image, it means "this window cannot take a frame right now", and the
+        // host already backs off on that instead of spinning.
+        if self.surface_config_pending_since.is_some() && !self.reconfigure_surface() {
+            return Err(RenderError::Surface(wgpu::SurfaceError::Timeout));
+        }
+        match self.surface.get_current_texture() {
             Ok(frame) => Ok(frame),
             Err(e @ (wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated)) => {
                 // `Lost` is a *real* device reset — GPU TDR, driver crash,
@@ -6552,7 +6609,9 @@ impl Renderer {
                 } else {
                     tracing::debug!("surface outdated; reconfiguring and retrying");
                 }
-                self.surface.configure(&self.device, &self.config);
+                if !self.reconfigure_surface() {
+                    return Err(RenderError::Surface(wgpu::SurfaceError::Timeout));
+                }
                 self.surface
                     .get_current_texture()
                     .map_err(RenderError::from)
@@ -6560,12 +6619,7 @@ impl Renderer {
             // Timeout = compositor hiccup, skip the frame; OutOfMemory and
             // friends bubble to the caller (logged, frame dropped).
             Err(e) => Err(e.into()),
-        };
-        FRAME_ACQUIRE_NS.store(
-            phase_ns(acquire_start.elapsed()),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        result
+        }
     }
 
     /// Single-pane render entry point — kept for the simple cases (the
@@ -9508,6 +9562,41 @@ pub fn choose_present_mode(available: &[PresentMode], vsync: bool) -> PresentMod
         return PresentMode::Immediate;
     }
     PresentMode::AutoVsync
+}
+
+/// How long a surface configure may wait for frames already in flight to
+/// finish on the GPU before it is postponed. A healthy GPU finishes the last
+/// frame within a few milliseconds; past this, it is waiting on something.
+const SURFACE_CONFIGURE_GPU_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Configures `surface` once every frame already submitted to `device` has
+/// finished on the GPU, waiting at most [`SURFACE_CONFIGURE_GPU_WAIT`] for that.
+/// Returns `false`, leaving the surface as it was, when the GPU is still busy.
+///
+/// `Surface::configure` itself waits for the whole device to go idle, with no
+/// timeout (`vkDeviceWaitIdle` under Vulkan). Every terminale window shares
+/// that device, and a frame drawn into an image the compositor has not given
+/// back — a window hidden by Quake, minimized, or covered — keeps it busy
+/// until the compositor releases the image, which may be never: under NVIDIA +
+/// XWayland one resize then froze every window for good, while the shells kept
+/// running behind them. Checking first turns that freeze into a postponed
+/// resize.
+fn configure_surface_when_idle(
+    device: &Device,
+    surface: &Surface<'_>,
+    config: &SurfaceConfiguration,
+) -> bool {
+    let deadline = std::time::Instant::now() + SURFACE_CONFIGURE_GPU_WAIT;
+    loop {
+        if device.poll(wgpu::Maintain::Poll).is_queue_empty() {
+            surface.configure(device, config);
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 /// A font system for one renderer: the system fonts plus the bundled symbol
